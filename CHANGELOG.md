@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.15.0
+
+- **Follows your Steam language.** Store content (description, reviews, news) now
+  loads in the language your Steam client is set to, instead of always English.
+  The language and store region are detected from Steam's `LocalizationManager`
+  (falling back to the client locale) and mapped to the store API using Steam's
+  own language table, so e.g. a French client gets French descriptions and a
+  Brazilian client gets Brazilian Portuguese. QAM → Status shows a **Store
+  language** row so the detected value is visible. Set `language`/`country` in
+  settings to a specific value to override the automatic detection.
+
 ## v0.14.0
 
 - **Animated graphics and videos now show in the description.** Steam embeds

@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { getAll, getSettings } from "../api";
 import { DEFAULT_EXPANDED } from "../types";
 import type { AppData, PluginSettings } from "../types";
+import { resolveLanguage, resolveCountry } from "../lang";
 
 // Module-level caches survive the re-splicing of the panel into the app tree,
 // so navigating back to a game (or a re-render of renderFunc) never refetches.
@@ -73,8 +74,10 @@ const DEFAULT_SETTINGS: PluginSettings = {
     news: true,
     deck: true,
   },
-  language: "english",
-  country: "us",
+  // "auto" = follow the Steam client language/region (resolved at fetch time via
+  // resolveLanguage/resolveCountry). An explicit language name is an override.
+  language: "auto",
+  country: "auto",
 };
 
 function mergeSettings(s: Partial<PluginSettings> | null | undefined): PluginSettings {
@@ -156,7 +159,7 @@ async function loadData(appid: number, settings: PluginSettings): Promise<AppDat
   if (!promise) {
     fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${appid}) in flight` };
     promise = withTimeout(
-      getAll(appid, settings.language, settings.country),
+      getAll(appid, resolveLanguage(settings.language), resolveCountry(settings.country)),
       "get_all"
     )
       .then((res) => {

@@ -31,6 +31,7 @@ import {
 import type { DiagState } from "../diag";
 import { DEFAULT_EXPANDED } from "../types";
 import type { PluginSettings, SectionToggles, ExpandedToggles } from "../types";
+import { languageDiag } from "../lang";
 
 const DEFAULTS: PluginSettings = {
   sections: {
@@ -42,8 +43,8 @@ const DEFAULTS: PluginSettings = {
     deck: true,
   },
   expanded: { ...DEFAULT_EXPANDED },
-  language: "english",
-  country: "us",
+  language: "auto",
+  country: "auto",
 };
 
 const EXPANDED_LABELS: { key: keyof ExpandedToggles; label: string }[] = [
@@ -332,6 +333,7 @@ export function QuickAccessSettings() {
             <DiagRow label="Nav bridge" value={navBridge.split(" · ")[0]} />
             <DiagRow label="Video" value={videoNote} />
             <DiagRow label="Codecs" value={CODEC_SUPPORT} />
+            <DiagRow label="Store language" value={languageDiag(settings.language, settings.country)} />
             <DiagRow label="Fetch" value={fetch} />
             <DiagRow
               label="Data (details/reviews/news/deck)"

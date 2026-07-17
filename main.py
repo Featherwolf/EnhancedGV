@@ -32,7 +32,7 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
-CACHE_VERSION = "0.14.0-media"
+CACHE_VERSION = "0.15.0-lang"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
@@ -1094,8 +1094,11 @@ class Plugin:
                 "about": True, "features": False, "deck": False,
                 "reviews": False, "news": False,
             },
-            "language": "english",
-            "country": "us",
+            # "auto" -> the frontend resolves it to the Steam client language /
+            # region at fetch time (resolveLanguage/resolveCountry in lang.ts).
+            # An explicit language name here would be a manual override.
+            "language": "auto",
+            "country": "auto",
         }
         _sub = ("sections", "expanded")  # merged as sub-dicts, not replaced
         try:

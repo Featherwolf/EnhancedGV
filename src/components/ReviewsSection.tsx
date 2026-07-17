@@ -6,6 +6,7 @@ import { registerCacheClearer } from "../hooks/useAppData";
 import type { Reviews, ReviewItem, PluginSettings } from "../types";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
 import { ReviewModal } from "./ReviewModal";
+import { resolveLanguage } from "../lang";
 
 // A single review: a real focus stop (has onActivate) so the D-pad can land on
 // it while scrolling, and A opens the full text in a popup — the list keeps the
@@ -113,7 +114,7 @@ export function ReviewsSection({
   const [filtered, setFiltered] = useState<ReviewItem[] | null>(null);
   const [loadingChip, setLoadingChip] = useState(false);
 
-  const lang = settings?.language ?? "english";
+  const lang = resolveLanguage(settings?.language);
 
   useEffect(() => {
     let cancelled = false;
