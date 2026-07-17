@@ -8,7 +8,7 @@ description, features, reviews, Steam Deck compatibility and update history —
 onto the game's **library details page**, rendered *below* the header so it never
 covers or blocks the **Play** button.
 
-![placeholder](https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader)
+![EnhancedGV on the library game-detail page](screenshots/01-game-detail-summary.jpg)
 
 ## What it adds to the library page
 
@@ -27,6 +27,15 @@ Injected into the scrollable content area beneath the hero/Play button:
 Everything is gamepad-navigable and each section is collapsible. Section
 visibility and cache clearing are controlled from the plugin's **Quick Access**
 panel.
+
+## Screenshots
+
+| | |
+|---|---|
+| ![Media gallery with a streaming trailer and thumbnail carousel](screenshots/02-media-gallery-trailer.jpg) | ![All sections and the library tab strip](screenshots/03-sections-overview.jpg) |
+| *Media gallery — trailers stream in place; A pauses, Y fullscreen, X mutes.* | *Collapsible sections: About, Features, Steam Deck, Reviews, Update history.* |
+| ![Expanded reviews with score summary and filter chips](screenshots/04-reviews.jpg) | ![Game summary below the Play button](screenshots/01-game-detail-summary.jpg) |
+| *Reviews — all-time / recent / localized scores, filter chips, selectable cards.* | *The store summary sits below Play, never covering it.* |
 
 ## How it works
 
