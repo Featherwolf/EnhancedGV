@@ -1,0 +1,17 @@
+{
+  "name": "EnhancedGV",
+  "author": "Featherwolf",
+  "version": "0.14.0",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": [
+      "library",
+      "store",
+      "media",
+      "reviews"
+    ],
+    "description": "Enhanced Game View \u2014 brings the Steam store page onto your library game-detail page: trailers, screenshots, description, features, reviews, Steam Deck compatibility and update history, below the Play button.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}

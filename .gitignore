@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.pkg/
+dist_pkg/
+*.zip
+*.log
+.DS_Store
+.rollup.cache/
+tsconfig.tsbuildinfo
+__pycache__/
+*.pyc

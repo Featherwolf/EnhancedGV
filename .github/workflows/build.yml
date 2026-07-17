@@ -1,0 +1,72 @@
+name: Build EnhancedGV
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # needed to create releases on tag pushes
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build frontend bundle
+        run: npm run build
+
+      - name: Package plugin
+        run: |
+          PLUGIN=EnhancedGV
+          rm -rf "dist_pkg/$PLUGIN"
+          mkdir -p "dist_pkg/$PLUGIN"
+          cp -r dist "dist_pkg/$PLUGIN/dist"
+          cp main.py plugin.json package.json decky.pyi LICENSE README.md "dist_pkg/$PLUGIN/"
+          cd dist_pkg
+          zip -r "../$PLUGIN.zip" "$PLUGIN"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: EnhancedGV-plugin
+          path: EnhancedGV.zip
+          if-no-files-found: error
+
+      - name: Attach to release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Release notes = the CHANGELOG section for this tag, if present.
+          python3 - <<'EOF'
+          import os, re
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          notes = f"Automated build for v{tag}. Install via Decky → Developer → Install Plugin from ZIP, or update from within the plugin's Updates section."
+          try:
+              text = open("CHANGELOG.md", encoding="utf-8").read()
+              m = re.search(rf"^## v{re.escape(tag)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+              if m and m.group(1).strip():
+                  notes = m.group(1).strip() + "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP, or update from within the plugin's Updates section."
+          except OSError:
+              pass
+          open("release_notes.md", "w", encoding="utf-8").write(notes)
+          EOF
+          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip \
+            --title "EnhancedGV ${GITHUB_REF_NAME}" \
+            --notes-file release_notes.md \
+            || gh release upload "${GITHUB_REF_NAME}" EnhancedGV.zip --clobber

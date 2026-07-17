@@ -1,0 +1,7 @@
+{
+  "python.analysis.extraPaths": [
+    "./decky-loader/plugin/imports"
+  ],
+  "python.analysis.typeCheckingMode": "basic",
+  "typescript.tsdk": "node_modules/typescript/lib"
+}
