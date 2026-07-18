@@ -29,6 +29,9 @@ import decky
 CACHE_DIR = decky.DECKY_PLUGIN_RUNTIME_DIR
 SETTINGS_DIR = decky.DECKY_PLUGIN_SETTINGS_DIR
 SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
+# Per-game store-appid matches (device-local). Lives in SETTINGS_DIR (NOT the
+# cache dir) so it survives updates and is never wiped by _purge_stale_cache.
+MATCHES_FILE = os.path.join(SETTINGS_DIR, "matches.json")
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
@@ -161,6 +164,64 @@ def _write_cache(kind: str, key: str, data, negative: bool = False) -> None:
         os.replace(tmp, path)  # atomic
     except Exception as exc:  # caching is best-effort
         decky.logger.warning(f"cache write failed ({kind}/{key}): {exc}")
+
+
+# --------------------------------------------------------------------------- #
+# Non-Steam matching: per-game store-appid records + title search
+# --------------------------------------------------------------------------- #
+def _read_matches() -> dict:
+    try:
+        with open(MATCHES_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_matches(d: dict) -> None:
+    try:
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
+        tmp = MATCHES_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(d, fh)
+        os.replace(tmp, MATCHES_FILE)  # atomic
+    except Exception as exc:
+        decky.logger.warning(f"matches write failed: {exc}")
+
+
+def _year_from(release_date: str) -> str:
+    m = re.search(r"\b(\d{4})\b", str(release_date or ""))
+    return m.group(1) if m else ""
+
+
+def _norm_title(s) -> str:
+    s = re.sub(r"[™®©]", "", str(s or "")).lower()  # ™ ® ©
+    return re.sub(r"[^a-z0-9]+", " ", s).strip()
+
+
+def _best_match(title: str, items: list):
+    """Pick the store search result for a title. Exact normalized-title match
+    wins; otherwise the top result (storesearch is already relevance-ranked)."""
+    if not items:
+        return None
+    nt = _norm_title(title)
+    if nt:
+        for it in items:
+            if _norm_title(it.get("name")) == nt:
+                return it
+    return items[0]
+
+
+def _parse_appid(s):
+    """Accept a numeric appid OR a Steam store URL (…/app/<id>/…)."""
+    s = str(s or "").strip()
+    m = re.search(r"/app/(\d+)", s)
+    if m:
+        return int(m.group(1))
+    if s.isdigit():
+        return int(s)
+    m = re.search(r"\b(\d{3,})\b", s)  # bare number embedded in other text
+    return int(m.group(1)) if m else None
 
 
 # --------------------------------------------------------------------------- #
@@ -1046,6 +1107,139 @@ class Plugin:
             "news": _coerce(news),
             "deck": _coerce(deck),
         }
+
+    # --- non-Steam matching ------------------------------------------------ #
+    def _matches_lock(self):
+        # Serializes the read-modify-write of matches.json across
+        # resolve_game/set_match/clear_match. Lazily created on the running loop.
+        if not hasattr(self, "_mlock_obj"):
+            self._mlock_obj = asyncio.Lock()
+        return self._mlock_obj
+
+    async def _search_store(self, term: str, lang: str, cc: str):
+        url = "https://store.steampowered.com/api/storesearch/?" + urllib.parse.urlencode(
+            {"term": term, "l": lang, "cc": cc}
+        )
+
+        def norm(raw):
+            out = []
+            for it in ((raw or {}).get("items") or []):
+                aid = it.get("id")
+                typ = (it.get("type") or "app").lower()
+                # Only real apps have appids usable with appdetails (skip
+                # bundles/packages whose id is a different namespace).
+                if isinstance(aid, int) and aid > 0 and typ in ("app", "game"):
+                    out.append({"appid": aid, "name": it.get("name", ""),
+                                "image": it.get("tiny_image", "")})
+            return {"ok": True, "items": out}
+
+        key = _norm_title(term) or "_"
+        return await self._fetch("storesearch", key, url, norm)
+
+    async def _name_year(self, appid: int, lang: str, cc: str):
+        """Store name + release year for an appid, reusing the appdetails cache
+        (so a later get_all for the same id doesn't refetch)."""
+        d = await self.get_appdetails(int(appid), lang, cc)
+        if isinstance(d, dict) and d.get("ok"):
+            return {"ok": True, "appid": int(appid),
+                    "name": d.get("name", ""), "year": _year_from(d.get("release_date", ""))}
+        err = d.get("error") if isinstance(d, dict) else None
+        return {"ok": False, "appid": int(appid), "error": err or "no store data"}
+
+    async def resolve_game(self, game_appid, is_shortcut: bool = False,
+                           title: str = "", lang: str = "english", cc: str = "us"):
+        """Resolve a library game (Steam or non-Steam shortcut) to the Steam store
+        appid to fetch content for. Uses a saved match if present; otherwise a
+        Steam game maps to itself and a non-Steam game is searched by title
+        (best result auto-accepted). The resolved match is PERSISTED so it is
+        never re-identified — only the user changes it (set_match/clear_match)."""
+        try:
+            game_appid = int(game_appid)
+        except Exception:
+            return {"ok": False, "error": "invalid appid"}
+        matches = _read_matches()
+        rec = matches.get(str(game_appid))
+        if rec and rec.get("store_appid"):
+            return {"ok": True, "store_appid": int(rec["store_appid"]),
+                    "name": rec.get("name", ""), "year": rec.get("year", ""),
+                    "source": rec.get("source", "auto"), "matched": True,
+                    "from_cache": True}
+        if is_shortcut:
+            res = await self._search_store(title or "", lang, cc)
+            items = res.get("items") if isinstance(res, dict) and res.get("ok") else []
+            best = _best_match(title or "", items or [])
+            if not best:
+                return {"ok": True, "store_appid": None, "matched": False,
+                        "name": "", "year": "", "reason": "no store match for title"}
+            store_appid = int(best["appid"])
+        else:
+            store_appid = game_appid
+        ny = await self._name_year(store_appid, lang, cc)
+        if not ny.get("ok"):
+            # Don't persist a broken record. A Steam game still points at itself
+            # (its panel shows the normal "unavailable" path); a non-Steam guess
+            # that has no store page stays unmatched.
+            return {"ok": True,
+                    "store_appid": None if is_shortcut else store_appid,
+                    "matched": bool(not is_shortcut), "name": "", "year": "",
+                    "reason": ny.get("error", "no store data")}
+        # Persist atomically. Re-read UNDER THE LOCK (the snapshot from the top
+        # of this method is stale after the awaits above): a manual set_match —
+        # or another game's resolve — may have written meanwhile. Honor an
+        # existing record instead of overwriting it, so auto-match can NEVER
+        # clobber a user's manual choice or drop another game's entry.
+        async with self._matches_lock():
+            matches = _read_matches()
+            existing = matches.get(str(game_appid))
+            if existing and existing.get("store_appid"):
+                return {"ok": True, "store_appid": int(existing["store_appid"]),
+                        "name": existing.get("name", ""), "year": existing.get("year", ""),
+                        "source": existing.get("source", "auto"), "matched": True,
+                        "from_cache": True}
+            matches[str(game_appid)] = {
+                "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
+                "source": "auto", "ts": int(time.time())}
+            _write_matches(matches)
+        return {"ok": True, "store_appid": store_appid, "name": ny["name"],
+                "year": ny["year"], "source": "auto", "matched": True,
+                "from_cache": False}
+
+    async def lookup_store_app(self, id_or_url, lang: str = "english", cc: str = "us"):
+        """Validate a user-entered Steam app ID or store URL -> name + year."""
+        appid = _parse_appid(id_or_url)
+        if not appid:
+            return {"ok": False, "error": "Enter a numeric Steam app ID or a store URL."}
+        ny = await self._name_year(appid, lang, cc)
+        if not ny.get("ok"):
+            return {"ok": False, "appid": appid,
+                    "error": ny.get("error") or "No store data for that ID."}
+        return {"ok": True, "appid": appid, "name": ny["name"], "year": ny["year"]}
+
+    async def set_match(self, game_appid, store_appid, name: str = "",
+                        year: str = "", source: str = "manual"):
+        try:
+            game_appid = int(game_appid)
+            store_appid = int(store_appid)
+        except Exception:
+            return {"ok": False, "error": "invalid appid"}
+        async with self._matches_lock():
+            matches = _read_matches()
+            matches[str(game_appid)] = {
+                "store_appid": store_appid, "name": name or "", "year": year or "",
+                "source": source or "manual", "ts": int(time.time())}
+            _write_matches(matches)
+        return {"ok": True}
+
+    async def clear_match(self, game_appid):
+        try:
+            game_appid = int(game_appid)
+        except Exception:
+            return {"ok": False, "error": "invalid appid"}
+        async with self._matches_lock():
+            matches = _read_matches()
+            existed = matches.pop(str(game_appid), None) is not None
+            _write_matches(matches)
+        return {"ok": True, "existed": existed}
 
     async def clear_cache(self):
         removed = 0

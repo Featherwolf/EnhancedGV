@@ -4,6 +4,7 @@ import {
   PanelSectionRow,
   ToggleField,
   ButtonItem,
+  TextField,
   showModal,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
@@ -16,9 +17,16 @@ import {
   checkUpdate,
   testVideo,
   getBackendInfo,
+  resolveGame,
+  lookupStoreApp,
+  setMatch,
+  clearMatch,
 } from "../api";
-import type { VideoProbe, BackendInfo } from "../api";
+import type { VideoProbe, BackendInfo, ResolveResult } from "../api";
 import type { UpdateInfo } from "../types";
+import { getGameIdentity } from "../identity";
+import { onMatchChanged, emitMatchChanged } from "../matches";
+import { resolveLanguage, resolveCountry, languageDiag } from "../lang";
 import { primeSettings, clearFrontendCache, getFetchInfo } from "../hooks/useAppData";
 import {
   getDiag,
@@ -31,7 +39,6 @@ import {
 import type { DiagState } from "../diag";
 import { DEFAULT_EXPANDED } from "../types";
 import type { PluginSettings, SectionToggles, ExpandedToggles } from "../types";
-import { languageDiag } from "../lang";
 
 const DEFAULTS: PluginSettings = {
   sections: {
@@ -100,6 +107,104 @@ function describeFetch(): string {
     return `${f.note}${took}`;
   }
   return f.note;
+}
+
+// Per-game store matching. Shows the Steam App ID the panel is pulling content
+// for (always editable), plus the matched "Title (Year)" so the user can eyeball
+// that the right store page loaded. Editing the ID (a number or a pasted store
+// URL) sets a sticky manual match; Clear re-runs auto-detection. Works for Steam
+// games too — most people only need it for non-Steam apps, but it's there.
+function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; cc: string }) {
+  const [info, setInfo] = useState<ResolveResult | null>(null);
+  const [input, setInput] = useState("");
+  const [msg, setMsg] = useState("");
+  const [busy, setBusy] = useState(false);
+  const identity = getGameIdentity(appid);
+
+  useEffect(() => {
+    // Generation guard: a late-settling resolve for a previous appid (or an
+    // earlier load) must not overwrite the current game's info/input — otherwise
+    // the QAM could show, and Save could persist, the wrong game's store appid.
+    let alive = true;
+    let gen = 0;
+    const load = async () => {
+      const myGen = ++gen;
+      const id = getGameIdentity(appid);
+      const r = await resolveGame(appid, id.isShortcut, id.title, lang, cc).catch(() => null);
+      if (!alive || myGen !== gen) return;
+      setInfo(r);
+      setInput(r?.store_appid ? String(r.store_appid) : "");
+    };
+    setMsg("");
+    load();
+    const off = onMatchChanged((c) => {
+      if (c === appid) load();
+    });
+    return () => {
+      alive = false;
+      off();
+    };
+  }, [appid, lang, cc]);
+
+  const save = async () => {
+    setBusy(true);
+    setMsg("Looking up…");
+    const look = await lookupStoreApp(input, lang, cc).catch(() => null);
+    if (!look?.ok || !look.appid) {
+      setMsg(look?.error ?? "Lookup failed");
+      setBusy(false);
+      return;
+    }
+    await setMatch(appid, look.appid, look.name ?? "", look.year ?? "", "manual").catch(() => {});
+    emitMatchChanged(appid); // re-resolve the open game page + reload this section
+    setMsg(`Set to ${look.name} (${look.year || "—"})`);
+    setBusy(false);
+  };
+
+  const clearRedetect = async () => {
+    setBusy(true);
+    setMsg("Re-detecting…");
+    await clearMatch(appid).catch(() => {});
+    emitMatchChanged(appid);
+    setBusy(false);
+  };
+
+  const matched = info?.store_appid
+    ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? " · manual" : ""}`
+    : "not identified";
+
+  return (
+    <PanelSection title="Store data source">
+      <PanelSectionRow>
+        <DiagRow label="Game" value={identity.title || String(appid)} />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <TextField
+          label="Steam App ID or store URL"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <DiagRow label="Matched" value={matched} />
+      </PanelSectionRow>
+      {msg && (
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div>
+        </PanelSectionRow>
+      )}
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy || !input.trim()} onClick={save}>
+          Save ID
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={clearRedetect}>
+          Clear / re-detect
+        </ButtonItem>
+      </PanelSectionRow>
+    </PanelSection>
+  );
 }
 
 export function QuickAccessSettings() {
@@ -235,6 +340,17 @@ export function QuickAccessSettings() {
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+
+      {modalAppid != null && (
+        // key per game: a game change remounts a fresh section so a stale
+        // in-flight load from the previous game can't land on the new one.
+        <StoreSourceSection
+          key={modalAppid}
+          appid={modalAppid}
+          lang={resolveLanguage(settings.language)}
+          cc={resolveCountry(settings.country)}
+        />
+      )}
 
       <PanelSection title="Sections shown on the game page">
         {SECTION_LABELS.map(({ key, label }) => (

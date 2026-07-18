@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.16.0
+
+- **Non-Steam games now get store content too.** When you open a non-Steam game
+  (an emulator shortcut, an Epic/GOG title added to Steam, etc.), the plugin
+  searches the Steam store by the game's title and auto-matches the best result,
+  behind the scenes. The match is remembered so it's only looked up once.
+- **Every game's Steam App ID is shown and editable** in Quick Access →
+  EnhancedGV → **Store data source**, alongside the matched **Title (Year)** so
+  you can confirm the right store page loaded. If a match is wrong, type the
+  correct App ID (or paste a `store.steampowered.com/app/…` URL) and save — your
+  choice is sticky and never overwritten automatically. **Clear / re-detect**
+  wipes it and re-runs auto-matching.
+- Matches are stored locally (`matches.json`) and survive updates. A non-Steam
+  game with no Steam counterpart stays cleanly "not identified" instead of
+  erroring.
+
 ## v0.15.0
 
 - **Follows your Steam language.** Store content (description, reviews, news) now

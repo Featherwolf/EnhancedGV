@@ -25,7 +25,7 @@ const FAILURE_TTL_MS = 60_000;
 // a local file) uses a much shorter cap — if IT times out the backend is dead.
 const CALL_TIMEOUT_MS = 25_000;
 const SETTINGS_TIMEOUT_MS = 6_000;
-function withTimeout<T>(p: Promise<T>, what: string, ms = CALL_TIMEOUT_MS): Promise<T> {
+export function withTimeout<T>(p: Promise<T>, what: string, ms = CALL_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
     p.finally(() => clearTimeout(timer)),
@@ -206,19 +206,36 @@ export function getFetchInfo(): { startedAt: number; settledAt: number; note: st
   return fetchInfo;
 }
 
-const hasFreshResult = (appid: number): boolean => {
+const hasFreshResult = (appid: number | null): boolean => {
+  if (!appid) return false;
   if (dataCache.has(appid)) return true;
   const f = failureCache.get(appid);
   return !!f && Date.now() - f.at < FAILURE_TTL_MS;
 };
 
-export function useAppData(appid: number): UseAppData {
-  const [data, setData] = useState<AppData | null>(dataCache.get(appid) ?? null);
+// appid is null while the game is still being resolved to a store appid (or a
+// non-Steam game has no match) — no fetch happens in that case.
+export function useAppData(appid: number | null): UseAppData {
+  const [data, setData] = useState<AppData | null>(
+    appid ? dataCache.get(appid) ?? null : null
+  );
   const [settings, setSettings] = useState<PluginSettings>(
     settingsCache ?? DEFAULT_SETTINGS
   );
   const [loading, setLoading] = useState<boolean>(!hasFreshResult(appid));
   const [error, setError] = useState<string | null>(null);
+
+  // Reconcile state DURING render when the appid changes (e.g. a QAM match edit
+  // flips the resolved store appid X->Y): the async reset in the effect below
+  // runs only after paint, which would flash the previous appid's cached content
+  // for one frame. Adjusting state here re-renders synchronously before paint.
+  const [prevAppid, setPrevAppid] = useState<number | null>(appid);
+  if (appid !== prevAppid) {
+    setPrevAppid(appid);
+    setData(appid ? dataCache.get(appid) ?? null : null);
+    setError(null);
+    setLoading(!hasFreshResult(appid));
+  }
 
   // Live settings updates (e.g. section toggled in Quick Access).
   useEffect(() => {
@@ -233,10 +250,12 @@ export function useAppData(appid: number): UseAppData {
     let cancelled = false;
 
     // Reset from cache on appid change (covers a reused panel instance).
-    setData(dataCache.get(appid) ?? null);
+    setData(appid ? dataCache.get(appid) ?? null : null);
     setError(null);
 
-    // Non-positive / clearly non-Steam ids won't have store data; skip round-trip.
+    // Null (still resolving) / non-positive ids won't have store data; skip the
+    // round-trip. StorePanel gates on the resolver status, so this "no appid"
+    // state is never shown as an error to the user.
     if (!appid || appid <= 0) {
       setLoading(false);
       setError("no appid");

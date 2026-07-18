@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useRef } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
+import { useResolvedGame } from "../hooks/useResolvedGame";
 import {
   setDiag,
   markStoreRender,
@@ -78,7 +79,12 @@ function StatusBanner({ tone, text }: { tone: "info" | "warn"; text: string }) {
 
 export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   markStoreRender(); // synchronous render probe (see diag.ts)
-  const { data, settings, loading, error } = useAppData(appid);
+  // Resolve the (possibly non-Steam) game to the store appid to fetch. For a
+  // Steam game this is the appid itself; for a non-Steam shortcut it's the
+  // matched store appid (or null while resolving / if unidentified).
+  const resolved = useResolvedGame(appid);
+  const fetchAppid = resolved.storeAppid;
+  const { data, settings, loading, error } = useAppData(fetchAppid);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Mount health: lets the patcher detect "injection succeeded once but the
@@ -112,6 +118,14 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // Report the data/render outcome to the Quick Access diagnostics readout so a
   // backend/network failure is visible on-device without reading logs.
   useEffect(() => {
+    if (resolved.status === "resolving") {
+      setDiag({ panelState: "loading", panelError: null });
+      return;
+    }
+    if (resolved.status === "unmatched") {
+      setDiag({ panelState: "hidden", panelError: resolved.reason ?? "not identified" });
+      return;
+    }
     const hidden = !!(error || !data || !data.appdetails?.ok);
     setDiag({
       panelState: loading ? "loading" : hidden ? "hidden" : "rendered",
@@ -129,7 +143,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
           }
         : null,
     });
-  }, [appid, loading, error, data]);
+  }, [appid, resolved.status, resolved.reason, loading, error, data]);
 
   // Same visible card chrome for the loading / unavailable states as for the
   // loaded panel, so the panel is unmistakably present the moment it mounts.
@@ -140,14 +154,30 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     </div>
   );
 
-  if (loading) {
+  if (resolved.status === "resolving" || loading) {
     // Animated store-shaped skeleton (user preference: fill the space with a
     // placeholder rather than popping in). It approximates the loaded layout so
-    // content replaces it in place.
+    // content replaces it in place. Also covers the brief "matching a non-Steam
+    // game by title" window.
     return (
       <div ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
         <SkeletonPanel sections={settings.sections} />
+        {fallback}
+      </div>
+    );
+  }
+
+  if (resolved.status === "unmatched") {
+    // A non-Steam game with no Steam store match (auto-search missed, or it's not
+    // on Steam). Managed entirely from the QAM — no in-page matcher.
+    return (
+      <div ref={rootRef} style={CONTAINER_STYLE}>
+        {chromeHeader}
+        <StatusBanner
+          tone="info"
+          text="This game isn’t matched to a Steam store page yet. Set its Steam App ID from Quick Access → EnhancedGV → Store data source to pull content."
+        />
         {fallback}
       </div>
     );
@@ -211,7 +241,13 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
         ? data.reviews.summary.total_reviews.toLocaleString()
         : undefined,
       defaultOpen: expanded.reviews,
-      node: <ReviewsSection reviews={data.reviews} appid={appid} settings={settings} />,
+      node: (
+        <ReviewsSection
+          reviews={data.reviews}
+          appid={fetchAppid ?? appid}
+          settings={settings}
+        />
+      ),
     });
   if (sec.news)
     sections.push({
