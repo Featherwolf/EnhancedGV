@@ -431,13 +431,22 @@ def _parse_attrs(s):
     return out
 
 
+def _esc_text(s: str) -> str:
+    """Escape a run of TEXT for safe re-insertion. Steam's HTML arrives with
+    pre-encoded entities (&amp; &#39; &quot; &lt;), and the regex tokenizer sees
+    them raw — so unescape first, THEN re-escape, or `&amp;` becomes
+    `&amp;amp;` and renders literally (this mirrors html.parser's
+    convert_charrefs). `<`/`>` are always re-escaped, so no markup slips through."""
+    return html.escape(html.unescape(s), quote=False)
+
+
 def _sanitize_html_regex(raw: str) -> str:
     out: list = []
     open_stack: list = []
     pos = 0
     for m in _TOKEN_RE.finditer(raw):
-        if m.start() > pos:  # text before this tag -> escaped
-            out.append(html.escape(raw[pos:m.start()], quote=False))
+        if m.start() > pos:  # text before this tag
+            out.append(_esc_text(raw[pos:m.start()]))
         pos = m.end()
         end_name, start_name = m.group(1), m.group(2)
         if end_name is not None:
@@ -459,7 +468,7 @@ def _sanitize_html_regex(raw: str) -> str:
                 open_stack.append(tag)
         # comments / cdata / doctype -> dropped entirely
     if pos < len(raw):
-        out.append(html.escape(raw[pos:], quote=False))
+        out.append(_esc_text(raw[pos:]))
     while open_stack:
         out.append(f"</{open_stack.pop()}>")
     return "".join(out).strip()
@@ -522,7 +531,7 @@ def _sanitize_html(raw) -> str:
         # Absolute last resort — should never hit; keep output safe as text.
         decky.logger.warning(f"regex sanitize failed, stripping to text: {exc}")
         SANITIZER_ENGINE = "striptext"
-        return html.escape(re.sub(r"<[^>]*>", "", raw)).strip()
+        return _esc_text(re.sub(r"<[^>]*>", "", raw)).strip()
 
 
 def _expand_clan_images(text: str) -> str:

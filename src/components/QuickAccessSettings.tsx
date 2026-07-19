@@ -225,13 +225,24 @@ export function QuickAccessSettings() {
   const [videoTest, setVideoTest] = useState<string>("");
 
   const runVideoTest = async () => {
-    const appid = getCurrentAppid();
-    if (appid == null) {
+    const gameAppid = getCurrentAppid();
+    if (gameAppid == null) {
       setVideoTest("open a game page first");
       return;
     }
     setVideoTest("testing…");
     try {
+      // For a non-Steam game the page appid is the shortcut id, which has no
+      // store data — probe the MATCHED store appid instead (idempotent resolve).
+      const id = getGameIdentity(gameAppid);
+      const r = await resolveGame(
+        gameAppid,
+        id.isShortcut,
+        id.title,
+        resolveLanguage(settings.language),
+        resolveCountry(settings.country)
+      ).catch(() => null);
+      const appid = r?.store_appid ?? gameAppid;
       const res = await testVideo(appid);
       if (!res.ok || !res.results) {
         setVideoTest(`failed: ${res.error ?? "?"}`);

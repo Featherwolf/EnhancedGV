@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.16.1
+
+- **Fixes special characters** (ampersands, quotes, apostrophes) showing as raw
+  codes like `&amp;` / `&#39;` / `&quot;` in About / Features / Update history.
+  The HTML sanitizer that runs on the Deck was double-escaping entities that
+  Steam had already encoded; it now decodes them first, so `Rock &amp; Roll`
+  reads as *Rock & Roll* everywhere. (Angle brackets stay neutralized — no
+  security change.)
+- **Trailer connectivity test now works for matched non-Steam games.** It was
+  probing the non-Steam shortcut's id (no store data); it now uses the matched
+  Steam store appid, so it reports the real trailers.
+
 ## v0.16.0
 
 - **Non-Steam games now get store content too.** When you open a non-Steam game
