@@ -38,9 +38,8 @@
   The language and store region are detected from Steam's `LocalizationManager`
   (falling back to the client locale) and mapped to the store API using Steam's
   own language table, so e.g. a French client gets French descriptions and a
-  Brazilian client gets Brazilian Portuguese. QAM → Status shows a **Store
-  language** row so the detected value is visible. Set `language`/`country` in
-  settings to a specific value to override the automatic detection.
+  Brazilian client gets Brazilian Portuguese. Detection is fully automatic; QAM →
+  Status shows a **Store language** row so the detected value is visible.
 
 ## v0.14.0
 

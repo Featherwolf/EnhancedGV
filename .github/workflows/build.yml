@@ -56,12 +56,12 @@ jobs:
           python3 - <<'EOF'
           import os, re
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
-          notes = f"Automated build for v{tag}. Install via Decky → Developer → Install Plugin from ZIP, or update from within the plugin's Updates section."
+          notes = f"Automated build for v{tag}. Install via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
           try:
               text = open("CHANGELOG.md", encoding="utf-8").read()
               m = re.search(rf"^## v{re.escape(tag)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
               if m and m.group(1).strip():
-                  notes = m.group(1).strip() + "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP, or update from within the plugin's Updates section."
+                  notes = m.group(1).strip() + "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
           except OSError:
               pass
           open("release_notes.md", "w", encoding="utf-8").write(notes)

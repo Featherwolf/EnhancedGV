@@ -89,7 +89,7 @@ so it contains at least `plugin.json`, `main.py`, `dist/index.js`, and
 `package.json`. Then restart Steam / reload Decky. Example from a PC:
 
 ```bash
-scp -r "steam-store-panel" deck@<deck-ip>:"/home/deck/homebrew/plugins/EnhancedGV"
+scp -r "EnhancedGV" deck@<deck-ip>:"/home/deck/homebrew/plugins/EnhancedGV"
 ```
 
 ### Option B — build your own ZIP
@@ -187,8 +187,8 @@ block:
 
 - **Backend** — `ok`, or `NOT RESPONDING` (Decky didn't start the Python backend;
   a full Steam restart usually fixes it).
-- **Integration** — which tier is active (`courier`, `dom-inject`, or
-  `decky-global`).
+- **Integration** — which tier is active: `courier` (the normal in-page path) or
+  the `dom-inject` fallback.
 - **Nav bridge** — whether gamepad focus is bridged to the panel.
 - **Fetch** / **Data (details/reviews/news/deck)** — whether the backend calls
   succeeded.
@@ -201,7 +201,7 @@ events are also mirrored to the Decky console log as `[EnhancedGV]` lines.
 ## Project layout
 
 ```
-steam-store-panel/
+EnhancedGV/
 ├── plugin.json              # Decky manifest
 ├── package.json             # deps + build scripts
 ├── rollup.config.js         # re-exports @decky/rollup

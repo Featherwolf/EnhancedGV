@@ -5,7 +5,7 @@ import { patchLibraryApp, unpatchLibraryApp } from "./patchLibraryApp";
 import { QuickAccessSettings } from "./components/QuickAccessSettings";
 
 export default definePlugin(() => {
-  console.log("[SteamStorePanel] initializing");
+  console.log("[EnhancedGV] initializing");
 
   // Register the library app-page patch. This is the plugin's core function.
   const routePatch = patchLibraryApp();
@@ -17,7 +17,7 @@ export default definePlugin(() => {
     content: <QuickAccessSettings />,
     icon: <FaStore />,
     onDismount() {
-      console.log("[SteamStorePanel] unloading");
+      console.log("[EnhancedGV] unloading");
       unpatchLibraryApp(routePatch);
     },
   };
