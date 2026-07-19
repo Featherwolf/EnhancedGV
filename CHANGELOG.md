@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.17.0-beta.1
+
+> **Beta / pre-release** — test build for the plugin-coexistence fix. Not a stable
+> release; install only for testing (especially alongside TabMaster / PlayTime).
+
+- **Plays nicely with other plugins.** EnhancedGV no longer patches Steam's app-page
+  render function or touches its render output. Earlier builds turned the page's
+  child element into an array, which crashed **SDH-PlayTime** (it reads that same
+  render output) and destabilised **TabMaster** with extra re-render pressure. The
+  panel is now injected entirely from EnhancedGV's own component in Decky's tree:
+  it finds the visible app page in the DOM, reads that page's app ID from its React
+  fiber, and portals the panel in — re-providing the page's gamepad-focus node so
+  it stays controller-navigable. No shared Steam React internals are patched.
+- **Beta channel.** A new **Beta channel (test builds)** toggle in QAM → Updates
+  opts you into pre-release builds. Off by default, and pre-releases are excluded
+  from the normal (stable) update check, so a broken beta can't reach stable users.
+- **Update panel** now clearly shows the new version, a download/install call to
+  action, and an **Open the release page** button.
+- **View patch notes (this version)** button in QAM → Updates opens the current
+  version's changelog in a popup (CHANGELOG is now bundled with the plugin).
+
 ## v0.16.1
 
 - **Fixes special characters** (ampersands, quotes, apostrophes) showing as raw

@@ -107,7 +107,17 @@ export interface UpdateInfo {
   latest?: string;
   notes?: string;
   has_update?: boolean;
+  prerelease?: boolean;
+  channel?: string; // "stable" | "beta"
+  url?: string; // release page
   zip_url?: string;
+}
+
+export interface PatchNotes {
+  ok: boolean;
+  version: string;
+  notes?: string;
+  error?: string;
 }
 
 export interface NewsItem {
@@ -171,6 +181,7 @@ export interface PluginSettings {
   expanded?: ExpandedToggles;
   language: string;
   country: string;
+  beta?: boolean; // opt in to pre-release update checks
 }
 
 export const DEFAULT_EXPANDED: ExpandedToggles = {

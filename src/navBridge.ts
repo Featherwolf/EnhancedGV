@@ -73,6 +73,31 @@ export function captureNavFromElement(el: HTMLElement | null): NavCapture | null
   }
 }
 
+// Read a game page's appid from a DOM element's React fiber (walk up for the
+// nearest ancestor carrying `memoizedProps.overview`). Used by the isolated
+// portal tier to resolve the VISIBLE app page's appid WITHOUT patching Steam's
+// render function (which would collide with co-installed plugins).
+export function appidFromElement(el: HTMLElement | null): number | null {
+  try {
+    if (!el) return null;
+    const fiberKey = Object.keys(el).find((k) => k.startsWith("__reactFiber$"));
+    if (!fiberKey) return null;
+    let fiber: AnyObj = (el as AnyObj)[fiberKey];
+    for (let i = 0; fiber && i < 40; i++) {
+      const mp = fiber.memoizedProps;
+      const ov = mp && typeof mp === "object" ? mp.overview : null;
+      if (ov) {
+        const n = Number(ov.appid ?? ov.appId ?? ov.m_gameid);
+        if (Number.isFinite(n)) return n;
+      }
+      fiber = fiber.return;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // A capture goes stale when its node unmounted or its element left the DOM
 // (page rebuild). Stale parents are tolerated by Valve's RemoveChild
 // (4690.js:501-509); we recapture opportunistically.

@@ -6,6 +6,7 @@ import {
   ButtonItem,
   TextField,
   showModal,
+  Navigation,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
 import { getCurrentAppid } from "../patchLibraryApp";
@@ -26,6 +27,7 @@ import {
 import type { VideoProbe, BackendInfo, ResolveResult } from "../api";
 import type { UpdateInfo } from "../types";
 import { getGameIdentity } from "../identity";
+import { PatchNotesModal } from "./PatchNotesModal";
 import { onMatchChanged, emitMatchChanged } from "../matches";
 import { resolveLanguage, resolveCountry, languageDiag } from "../lang";
 import { primeSettings, clearFrontendCache, getFetchInfo } from "../hooks/useAppData";
@@ -280,7 +282,7 @@ export function QuickAccessSettings() {
   };
 
   const runUpdateCheck = async () => {
-    const info = await checkUpdate().catch(
+    const info = await checkUpdate(!!settings.beta).catch(
       (e) => ({ ok: false, error: String(e), current: "?" }) as UpdateInfo
     );
     setUpdate(info);
@@ -430,8 +432,10 @@ export function QuickAccessSettings() {
             <DiagRow label="Installed version" value={update?.current ?? "…"} />
             {update?.ok && (
               <DiagRow
-                label="Latest release"
-                value={`${update.latest}${update.has_update ? " (update available!)" : " (up to date)"}`}
+                label={update.channel === "beta" ? "Latest (beta channel)" : "Latest release"}
+                value={`${update.latest ?? "?"}${update.prerelease ? " (beta)" : ""}${
+                  update.has_update ? " — update available!" : " — up to date"
+                }`}
               />
             )}
             {update && !update.ok && (
@@ -440,33 +444,67 @@ export function QuickAccessSettings() {
           </div>
         </PanelSectionRow>
         <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => showModal(<PatchNotesModal version={update?.current} />)}
+          >
+            View patch notes (this version)
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" onClick={runUpdateCheck}>
             Check for updates
           </ButtonItem>
         </PanelSectionRow>
         {update?.ok && update.has_update && (
-          <PanelSectionRow>
-            <div style={{ fontSize: 11.5, opacity: 0.8 }}>
-              Update available — download EnhancedGV.zip from the GitHub release
-              and install via Decky → Developer → Install Plugin from ZIP.
-            </div>
-          </PanelSectionRow>
+          <>
+            <PanelSectionRow>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: "#66c0f4", padding: "2px 0" }}>
+                Update available: v{update.latest}
+                {update.prerelease ? " (beta)" : ""}
+              </div>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <div style={{ fontSize: 11.5, opacity: 0.85 }}>
+                Download <b>EnhancedGV.zip</b> from the GitHub release, then in Decky
+                choose <b>Developer → Install Plugin from ZIP</b> and restart Steam.
+              </div>
+            </PanelSectionRow>
+            {update.url && (
+              <PanelSectionRow>
+                <ButtonItem
+                  layout="below"
+                  onClick={() => update.url && Navigation.NavigateToExternalWeb(update.url)}
+                >
+                  Open the release page
+                </ButtonItem>
+              </PanelSectionRow>
+            )}
+            {update.notes && (
+              <PanelSectionRow>
+                <div
+                  style={{
+                    fontSize: 11.5,
+                    opacity: 0.75,
+                    whiteSpace: "pre-wrap",
+                    maxHeight: 160,
+                    overflowY: "auto",
+                  }}
+                >
+                  {update.notes}
+                </div>
+              </PanelSectionRow>
+            )}
+          </>
         )}
-        {update?.ok && update.notes && (
-          <PanelSectionRow>
-            <div
-              style={{
-                fontSize: 11.5,
-                opacity: 0.75,
-                whiteSpace: "pre-wrap",
-                maxHeight: 180,
-                overflowY: "auto",
-              }}
-            >
-              {update.notes}
-            </div>
-          </PanelSectionRow>
-        )}
+        <PanelSectionRow>
+          <ToggleField
+            label="Beta channel (test builds)"
+            description="Include pre-release test builds in the update check. Off by default."
+            checked={!!settings.beta}
+            onChange={(v: boolean) => persist({ ...settings, beta: v })}
+          />
+        </PanelSectionRow>
       </PanelSection>
 
       <PanelSection title="Status">

@@ -1332,6 +1332,9 @@ class Plugin:
             # An explicit language name here would be a manual override.
             "language": "auto",
             "country": "auto",
+            # Opt in to pre-release "beta" builds in the update check. Default off
+            # so risky test builds never reach stable users.
+            "beta": False,
         }
         _sub = ("sections", "expanded")  # merged as sub-dicts, not replaced
         try:
@@ -1426,18 +1429,27 @@ class Plugin:
         except Exception:
             return (0,)
 
-    async def check_update(self):
-        """Latest GitHub release vs the installed version (+ release notes)."""
+    async def check_update(self, beta: bool = False):
+        """Newest GitHub release vs the installed version (+ notes + download URL).
+
+        Stable channel uses the `releases/latest` endpoint, which EXCLUDES
+        pre-releases — so a `-beta` build is invisible to stable users. The beta
+        channel looks at all releases and takes the most-recently-published one
+        (which may be a pre-release), so opting in is the ONLY way to see betas.
+        """
         current = self._installed_version()
         try:
             loop = asyncio.get_running_loop()
-            raw = await loop.run_in_executor(
-                None,
-                _http_get_json,
-                "https://api.github.com/repos/Featherwolf/EnhancedGV/releases/latest",
-            )
+            if beta:
+                rels = await loop.run_in_executor(
+                    None, _http_get_json,
+                    "https://api.github.com/repos/Featherwolf/EnhancedGV/releases?per_page=10")
+                raw = rels[0] if isinstance(rels, list) and rels else {}
+            else:
+                raw = await loop.run_in_executor(
+                    None, _http_get_json,
+                    "https://api.github.com/repos/Featherwolf/EnhancedGV/releases/latest")
             latest = str(raw.get("tag_name", "")).lstrip("v")
-            notes = raw.get("body") or ""
             zip_url = ""
             for a in raw.get("assets") or []:
                 if a.get("name") == "EnhancedGV.zip":
@@ -1447,11 +1459,30 @@ class Plugin:
                 "ok": True,
                 "current": current,
                 "latest": latest,
-                "notes": notes,
-                "has_update": self._ver_tuple(latest) > self._ver_tuple(current),
+                "notes": raw.get("body") or "",
+                "has_update": bool(latest) and self._ver_tuple(latest) > self._ver_tuple(current),
+                "prerelease": bool(raw.get("prerelease")),
+                "channel": "beta" if beta else "stable",
+                "url": raw.get("html_url", ""),
                 "zip_url": zip_url,
             }
         except Exception as exc:
             decky.logger.error(f"check_update failed: {exc}")
-            return {"ok": False, "error": str(exc), "current": current}
+            return {"ok": False, "error": str(exc), "current": current,
+                    "channel": "beta" if beta else "stable"}
+
+    async def get_patch_notes(self, version: str = ""):
+        """Return the CHANGELOG section for a version (default: the installed one).
+        CHANGELOG.md is bundled in the plugin, so this works offline."""
+        version = (version or self._installed_version()).lstrip("v")
+        try:
+            with open(os.path.join(decky.DECKY_PLUGIN_DIR, "CHANGELOG.md"),
+                      "r", encoding="utf-8") as fh:
+                text = fh.read()
+        except Exception as exc:
+            return {"ok": False, "version": version, "error": str(exc)}
+        m = re.search(rf"^## v{re.escape(version)}\s*?\n(.*?)(?=^## |\Z)",
+                      text, re.S | re.M)
+        return {"ok": True, "version": version,
+                "notes": m.group(1).strip() if m else ""}
 

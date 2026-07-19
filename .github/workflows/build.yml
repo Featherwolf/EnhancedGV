@@ -36,7 +36,7 @@ jobs:
           rm -rf "dist_pkg/$PLUGIN"
           mkdir -p "dist_pkg/$PLUGIN"
           cp -r dist "dist_pkg/$PLUGIN/dist"
-          cp main.py plugin.json package.json decky.pyi LICENSE README.md "dist_pkg/$PLUGIN/"
+          cp main.py plugin.json package.json decky.pyi LICENSE README.md CHANGELOG.md "dist_pkg/$PLUGIN/"
           cd dist_pkg
           zip -r "../$PLUGIN.zip" "$PLUGIN"
 
@@ -66,7 +66,11 @@ jobs:
               pass
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           EOF
-          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip \
+          # Any tag with a hyphen (e.g. v0.17.0-beta.1) is a PRE-RELEASE, so it
+          # is not "latest" and the stable update check never surfaces it.
+          PRERELEASE=""
+          case "${GITHUB_REF_NAME}" in *-*) PRERELEASE="--prerelease";; esac
+          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip $PRERELEASE \
             --title "EnhancedGV ${GITHUB_REF_NAME}" \
             --notes-file release_notes.md \
             || gh release upload "${GITHUB_REF_NAME}" EnhancedGV.zip --clobber

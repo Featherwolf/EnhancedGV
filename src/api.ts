@@ -1,5 +1,5 @@
 import { callable } from "@decky/api";
-import type { AppData, PluginSettings, Reviews, UpdateInfo } from "./types";
+import type { AppData, PatchNotes, PluginSettings, Reviews, UpdateInfo } from "./types";
 
 // Each string MUST match an `async def` name on the Python `class Plugin`.
 export const getAll = callable<[appid: number, lang: string, cc: string], AppData>(
@@ -21,7 +21,9 @@ export const getReviewsList = callable<
   Reviews
 >("get_reviews_list");
 
-export const checkUpdate = callable<[], UpdateInfo>("check_update");
+export const checkUpdate = callable<[beta: boolean], UpdateInfo>("check_update");
+
+export const getPatchNotes = callable<[version: string], PatchNotes>("get_patch_notes");
 
 // --- non-Steam matching ---------------------------------------------------
 export interface ResolveResult {
