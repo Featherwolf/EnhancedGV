@@ -1,9 +1,6 @@
 # Changelog
 
-## v0.17.0-beta.1
-
-> **Beta / pre-release** — test build for the plugin-coexistence fix. Not a stable
-> release; install only for testing (especially alongside TabMaster / PlayTime).
+## v0.17.0
 
 - **Plays nicely with other plugins.** EnhancedGV no longer patches Steam's app-page
   render function or touches its render output. Earlier builds turned the page's
@@ -13,6 +10,12 @@
   it finds the visible app page in the DOM, reads that page's app ID from its React
   fiber, and portals the panel in — re-providing the page's gamepad-focus node so
   it stays controller-navigable. No shared Steam React internals are patched.
+- **Sharper scaling across displays.** Trailers, screenshots, thumbnails and
+  description images now size relative to the screen (Steam Deck 800p, 1080p
+  handhelds, 4K TV) instead of a fixed pixel size tuned for a single display.
+- **The "What's this game about?" summary is now selectable.** It's a D-pad focus
+  stop, so it scrolls into view and can be read on a gamepad — previously the
+  cursor skipped over it between the media and the sections.
 - **Beta channel.** A new **Beta channel (test builds)** toggle in QAM → Updates
   opts you into pre-release builds. Off by default, and pre-releases are excluded
   from the normal (stable) update check, so a broken beta can't reach stable users.

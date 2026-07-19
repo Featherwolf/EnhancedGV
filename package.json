@@ -1,6 +1,6 @@
 {
   "name": "enhancedgv",
-  "version": "0.17.0-beta.1",
+  "version": "0.17.0",
   "description": "Decky plugin that shows Steam store content (media, description, reviews, Deck compatibility, update history) on the library game page.",
   "type": "module",
   "scripts": {

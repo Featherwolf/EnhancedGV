@@ -7,7 +7,7 @@ interface Props {
 
 // Scoped styling so Steam's embedded <img>/<h2>/<ul> don't overflow the panel.
 const HTML_STYLE = `
-.ssp-desc img, .ssp-desc video { max-width: 100%; height: auto; border-radius: 4px; margin: 6px 0; }
+.ssp-desc img, .ssp-desc video { max-width: 100%; max-height: 60vh; height: auto; border-radius: 4px; margin: 6px 0; }
 .ssp-desc picture { display: block; }
 .ssp-desc h1, .ssp-desc h2 { font-size: 16px; margin: 10px 0 6px; }
 .ssp-desc ul, .ssp-desc ol { padding-left: 20px; margin: 6px 0; }

@@ -1,8 +1,9 @@
-import { useEffect, useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
 import { useResolvedGame } from "../hooks/useResolvedGame";
+import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN } from "../focus";
 import {
   setDiag,
   markStoreRender,
@@ -74,6 +75,48 @@ function StatusBanner({ tone, text }: { tone: "info" | "warn"; text: string }) {
     >
       {text}
     </div>
+  );
+}
+
+// Store-blue "what's this game about" card. Made a FOCUS STOP (onActivate +
+// CENTER_ON_FOCUS) so the D-pad lands on it and scrolls it into view — as a
+// plain div it was skipped between the hero and the sections and could never be
+// centered/read on a gamepad.
+function ShortDescCard({ text }: { text: string }) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <Focusable
+      {...CENTER_ON_FOCUS}
+      onActivate={() => {}}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={{
+        ...FOCUS_SCROLL_MARGIN,
+        margin: "2px 0 12px",
+        padding: "10px 14px",
+        borderLeft: "3px solid #66c0f4",
+        borderRadius: "0 6px 6px 0",
+        background: focused
+          ? "linear-gradient(90deg, rgba(102,192,244,0.22), rgba(102,192,244,0.05))"
+          : "linear-gradient(90deg, rgba(102,192,244,0.12), rgba(102,192,244,0.02))",
+        boxShadow: focused ? "inset 0 0 0 1px #66c0f4" : "inset 0 0 0 1px transparent",
+        outline: "none",
+      }}
+    >
+      <div
+        style={{
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: 1.4,
+          textTransform: "uppercase",
+          color: "#66c0f4",
+          marginBottom: 4,
+        }}
+      >
+        What's this game about?
+      </div>
+      <div style={{ fontSize: 14.5, lineHeight: 1.55 }}>{text}</div>
+    </Focusable>
   );
 }
 
@@ -273,30 +316,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // Store-blue accent card so the game summary reads as a deliberate feature,
   // not stray text (user request: stylish, "what's this game about" header).
   const shortDesc = d.short_description ? (
-    <div
-      style={{
-        margin: "2px 0 12px",
-        padding: "10px 14px",
-        borderLeft: "3px solid #66c0f4",
-        borderRadius: "0 6px 6px 0",
-        background:
-          "linear-gradient(90deg, rgba(102,192,244,0.12), rgba(102,192,244,0.02))",
-      }}
-    >
-      <div
-        style={{
-          fontSize: 11,
-          fontWeight: 700,
-          letterSpacing: 1.4,
-          textTransform: "uppercase",
-          color: "#66c0f4",
-          marginBottom: 4,
-        }}
-      >
-        What's this game about?
-      </div>
-      <div style={{ fontSize: 14.5, lineHeight: 1.55 }}>{d.short_description}</div>
-    </div>
+    <ShortDescCard text={d.short_description} />
   ) : null;
 
   const hasMedia = d.movies.length > 0 || d.screenshots.length > 0;

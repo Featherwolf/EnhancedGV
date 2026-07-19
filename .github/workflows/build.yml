@@ -52,25 +52,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Release notes = the CHANGELOG section for this tag, if present.
+          # Release notes = the CHANGELOG section for this tag; a beta tag like
+          # v0.17.0-beta falls back to its base version's section (## v0.17.0).
           python3 - <<'EOF'
           import os, re
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
-          notes = f"Automated build for v{tag}. Install via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
+          base = tag.split("-")[0]
+          foot = "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
+          notes = f"Automated build for v{tag}.{foot}"
           try:
               text = open("CHANGELOG.md", encoding="utf-8").read()
-              m = re.search(rf"^## v{re.escape(tag)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+              m = (re.search(rf"^## v{re.escape(tag)}\n(.*?)(?=^## |\Z)", text, re.S | re.M)
+                   or re.search(rf"^## v{re.escape(base)}\n(.*?)(?=^## |\Z)", text, re.S | re.M))
               if m and m.group(1).strip():
-                  notes = m.group(1).strip() + "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
+                  notes = m.group(1).strip() + foot
           except OSError:
               pass
           open("release_notes.md", "w", encoding="utf-8").write(notes)
           EOF
-          # Any tag with a hyphen (e.g. v0.17.0-beta.1) is a PRE-RELEASE, so it
-          # is not "latest" and the stable update check never surfaces it.
-          PRERELEASE=""
-          case "${GITHUB_REF_NAME}" in *-*) PRERELEASE="--prerelease";; esac
-          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip $PRERELEASE \
+          # A hyphenated tag (e.g. v0.17.0-beta) is a PRIVATE beta: publish it as a
+          # DRAFT release, which is visible only to repo collaborators and is
+          # excluded from the public releases API — so it can never reach anyone on
+          # the stable channel. A plain vX.Y.Z tag publishes a normal (latest) release.
+          EXTRA=""
+          case "${GITHUB_REF_NAME}" in *-*) EXTRA="--draft --prerelease";; esac
+          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip $EXTRA \
             --title "EnhancedGV ${GITHUB_REF_NAME}" \
             --notes-file release_notes.md \
             || gh release upload "${GITHUB_REF_NAME}" EnhancedGV.zip --clobber

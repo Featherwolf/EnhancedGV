@@ -20,12 +20,15 @@ type Item =
 const SHOT_DWELL_MS = 5000; // like the store page: screenshots dwell then advance
 
 
-// Capped height so "About this game" stays visible below the hero on an 800p
-// screen; contain (not cover) so trailers letterbox instead of cropping.
+// Size relative to the VIEWPORT so the hero scales across resolutions (Deck
+// 800p, 1080p handhelds, 4K TV) instead of being a fixed pixel block tuned for
+// one screen. clamp keeps it sane at the extremes; contain (not cover) so
+// trailers letterbox instead of cropping, and it stays short enough that
+// "About this game" is visible below it.
 const HERO_MEDIA_STYLE: CSSProperties = {
   width: "100%",
   aspectRatio: "16 / 9",
-  maxHeight: 330,
+  maxHeight: "clamp(190px, 34vh, 620px)",
   objectFit: "contain",
   display: "block",
   background: "#000",
@@ -526,9 +529,9 @@ function Thumb({
       onOKButton={onActivate}
       style={{
         ...FOCUS_SCROLL_MARGIN,
-        minWidth: 128,
-        maxWidth: 128,
-        height: 72,
+        // Viewport-relative so thumbnails scale with the display like the hero.
+        height: "clamp(58px, 8vh, 108px)",
+        aspectRatio: "16 / 9",
         padding: 0,
         borderRadius: 6,
         overflow: "hidden",
