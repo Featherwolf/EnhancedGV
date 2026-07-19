@@ -530,8 +530,13 @@ function Thumb({
       style={{
         ...FOCUS_SCROLL_MARGIN,
         // Viewport-relative so thumbnails scale with the display like the hero.
+        // Width is set EXPLICITLY (16:9 of the height) — DialogButton flex-grows
+        // and ignores aspect-ratio, which stretched the thumbs; pinning
+        // width == minWidth == maxWidth keeps a fixed, scaled 16:9 tile.
+        width: "clamp(103px, 14.2vh, 192px)",
+        minWidth: "clamp(103px, 14.2vh, 192px)",
+        maxWidth: "clamp(103px, 14.2vh, 192px)",
         height: "clamp(58px, 8vh, 108px)",
-        aspectRatio: "16 / 9",
         padding: 0,
         borderRadius: 6,
         overflow: "hidden",
@@ -568,7 +573,12 @@ function Thumb({
             bottom: 0,
             padding: "2px 6px",
             fontSize: 10,
-            background: "rgba(0,0,0,0.6)",
+            // Force white text + dark scrim + shadow so the label stays legible
+            // in EVERY state — DialogButton flips inherited text to a dark colour
+            // when the thumbnail is selected, which made it unreadable.
+            color: "#ffffff",
+            background: "linear-gradient(transparent, rgba(0,0,0,0.85))",
+            textShadow: "0 1px 2px rgba(0,0,0,0.9)",
             whiteSpace: "nowrap",
             overflow: "hidden",
             textOverflow: "ellipsis",
