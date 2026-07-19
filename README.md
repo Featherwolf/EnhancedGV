@@ -41,14 +41,15 @@ Access** panel.
 
 ## How it works
 
-- **Frontend** (`src/`, TypeScript/React via `@decky/api` + `@decky/ui`): patches
-  the `/library/app/:appid` route's render function and appends a small keyed
-  *courier* component into the route output. The courier `createPortal`s
-  `<StorePanel/>` into a host `<div>` placed just below the header and above the
-  tab strip, and re-provides Steam's gamepad-focus context so the panel is fully
-  controller-navigable. If that in-page path is ever blocked, it falls back to a
-  Decky-global portal. Every hop is guarded, so a Steam client update degrades to
-  "no panel" rather than crashing the page.
+- **Frontend** (`src/`, TypeScript/React via `@decky/api` + `@decky/ui`):
+  deliberately **does not patch Steam's render function or mutate its render
+  output** — so it coexists cleanly with other library plugins. Instead it mounts
+  one component in Decky's own tree (`addGlobalComponent`), finds the visible app
+  page in the DOM, reads that page's app ID from its React fiber, and
+  `createPortal`s `<StorePanel/>` into a host `<div>` placed just below the header
+  and above the tab strip — re-providing the page's gamepad-focus node so the
+  panel stays controller-navigable. The route patch is read-only. Every step is
+  guarded, so a Steam client update degrades to "no panel" rather than crashing.
 - **Backend** (`main.py`, Python stdlib only): fetches from Steam's store/web
   APIs (bypassing the browser's CORS restrictions), **normalizes and
   allowlist-sanitizes** the HTML/JSON, converts news BBCODE → safe HTML, resolves
@@ -156,12 +157,16 @@ any game at a different store page the same way.
 
 ## Notes & limits
 
+- **Plays nicely with other plugins.** EnhancedGV never patches Steam's render
+  function or mutates its render output, so it doesn't corrupt the state of other
+  library plugins (TabMaster, PlayTime, etc.). It only reads the page and injects
+  from its own Decky-owned tree.
 - **Steam client fragility (test on-device).** The injection depends on Steam's
-  closed-source UI tree, which changes between client updates. The courier anchors
-  on the `AppDetailsContainer` class and the game's `AppOverview` node and bails
-  out safely if the tree shape changes — if a future Steam update stops the panel
-  appearing, `src/patchLibraryApp.tsx` is the place to adjust (a similar approach
-  to ProtonDB Badges / HLTB for Deck).
+  closed-source UI tree, which changes between client updates. The panel anchors
+  on the visible `AppDetailsContainer` and reads the game's `AppOverview` from its
+  fiber, and bails out safely if the tree shape changes — if a future Steam update
+  stops the panel appearing, `src/patchLibraryApp.tsx` is the place to adjust (a
+  similar approach to ProtonDB Badges / HLTB for Deck).
 - **Trailers play when possible.** The backend offers royalty-free VP9/WebM
   sources first (recent Steam clients dropped in-app H.264 decode) and streams the
   newest, manifest-only trailers via adaptive DASH (AV1). If a clip can't be
@@ -187,15 +192,15 @@ block:
 
 - **Backend** — `ok`, or `NOT RESPONDING` (Decky didn't start the Python backend;
   a full Steam restart usually fixes it).
-- **Integration** — which tier is active: `courier` (the normal in-page path) or
-  the `dom-inject` fallback.
+- **Integration** — should read `portal` (the panel was injected into the visible
+  page).
 - **Nav bridge** — whether gamepad focus is bridged to the panel.
 - **Fetch** / **Data (details/reviews/news/deck)** — whether the backend calls
   succeeded.
 
-Toggle **Advanced diagnostics** for the deep readout (**renderFunc**, **appid**,
-**Panel state** = rendered/loading/hidden, **Route / attach / miss**, **Mounts**,
-**Sanitizer**, etc.); the first failing row pinpoints the hop that broke. Key
+Toggle **Advanced diagnostics** for the deep readout (**appid**, **Panel state** =
+rendered/loading/hidden, **Sanitizer**, etc.); the first failing row pinpoints the
+hop that broke. Key
 events are also mirrored to the Decky console log as `[EnhancedGV]` lines.
 
 ## Project layout
@@ -212,7 +217,7 @@ EnhancedGV/
 ├── screenshots/             # README / store images
 └── src/
     ├── index.tsx            # definePlugin: registers the route patch + QAM panel
-    ├── patchLibraryApp.tsx  # /library/app/:appid injection (courier + portal + nav bridge)
+    ├── patchLibraryApp.tsx  # app-page injection (Decky-owned portal, no render-fn patching)
     ├── navBridge.ts         # re-provides Steam's gamepad-focus context to the panel
     ├── api.ts               # callable() bindings to main.py
     ├── identity.ts          # reads game identity (Steam vs non-Steam shortcut)

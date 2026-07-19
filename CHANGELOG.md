@@ -16,9 +16,6 @@
 - **The "What's this game about?" summary is now selectable.** It's a D-pad focus
   stop, so it scrolls into view and can be read on a gamepad — previously the
   cursor skipped over it between the media and the sections.
-- **Beta channel.** A new **Beta channel (test builds)** toggle in QAM → Updates
-  opts you into pre-release builds. Off by default, and pre-releases are excluded
-  from the normal (stable) update check, so a broken beta can't reach stable users.
 - **Update panel** now clearly shows the new version, a download/install call to
   action, and an **Open the release page** button.
 - **View patch notes (this version)** button in QAM → Updates opens the current
