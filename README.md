@@ -6,7 +6,8 @@ A [Decky Loader](https://decky.xyz/) plugin for SteamOS / Steam Deck that brings
 the content normally shown on a game's **store page** — trailers, screenshots,
 description, features, reviews, Steam Deck compatibility and update history —
 onto the game's **library details page**, rendered *below* the header so it never
-covers or blocks the **Play** button.
+covers or blocks the **Play** button. It works on **non-Steam games** too, by
+matching them to a Steam store page automatically.
 
 ![EnhancedGV on the library game-detail page](screenshots/01-game-detail-summary.jpg)
 
@@ -17,16 +18,17 @@ Injected into the scrollable content area beneath the hero/Play button:
 | Section | Source | Contents |
 |---|---|---|
 | **Header row** | store + deck | Review summary + Steam Deck compatibility badge |
-| **Media** | `appdetails` | Trailer thumbnails (tap to play) + screenshots (tap to zoom) |
-| **About this game** | `appdetails` | Full description (sanitized HTML), expandable |
+| **Media** | `appdetails` | Autoplaying trailers + screenshots — D-pad to browse, A to play/zoom, Y fullscreen, X mute |
+| **About this game** | `appdetails` | Full description (sanitized HTML, with images and animated clips), expandable |
 | **Features & details** | `appdetails` | Genres/categories, developer, publisher, release date, platforms, controller support, Metacritic, price, languages |
 | **Steam Deck compatibility** | deck report | Verified/Playable/Unsupported + reviewer notes |
-| **Reviews** | `appreviews` | Score summary, positive %, recent review cards |
+| **Reviews** | `appreviews` | All-time / recent / localized scores, positive %, filter chips, selectable review cards (A to read in full) |
 | **Update history** | `ISteamNews` | Recent patch notes / announcements (tap to read) |
 
-Everything is gamepad-navigable and each section is collapsible. Section
-visibility and cache clearing are controlled from the plugin's **Quick Access**
-panel.
+Everything is gamepad-navigable, each section is collapsible, and store content
+follows your Steam client's language. Section visibility, default-expanded state,
+per-game matching, and cache clearing are controlled from the plugin's **Quick
+Access** panel.
 
 ## Screenshots
 
@@ -40,21 +42,68 @@ panel.
 ## How it works
 
 - **Frontend** (`src/`, TypeScript/React via `@decky/api` + `@decky/ui`): patches
-  the `/library/app/:appid` route with `routerHook.addPatch`, walks the Steam
-  React tree (`afterPatch` → `wrapReactType` → `findInReactTree` on
-  `appDetailsClasses.InnerContainer`) and splices `<StorePanel/>` in just below
-  the header. Every hop is guarded so a Steam client update degrades to "no
-  panel" rather than crashing the page.
+  the `/library/app/:appid` route's render function and appends a small keyed
+  *courier* component into the route output. The courier `createPortal`s
+  `<StorePanel/>` into a host `<div>` placed just below the header and above the
+  tab strip, and re-provides Steam's gamepad-focus context so the panel is fully
+  controller-navigable. If that in-page path is ever blocked, it falls back to a
+  Decky-global portal. Every hop is guarded, so a Steam client update degrades to
+  "no panel" rather than crashing the page.
 - **Backend** (`main.py`, Python stdlib only): fetches from Steam's store/web
-  APIs (bypassing the browser's CORS restrictions), **normalizes and sanitizes**
-  the JSON, converts news BBCODE → safe HTML, and caches responses to disk
+  APIs (bypassing the browser's CORS restrictions), **normalizes and
+  allowlist-sanitizes** the HTML/JSON, converts news BBCODE → safe HTML, resolves
+  non-Steam games to a store appid by title search, and caches responses to disk
   (`DECKY_PLUGIN_RUNTIME_DIR`) with per-kind TTLs plus negative caching and
   in-flight de-duplication to stay well under Steam's rate limits.
 
-Data sources (no API key required):
-`store.steampowered.com/api/appdetails`, `store.steampowered.com/appreviews`,
-`api.steampowered.com/ISteamNews/GetNewsForApp`, and the store Deck
-compatibility report endpoint.
+Data sources (no API key required): store **appdetails**, reviews
+(**appreviews** + **appreviewhistogram**), store **search** (`storesearch`, for
+matching non-Steam games), news (**ISteamNews**), and the Steam Deck
+**compatibility report** — plus a read-only GitHub Releases check for update
+notifications. Per-game matches are stored locally and never leave your device.
+
+## Install on a Steam Deck / SteamOS device
+
+You need [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)
+installed. The zip/dev flows below need Decky **Developer mode** enabled
+(**Settings → Developer**).
+
+### Easiest — the prebuilt release
+
+Download **`EnhancedGV.zip`** from the [latest release](https://github.com/Featherwolf/EnhancedGV/releases/latest),
+then in Decky choose **Developer → Install Plugin from ZIP** and pick the file.
+Restart Steam, open any game in your library, and the store panel appears below
+the Play button. The plugin can also check for updates from its Quick Access
+panel (download + reinstall to update).
+
+### Option A — copy the folder (dev)
+
+Build first (see below), then copy this whole folder (so `dist/` exists) to the
+Deck at:
+
+```
+~/homebrew/plugins/EnhancedGV/
+```
+
+so it contains at least `plugin.json`, `main.py`, `dist/index.js`, and
+`package.json`. Then restart Steam / reload Decky. Example from a PC:
+
+```bash
+scp -r "steam-store-panel" deck@<deck-ip>:"/home/deck/homebrew/plugins/EnhancedGV"
+```
+
+### Option B — build your own ZIP
+
+Build, then create a zip whose single top-level folder holds the plugin files
+(`dist/`, `main.py`, `plugin.json`, `package.json`, `LICENSE`, `README.md`):
+
+```bash
+# bash (Deck / Linux / macOS)
+mkdir -p EnhancedGV && cp -r dist main.py plugin.json package.json LICENSE README.md EnhancedGV/
+zip -r EnhancedGV.zip EnhancedGV
+```
+
+Then **Developer → Install Plugin from ZIP** and pick the file.
 
 ## Build
 
@@ -62,57 +111,11 @@ Requires Node 18+ and Python 3. `pnpm` is recommended (it's what Decky uses), bu
 `npm` works too.
 
 ```bash
-# with pnpm (recommended)
-pnpm install
-pnpm build
-
-# or with npm
-npm install
-npm run build
+pnpm install && pnpm build   # or: npm install && npm run build
 ```
 
-This produces `dist/index.js`. The `main.py`, `plugin.json` and `package.json`
-ship as-is.
-
-## Install on a Steam Deck / SteamOS device
-
-You need [Decky Loader](https://github.com/SteamDeckHomebrew/decky-loader)
-installed, and Decky **Developer mode** enabled for the zip/dev flow.
-
-### Option A — copy the folder (dev)
-
-Copy this whole folder (after building, so `dist/` exists) to the Deck at:
-
-```
-~/homebrew/plugins/EnhancedGV/
-```
-
-so that it contains at least: `plugin.json`, `main.py`, `dist/index.js`,
-`package.json`. Then restart Steam / reload Decky. Example from a PC:
-
-```bash
-scp -r "steam-store-panel" deck@<deck-ip>:"/home/deck/homebrew/plugins/EnhancedGV"
-```
-
-### Option B — install from ZIP (Decky → Developer → Install from ZIP)
-
-Build first, then create a zip whose single top-level folder holds the plugin
-files (`dist/`, `main.py`, `plugin.json`, `package.json`, `LICENSE`, `README.md`).
-
-PowerShell (Windows):
-```powershell
-Compress-Archive -Path plugin.json,main.py,package.json,dist,LICENSE,README.md `
-  -DestinationPath ..\SteamStorePanel.zip
-```
-
-bash (Deck/Linux/macOS):
-```bash
-zip -r ../SteamStorePanel.zip plugin.json main.py package.json dist LICENSE README.md
-```
-
-Then in the Decky menu: **Settings → Developer → enable Developer mode**, then
-**Install Plugin from ZIP** and pick the file. Open any game in your library —
-the store panel appears below the Play button.
+This produces `dist/index.js`. `main.py`, `plugin.json` and `package.json` ship
+as-is. (CI builds and attaches `EnhancedGV.zip` to every tagged release.)
 
 ## Setup & tips
 
@@ -124,9 +127,8 @@ game first so the game-specific options appear.
 - **Sections shown on the game page** — turn Media, About, Features & details,
   Steam Deck, Reviews, and Update history on or off.
 - **Expanded by default** — choose which sections start open vs. collapsed.
-- **Store language** follows your Steam client language automatically; the Status
-  row shows what it detected. To force one, set `language` in the plugin's
-  settings to a Steam language name (e.g. `french`).
+- **Store language** follows your Steam client language automatically (there's no
+  in-app language picker); the Status row shows the language it detected.
 - **Clear cached store data** forces a fresh fetch if anything looks stale.
 
 **Matching non-Steam games**
@@ -152,47 +154,49 @@ while viewing the game:
 This works for regular Steam games too — you'll rarely need it, but you can point
 any game at a different store page the same way.
 
-## Notes, limits & fragility
+## Notes & limits
 
 - **Steam client fragility (test on-device).** The injection depends on Steam's
-  closed-source UI tree, which changes between client updates. The patch uses
-  feature-based lookups (`appDetailsClasses.InnerContainer`, the AppOverview
-  node) and bails out safely if the tree shape changes — but if a future Steam
-  update stops the panel appearing, the tree-navigation in
-  `src/patchLibraryApp.tsx` is the place to adjust (the same technique used by
-  ProtonDB Badges / HLTB for Deck).
-- **Trailers are best-effort.** Steam's `appdetails` no longer returns
-  progressive `mp4`/`webm` URLs — only adaptive `dash`/`hls` manifests. The
-  backend derives candidate `.mp4`/`.webm` URLs from the thumbnail path and the
-  video modal tries them in order; if none play in the embedded browser, the
-  poster remains. Screenshots are always reliable.
+  closed-source UI tree, which changes between client updates. The courier anchors
+  on the `AppDetailsContainer` class and the game's `AppOverview` node and bails
+  out safely if the tree shape changes — if a future Steam update stops the panel
+  appearing, `src/patchLibraryApp.tsx` is the place to adjust (a similar approach
+  to ProtonDB Badges / HLTB for Deck).
+- **Trailers play when possible.** The backend offers royalty-free VP9/WebM
+  sources first (recent Steam clients dropped in-app H.264 decode) and streams the
+  newest, manifest-only trailers via adaptive DASH (AV1). If a clip can't be
+  decoded in the embedded browser, its poster frame is shown. Screenshots are
+  always reliable.
 - **Non-Steam games** are matched to a Steam store page by title automatically,
   and you can correct or clear the match from the QAM (see **Setup & tips**).
   Games with no Steam counterpart stay cleanly "not identified".
-- **Rate limits.** The store endpoints are unofficial and throttle ~200 req /
-  5 min per IP; the disk cache + de-dup keep normal usage far below that.
+- **Reviews and Deck compatibility** reflect the *Steam* version of a matched
+  non-Steam game.
+- **Rate limits.** The store endpoints are unofficial and throttle roughly
+  ~200 req / 5 min per IP; the disk cache + de-dup keep normal use far below that.
 - **Privacy.** Requests go directly from your device to Steam's public APIs for
-  the appid you're viewing. No API key, no third-party servers.
+  the appid you're viewing. No API key, no third-party servers; matches are stored
+  locally.
 
 ## Troubleshooting — the panel doesn't appear
 
 The store content is injected into Steam's app-details page, whose internal React
-tree is closed-source and shifts between client builds. If nothing shows up:
+tree is closed-source and shifts between client builds. If nothing shows up, open
+**Quick Access menu → EnhancedGV** after viewing a game and check the **Status**
+block:
 
-1. Open **Quick Access menu → EnhancedGV → Diagnostics (last game page)** after
-   viewing a game. It reports, for the last game page rendered:
-   - **InnerContainer class** — should be a hashed class name, not `MISSING`.
-   - **Found renderFunc / Found game (appid) / Container matched / Panel injected.**
-   - **Note** and, on failure, the list of container class names actually present.
-2. The first `no`/`MISSING`/`none` row pinpoints the hop that failed:
-   - `Found renderFunc = NO` → the route wrapper changed.
-   - `Found game (appid) = NO` → the overview node moved.
-   - `Container matched = none` → the scroll-container class changed; the
-     "Container classes seen" line lists the real ones to target.
-3. The Decky console log mirrors this with `[EnhancedGV]` lines.
+- **Backend** — `ok`, or `NOT RESPONDING` (Decky didn't start the Python backend;
+  a full Steam restart usually fixes it).
+- **Integration** — which tier is active (`courier`, `dom-inject`, or
+  `decky-global`).
+- **Nav bridge** — whether gamepad focus is bridged to the panel.
+- **Fetch** / **Data (details/reviews/news/deck)** — whether the backend calls
+  succeeded.
 
-Layout can be switched between stacked **sections** (default, most reliable) and
-a **tab strip** under *Quick Access → EnhancedGV → Layout → Show as tabs*.
+Toggle **Advanced diagnostics** for the deep readout (**renderFunc**, **appid**,
+**Panel state** = rendered/loading/hidden, **Route / attach / miss**, **Mounts**,
+**Sanitizer**, etc.); the first failing row pinpoints the hop that broke. Key
+events are also mirrored to the Decky console log as `[EnhancedGV]` lines.
 
 ## Project layout
 
@@ -202,16 +206,23 @@ steam-store-panel/
 ├── package.json             # deps + build scripts
 ├── rollup.config.js         # re-exports @decky/rollup
 ├── tsconfig.json
-├── main.py                  # Python backend: fetch + normalize + cache
+├── main.py                  # Python backend: fetch + normalize + sanitize + cache + match
 ├── decky.pyi                # type stub for `import decky` (editor only)
-├── dist/index.js            # built frontend bundle (after `npm run build`)
+├── dist/index.js            # built frontend bundle (after a build)
+├── screenshots/             # README / store images
 └── src/
-    ├── index.tsx            # definePlugin: registers patch + QAM panel
-    ├── patchLibraryApp.tsx  # the /library/app/:appid injection
+    ├── index.tsx            # definePlugin: registers the route patch + QAM panel
+    ├── patchLibraryApp.tsx  # /library/app/:appid injection (courier + portal + nav bridge)
+    ├── navBridge.ts         # re-provides Steam's gamepad-focus context to the panel
     ├── api.ts               # callable() bindings to main.py
+    ├── identity.ts          # reads game identity (Steam vs non-Steam shortcut)
+    ├── matches.ts           # non-Steam match-change pub/sub
+    ├── lang.ts              # Steam-language detection
+    ├── dashPlayer.ts        # MSE DASH player for manifest-only trailers
+    ├── diag.ts / focus.ts   # diagnostics + gamepad-focus helpers
     ├── types.ts             # shared TS types
-    ├── hooks/useAppData.ts  # fetch-on-mount + module cache
-    └── components/          # StorePanel + section components
+    ├── hooks/               # useAppData, useResolvedGame
+    └── components/          # StorePanel, MediaGallery, section components, QAM settings, modals
 ```
 
 ## License

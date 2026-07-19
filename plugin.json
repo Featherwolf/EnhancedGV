@@ -12,6 +12,6 @@
       "reviews"
     ],
     "description": "Enhanced Game View \u2014 brings the Steam store page onto your library game-detail page: trailers, screenshots, description, features, reviews, Steam Deck compatibility and update history, below the Play button.",
-    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+    "image": "https://raw.githubusercontent.com/Featherwolf/EnhancedGV/main/screenshots/01-game-detail-summary.jpg"
   }
 }
