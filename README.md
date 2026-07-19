@@ -114,11 +114,43 @@ Then in the Decky menu: **Settings → Developer → enable Developer mode**, th
 **Install Plugin from ZIP** and pick the file. Open any game in your library —
 the store panel appears below the Play button.
 
-## Configuration
+## Setup & tips
 
-Open the **Quick Access menu → EnhancedGV**:
-- Toggle any of the six sections on/off.
-- **Clear cached store data** to force a fresh fetch.
+Everything is controlled from the **Quick Access menu → EnhancedGV** panel. Open a
+game first so the game-specific options appear.
+
+**After installing**
+
+- **Sections shown on the game page** — turn Media, About, Features & details,
+  Steam Deck, Reviews, and Update history on or off.
+- **Expanded by default** — choose which sections start open vs. collapsed.
+- **Store language** follows your Steam client language automatically; the Status
+  row shows what it detected. To force one, set `language` in the plugin's
+  settings to a Steam language name (e.g. `french`).
+- **Clear cached store data** forces a fresh fetch if anything looks stale.
+
+**Matching non-Steam games**
+
+Non-Steam games (emulator shortcuts, Epic/GOG titles added to Steam, etc.) have no
+Steam store page of their own, so EnhancedGV finds one for you. The first time you
+open one, it searches the Steam store by the game's title and uses the best match
+— no action needed — and remembers it so it only happens once.
+
+To check or fix a match, open **Quick Access → EnhancedGV → Store data source**
+while viewing the game:
+
+- The **Steam App ID** field shows which store page the content comes from, and
+  the **`Title (Year)`** below it lets you confirm it's the right game.
+- **Wrong match?** Type the correct **App ID**, or paste the game's
+  `store.steampowered.com/app/…` URL, and press **Save ID**. Your choice is sticky
+  and never gets overwritten automatically.
+- **Clear (leave blank)** removes the match and keeps the game unmatched — use it
+  to hide the store panel for a game you don't want it on.
+- **Re-detect automatically** discards the current match and runs the title search
+  again.
+
+This works for regular Steam games too — you'll rarely need it, but you can point
+any game at a different store page the same way.
 
 ## Notes, limits & fragility
 
@@ -134,8 +166,9 @@ Open the **Quick Access menu → EnhancedGV**:
   backend derives candidate `.mp4`/`.webm` URLs from the thumbnail path and the
   video modal tries them in order; if none play in the embedded browser, the
   poster remains. Screenshots are always reliable.
-- **Non-Steam shortcuts / region-locked apps** have no store data; the panel
-  simply doesn't render for them (cached briefly to avoid re-requests).
+- **Non-Steam games** are matched to a Steam store page by title automatically,
+  and you can correct or clear the match from the QAM (see **Setup & tips**).
+  Games with no Steam counterpart stay cleanly "not identified".
 - **Rate limits.** The store endpoints are unofficial and throttle ~200 req /
   5 min per IP; the disk cache + de-dup keep normal usage far below that.
 - **Privacy.** Requests go directly from your device to Steam's public APIs for

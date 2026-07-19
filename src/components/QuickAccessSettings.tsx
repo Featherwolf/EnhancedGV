@@ -21,6 +21,7 @@ import {
   lookupStoreApp,
   setMatch,
   clearMatch,
+  blankMatch,
 } from "../api";
 import type { VideoProbe, BackendInfo, ResolveResult } from "../api";
 import type { UpdateInfo } from "../types";
@@ -161,7 +162,18 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
     setBusy(false);
   };
 
-  const clearRedetect = async () => {
+  // Erase the match and LEAVE IT BLANK — the game stays unmatched and is not
+  // auto-matched again (sticky). Use this to hide the store panel for a game.
+  const clear = async () => {
+    setBusy(true);
+    setMsg("Cleared — left blank. Enter an ID above to match it, or Re-detect.");
+    await blankMatch(appid).catch(() => {});
+    emitMatchChanged(appid);
+    setBusy(false);
+  };
+
+  // Delete the record so auto-matching runs again on this game.
+  const redetect = async () => {
     setBusy(true);
     setMsg("Re-detecting…");
     await clearMatch(appid).catch(() => {});
@@ -199,8 +211,13 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={clearRedetect}>
-          Clear / re-detect
+        <ButtonItem layout="below" disabled={busy} onClick={clear}>
+          Clear (leave blank)
+        </ButtonItem>
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" disabled={busy} onClick={redetect}>
+          Re-detect automatically
         </ButtonItem>
       </PanelSectionRow>
     </PanelSection>

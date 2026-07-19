@@ -11,6 +11,9 @@
 - **Trailer connectivity test now works for matched non-Steam games.** It was
   probing the non-Steam shortcut's id (no store data); it now uses the matched
   Steam store appid, so it reports the real trailers.
+- **Separate Clear and Re-detect** in QAM → Store data source: **Clear (leave
+  blank)** erases the match and keeps the game unmatched (won't auto-match again),
+  while **Re-detect automatically** re-runs the title search.
 
 ## v0.16.0
 

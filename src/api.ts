@@ -64,6 +64,9 @@ export const clearMatch = callable<
   { ok: boolean; existed?: boolean }
 >("clear_match");
 
+// Clear to BLANK (sticky): the game stays unmatched and won't auto-match again.
+export const blankMatch = callable<[game_appid: number], { ok: boolean }>("blank_match");
+
 export interface BackendInfo {
   ok: boolean;
   html_parser: boolean;

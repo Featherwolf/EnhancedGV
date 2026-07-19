@@ -1168,11 +1168,19 @@ class Plugin:
             return {"ok": False, "error": "invalid appid"}
         matches = _read_matches()
         rec = matches.get(str(game_appid))
-        if rec and rec.get("store_appid"):
-            return {"ok": True, "store_appid": int(rec["store_appid"]),
-                    "name": rec.get("name", ""), "year": rec.get("year", ""),
-                    "source": rec.get("source", "auto"), "matched": True,
-                    "from_cache": True}
+        if rec is not None:
+            sa = rec.get("store_appid")
+            if sa:
+                return {"ok": True, "store_appid": int(sa),
+                        "name": rec.get("name", ""), "year": rec.get("year", ""),
+                        "source": rec.get("source", "auto"), "matched": True,
+                        "from_cache": True}
+            # A deliberately-blank ("cleared") record: the user chose no match, so
+            # NEVER auto-search over it. Only Re-detect (which DELETES the record)
+            # restores auto-matching.
+            return {"ok": True, "store_appid": None, "matched": False,
+                    "name": "", "year": "", "source": rec.get("source", "cleared"),
+                    "reason": "cleared"}
         if is_shortcut:
             res = await self._search_store(title or "", lang, cc)
             items = res.get("items") if isinstance(res, dict) and res.get("ok") else []
@@ -1200,11 +1208,18 @@ class Plugin:
         async with self._matches_lock():
             matches = _read_matches()
             existing = matches.get(str(game_appid))
-            if existing and existing.get("store_appid"):
-                return {"ok": True, "store_appid": int(existing["store_appid"]),
-                        "name": existing.get("name", ""), "year": existing.get("year", ""),
-                        "source": existing.get("source", "auto"), "matched": True,
-                        "from_cache": True}
+            if existing is not None:
+                # Any record written during our search wins — a manual match OR a
+                # deliberate Clear. Auto-match never overrides a user decision.
+                sa = existing.get("store_appid")
+                if sa:
+                    return {"ok": True, "store_appid": int(sa),
+                            "name": existing.get("name", ""), "year": existing.get("year", ""),
+                            "source": existing.get("source", "auto"), "matched": True,
+                            "from_cache": True}
+                return {"ok": True, "store_appid": None, "matched": False,
+                        "name": "", "year": "", "source": existing.get("source", "cleared"),
+                        "reason": "cleared"}
             matches[str(game_appid)] = {
                 "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
                 "source": "auto", "ts": int(time.time())}
@@ -1236,6 +1251,21 @@ class Plugin:
             matches[str(game_appid)] = {
                 "store_appid": store_appid, "name": name or "", "year": year or "",
                 "source": source or "manual", "ts": int(time.time())}
+            _write_matches(matches)
+        return {"ok": True}
+
+    async def blank_match(self, game_appid):
+        """Clear to BLANK: write a sticky 'cleared' record so the game stays
+        unmatched and is never auto-matched again (until Re-detect deletes it)."""
+        try:
+            game_appid = int(game_appid)
+        except Exception:
+            return {"ok": False, "error": "invalid appid"}
+        async with self._matches_lock():
+            matches = _read_matches()
+            matches[str(game_appid)] = {
+                "store_appid": 0, "name": "", "year": "",
+                "source": "cleared", "ts": int(time.time())}
             _write_matches(matches)
         return {"ok": True}
 
