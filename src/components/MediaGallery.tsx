@@ -381,6 +381,12 @@ export function MediaHero({ movies, screenshots }: Props) {
       selectManually((idx + 1) % count);
       return true;
     }
+    // Fullscreen: CONSUME up/down so focus can't wander onto page elements that
+    // are invisible behind the fullscreen surface (the selection then moves in
+    // the dark with no feedback). Left/right browse; B/Y exit.
+    if (fullscreen && (b === GamepadButton.DIR_UP || b === GamepadButton.DIR_DOWN)) {
+      return true;
+    }
     return false;
   };
 
@@ -442,8 +448,33 @@ export function MediaHero({ movies, screenshots }: Props) {
               style={fullscreen ? { ...HERO_MEDIA_STYLE, maxHeight: "100vh", height: "100%" } : HERO_MEDIA_STYLE}
             />
           )}
-          {/* Store-style overlay: title, position, mute state. Button hints
-              live in Steam's own bottom legend (A/X/Y descriptions). */}
+          {/* Fullscreen covers Steam's bottom button legend, so show our own
+              hint bar up top while fullscreen — otherwise navigation is blind. */}
+          {fullscreen && (
+            <div
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                right: 0,
+                display: "flex",
+                justifyContent: "flex-end",
+                gap: 18,
+                padding: "12px 20px",
+                fontSize: 15,
+                background: "linear-gradient(rgba(0,0,0,0.65), transparent)",
+                pointerEvents: "none",
+              }}
+            >
+              <span>◀ ▶ Browse</span>
+              {curIsPlayableVideo && <span>A Play/Pause</span>}
+              {curIsPlayableVideo && <span>X {muted ? "Unmute" : "Mute"}</span>}
+              <span>B Exit</span>
+            </div>
+          )}
+          {/* Store-style overlay: title, position, mute state. Larger while
+              fullscreen so the current item and position are readable from the
+              couch; button hints otherwise live in Steam's own bottom legend. */}
           <div
             style={{
               position: "absolute",
@@ -453,8 +484,8 @@ export function MediaHero({ movies, screenshots }: Props) {
               display: "flex",
               alignItems: "center",
               gap: 8,
-              padding: "6px 10px",
-              fontSize: 12,
+              padding: fullscreen ? "16px 20px" : "6px 10px",
+              fontSize: fullscreen ? 17 : 12,
               background: "linear-gradient(transparent, rgba(0,0,0,0.75))",
               pointerEvents: "none",
             }}
@@ -472,10 +503,14 @@ export function MediaHero({ movies, screenshots }: Props) {
                 <span style={{ opacity: 0.7 }}> · preview unavailable</span>
               )}
             </span>
-            {curIsPlayableVideo && muted && <FaVolumeMute size={12} style={{ opacity: 0.8 }} />}
-            {curIsPlayableVideo && !playing && <FaPlay size={11} style={{ opacity: 0.8 }} />}
+            {curIsPlayableVideo && muted && (
+              <FaVolumeMute size={fullscreen ? 16 : 12} style={{ opacity: 0.8 }} />
+            )}
+            {curIsPlayableVideo && !playing && (
+              <FaPlay size={fullscreen ? 15 : 11} style={{ opacity: 0.8 }} />
+            )}
             <span style={{ opacity: 0.85, flexShrink: 0 }}>
-              {idx + 1} / {count}
+              {fullscreen ? `◀ ${idx + 1} / ${count} ▶` : `${idx + 1} / ${count}`}
             </span>
           </div>
         </div>

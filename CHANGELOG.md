@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.18.0
+
+- **Fixes the selection highlight disappearing** on the Play button (and other
+  native controls) after scrolling down into the store panel and back up. The
+  injected panel was re-syncing itself every 2 seconds and re-registering its
+  controls on Steam's shared gamepad-focus tree even when nothing had changed —
+  disturbing Steam's focus bookkeeping. It now only re-syncs when something
+  actually changed.
+- **Fullscreen media navigation is visible now.** While a trailer or screenshot
+  is fullscreen, a hint bar shows the controls (◀ ▶ browse, A play/pause,
+  X mute, B exit) and the title/position overlay is larger — no more navigating
+  blind.
+- **Fullscreen locks the selection to the media.** The D-pad can no longer move
+  the (invisible) selection onto page elements hidden behind the fullscreen
+  view; left/right browse the carousel, B exits.
+
 ## v0.17.0
 
 - **Plays nicely with other plugins.** EnhancedGV no longer patches Steam's app-page

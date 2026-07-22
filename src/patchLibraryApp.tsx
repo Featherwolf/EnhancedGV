@@ -157,6 +157,14 @@ function RestorePortalHost() {
         return;
       }
       currentAppid = id;
+      // Re-render ONLY when something actually changed. The old unconditional
+      // force() re-rendered the portal every 2s, and each stale-capture swap
+      // re-provided a NEW nav value — making every Focusable in the panel
+      // re-register on Steam's SHARED focus node (RemoveChild/AddChild churn)
+      // while the user was focused on native UI. On-device symptom: after
+      // visiting the panel, the Play button's selection highlight stopped
+      // rendering until the page was re-entered.
+      let changed = false;
       const connected =
         !!host.current?.isConnected && host.current.parentElement === target.parentElement;
       if (!connected || appid.current !== id) {
@@ -169,6 +177,7 @@ function RestorePortalHost() {
         host.current = made;
         appid.current = id;
         cap.current = null;
+        changed = true;
         markInjectApply();
         setDiag({
           path: "portal",
@@ -182,16 +191,20 @@ function RestorePortalHost() {
       // Capture / recapture the page's gamepad-focus node from the host's parent
       // (the AppDetailsRoot element). Read-only fiber walk; we re-provide the
       // node's context around our panel so its Focusables join the page's nav.
+      // A stale capture is kept (and tolerated by Valve's RemoveChild) until a
+      // LIVE replacement is actually found — swapping the Provider value is the
+      // expensive/disruptive event, so it only happens when the new node is real.
       if (host.current && (!cap.current || !isCaptureLive(cap.current))) {
         const c = captureNavFromElement(host.current.parentElement);
-        if (c) {
+        if (c && (c.node !== cap.current?.node || c.ctx !== cap.current?.ctx)) {
           cap.current = c;
+          changed = true;
           setNavBridgeNote("bridged (fiber, portal tier)");
-        } else if (!cap.current) {
+        } else if (!c && !cap.current) {
           setNavBridgeNote("no nav fiber yet (panel renders unbridged)");
         }
       }
-      force();
+      if (changed) force();
     };
 
     const l = () => sync();
