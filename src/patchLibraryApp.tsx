@@ -112,6 +112,26 @@ function notify(): void {
   });
 }
 
+// PLUGIN-COEXISTENCE (v0.18): NEVER run the resync fan-out synchronously from a
+// render. Decky invokes route-patch callbacks INSIDE its router wrapper's render
+// body (processList), so a notify() called there runs sync() -> makeHostBeforeTarget
+// (DOM remove()+insertBefore) and force() (setState) while React is mid-reconcile
+// of the SHARED AppDetailsRoot subtree. That throws NotFoundError
+// (removeChild/insertBefore) + "cannot update a component while rendering", and
+// because co-plugins (SDH-PlayTime) render on that same subtree the throw carries
+// THEIR frame and Decky's ErrorBoundary blames them. Deferring to a fresh
+// macrotask guarantees sync() only ever mutates the DOM AFTER commit. Coalesced so
+// a burst of route renders collapses to a single resync.
+let notifyScheduled = false;
+function scheduleNotify(): void {
+  if (notifyScheduled) return;
+  notifyScheduled = true;
+  setTimeout(() => {
+    notifyScheduled = false;
+    notify();
+  }, 0);
+}
+
 // ---------- the single injector: a Decky-owned global component -------------
 function RestorePortalHost() {
   const probeRef = useRef<HTMLElement | null>(null);
@@ -263,11 +283,13 @@ export function patchLibraryApp() {
   // READ-ONLY route patch: we do NOT afterPatch renderFunc, wrap the tree, or
   // write to the route-props object — that render output belongs to Steam and to
   // any co-patching plugin. We only use the route render as a prompt to re-sync
-  // the portal, and return the tree UNCHANGED.
+  // the portal, and return the tree UNCHANGED. The resync is DEFERRED off this
+  // render stack (scheduleNotify) — see the note above: doing DOM/setState work
+  // here, mid-render, is what crashed co-plugins (PlayTime) that share the route.
   return routerHook.addPatch(ROUTE, (tree: AnyEl) => {
     try {
       markRouteRender();
-      notify();
+      scheduleNotify();
     } catch {
       /* ignore */
     }

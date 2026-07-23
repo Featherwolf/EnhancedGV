@@ -2,6 +2,16 @@
 
 ## v0.18.0
 
+- **Fixes the remaining crash in co-installed plugins (SDH-PlayTime).** Even after
+  EnhancedGV stopped patching Steam's render function, it still re-synced its panel
+  from inside Steam's render — inserting/removing its host element and updating state
+  while React was mid-render of the shared app-page. That threw DOM errors that
+  surfaced through **PlayTime** (which renders on the same page), making its crash
+  look like PlayTime's fault. All of that work is now deferred until after Steam
+  finishes rendering, so nothing touches the shared page mid-render.
+- **Smoother scrolling through long sections.** Holding the D-pad through a long
+  section (e.g. "About this game") no longer freezes the view and then jumps to the
+  next section — the page now follows the cursor as it moves.
 - **Fixes the selection highlight disappearing** on the Play button (and other
   native controls) after scrolling down into the store panel and back up. The
   injected panel was re-syncing itself every 2 seconds and re-registering its

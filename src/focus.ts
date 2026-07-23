@@ -21,16 +21,19 @@ export const FOCUS_SCROLL_MARGIN: CSSProperties = {
 // edge (on-device: margins alone still left the hero/thumbnails/read-more
 // partially off-screen). Falls back to native handling if anything's off.
 export const CENTER_ON_FOCUS = {
-  fnScrollIntoViewHandler: (focusedNode: unknown, animate: unknown) => {
+  // ALWAYS instant ("auto"), never "smooth". Holding the D-pad moves focus faster
+  // than a smooth scroll animates, and each new smooth scrollIntoView cancels the
+  // previous one before it finishes — so the viewport appeared FROZEN while
+  // scrolling through a section (e.g. "About this game") and then jumped all at
+  // once when focus settled on the next section. Instant centering follows the
+  // cursor step-for-step, so the page keeps up with held navigation.
+  fnScrollIntoViewHandler: (focusedNode: unknown, _animate: unknown) => {
     try {
       const el = (focusedNode as { m_element?: HTMLElement; Element?: HTMLElement })
         ?.m_element ??
         (focusedNode as { Element?: HTMLElement })?.Element;
       if (el?.scrollIntoView) {
-        el.scrollIntoView({
-          block: "center",
-          behavior: animate ? "smooth" : "auto",
-        });
+        el.scrollIntoView({ block: "center", behavior: "auto" });
         return true; // handled — skip Valve's default landing
       }
     } catch {
