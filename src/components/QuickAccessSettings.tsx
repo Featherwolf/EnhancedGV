@@ -27,6 +27,7 @@ import {
 import type { VideoProbe, BackendInfo, ResolveResult } from "../api";
 import type { UpdateInfo } from "../types";
 import { getGameIdentity } from "../identity";
+import { providerLabel } from "../providers";
 import { PatchNotesModal } from "./PatchNotesModal";
 import { onMatchChanged, emitMatchChanged } from "../matches";
 import { resolveLanguage, resolveCountry, languageDiag } from "../lang";
@@ -186,6 +187,8 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
 
   const matched = info?.store_appid
     ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? " · manual" : ""}`
+    : info?.provider && info.provider !== "steam" && info.provider_id != null
+    ? `${info.name || "?"} (${info.year || "—"}) · via ${providerLabel(info.provider)}`
     : "not identified";
 
   return (
@@ -355,6 +358,9 @@ export function QuickAccessSettings() {
       expanded: { ...DEFAULT_EXPANDED, ...settings.expanded, [key]: value },
     });
 
+  const toggleNonSteam = (value: boolean) =>
+    persist({ ...settings, nonSteamSources: value });
+
   const modalAppid = getCurrentAppid();
 
   return (
@@ -383,6 +389,17 @@ export function QuickAccessSettings() {
           cc={resolveCountry(settings.country)}
         />
       )}
+
+      <PanelSection title="Non-Steam games (experimental)">
+        <PanelSectionRow>
+          <ToggleField
+            label="Metadata for emulated / non-Steam games"
+            description="When a non-Steam game has no Steam store page, pull a description, artwork and details from Hasheous (a free, keyless community database). Off by default. Works best for games added as their own Steam shortcut (e.g. via Steam ROM Manager)."
+            checked={!!settings.nonSteamSources}
+            onChange={toggleNonSteam}
+          />
+        </PanelSectionRow>
+      </PanelSection>
 
       <PanelSection title="Sections shown on the game page">
         {SECTION_LABELS.map(({ key, label }) => (

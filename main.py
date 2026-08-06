@@ -39,7 +39,9 @@ CACHE_VERSION = "0.15.0-lang"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
-       "reviews_recent": 3600, "news": 3600}
+       "reviews_recent": 3600, "news": 3600,
+       # Non-Steam / emulated metadata is essentially static — cache it a week.
+       "hasheous": 604800}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
@@ -77,6 +79,18 @@ DECK_LOC_TOKENS = {
 # Steam news BBCODE image placeholders map to the clan CDN. The placeholder is
 # followed by a leading "/" in the content, so no trailing slash here.
 CLAN_IMAGE_BASE = "https://clan.akamai.steamstatic.com/images"
+
+# --- Hasheous: keyless metadata for non-Steam / emulated games ---------------- #
+# Public community instance. Keyless pipeline (no API key, no ROM file needed):
+#   MCP hasheous_search_games (clean title match, returns reference ROM hashes)
+#   -> Lookup/ByHash (bridges to the stable Hasheous game/DataObject id)
+#   -> DataObjects/Game/{id} (name, AIDescription, Logo, Tags, publisher, IGDB id)
+# The rich IGDB proxy (cover/screenshots/genres) is key-gated (a later, opt-in
+# phase); this baseline is entirely keyless and works with the feature toggled on.
+HASHEOUS_BASE = "https://hasheous.org/api/v1"
+HASHEOUS_IMAGE = HASHEOUS_BASE + "/Images/"  # + {image_hash}
+# sha1("") — Hasheous stores this as a placeholder/empty Logo; never use it.
+_HASHEOUS_EMPTY_IMG = "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"
 
 
 # --------------------------------------------------------------------------- #
@@ -121,6 +135,28 @@ def _http_get_json(url: str) -> dict:
         reason = getattr(exc, "reason", exc)
         if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
             decky.logger.warning("SSL verify failed; retrying unverified (public data)")
+            with urllib.request.urlopen(
+                req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
+            ) as resp:
+                raw = resp.read().decode("utf-8", "replace")
+        else:
+            raise
+    return json.loads(raw)
+
+
+def _http_post_json(url: str, payload: dict) -> dict:
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body, method="POST",
+        headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+            raw = resp.read().decode("utf-8", "replace")
+    except urllib.error.URLError as exc:
+        reason = getattr(exc, "reason", exc)
+        if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
             with urllib.request.urlopen(
                 req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
             ) as resp:
@@ -187,6 +223,45 @@ def _write_matches(d: dict) -> None:
         os.replace(tmp, MATCHES_FILE)  # atomic
     except Exception as exc:
         decky.logger.warning(f"matches write failed: {exc}")
+
+
+def _feature_non_steam() -> bool:
+    """Whether non-Steam metadata providers (Hasheous) are enabled. OFF by
+    default: read straight from the settings file so resolve_game can gate the
+    provider fallback without threading a flag through the frontend call."""
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+            return bool(json.load(fh).get("nonSteamSources", False))
+    except Exception:
+        return False
+
+
+def _rec_to_result(rec: dict) -> dict:
+    """Map a persisted matches.json record to a resolve_game result. Handles
+    Steam matches, non-Steam provider matches (gated by the feature flag), and
+    blank/cleared records. Shared by the fast path and the under-lock re-read."""
+    sa = rec.get("store_appid")
+    if sa:
+        return {"ok": True, "store_appid": int(sa), "provider": "steam",
+                "provider_id": int(sa), "name": rec.get("name", ""),
+                "year": rec.get("year", ""), "source": rec.get("source", "auto"),
+                "matched": True, "from_cache": True}
+    prov = rec.get("provider")
+    if prov and prov != "steam" and rec.get("provider_id") is not None:
+        if not _feature_non_steam():
+            # Feature turned off after a provider match was saved: behave as
+            # unmatched (don't surface non-Steam content) without deleting the
+            # record, so re-enabling restores it instantly.
+            return {"ok": True, "store_appid": None, "matched": False,
+                    "name": "", "year": "", "source": rec.get("source", "auto"),
+                    "reason": "non-Steam sources disabled"}
+        return {"ok": True, "store_appid": None, "provider": prov,
+                "provider_id": rec.get("provider_id"), "platform": rec.get("platform", ""),
+                "name": rec.get("name", ""), "year": rec.get("year", ""),
+                "source": rec.get("source", "auto"), "matched": True, "from_cache": True}
+    # Blank/"cleared" record: stay unmatched, never auto-search over it.
+    return {"ok": True, "store_appid": None, "matched": False, "name": "", "year": "",
+            "source": rec.get("source", "cleared"), "reason": "cleared"}
 
 
 def _year_from(release_date: str) -> str:
@@ -778,6 +853,170 @@ def _normalize_deck(data: dict) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# Hasheous normalization (non-Steam / emulated games)
+# --------------------------------------------------------------------------- #
+def _md_to_html(md) -> str:
+    """Minimal, SAFE Markdown -> HTML for Hasheous' AIDescription (## headers,
+    **bold**, *italic*, - bullets, paragraphs). Output is re-run through
+    _sanitize_html downstream, so this only needs to emit allowlisted tags
+    (h1-h6/p/b/i/ul/li/br are all in _ALLOWED_TAGS)."""
+    text = str(md or "").replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
+        return ""
+
+    def inline(s: str) -> str:
+        s = html.escape(s, quote=False)
+        s = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", s)
+        s = re.sub(r"__(.+?)__", r"<b>\1</b>", s)
+        s = re.sub(r"\*(.+?)\*", r"<i>\1</i>", s)
+        s = re.sub(r"`(.+?)`", r"<code>\1</code>", s)
+        return s
+
+    out, para, bullets = [], [], []
+
+    def flush_para():
+        if para:
+            out.append("<p>" + "<br>".join(inline(x) for x in para) + "</p>")
+            para.clear()
+
+    def flush_bullets():
+        if bullets:
+            out.append("<ul>" + "".join(f"<li>{inline(b)}</li>" for b in bullets) + "</ul>")
+            bullets.clear()
+
+    for line in text.split("\n"):
+        l = line.strip()
+        if not l:
+            flush_bullets(); flush_para(); continue
+        m = re.match(r"^(#{1,6})\s+(.*)$", l)
+        if m:
+            flush_bullets(); flush_para()
+            lvl = min(len(m.group(1)) + 1, 6)  # "## X" -> <h3>
+            out.append(f"<h{lvl}>{inline(m.group(2))}</h{lvl}>")
+            continue
+        mb = re.match(r"^[-*+]\s+(.*)$", l)
+        if mb:
+            flush_para(); bullets.append(mb.group(1)); continue
+        para.append(l)
+    flush_bullets(); flush_para()
+    return "".join(out)
+
+
+def _hasheous_attrs(obj: dict, name: str) -> list:
+    return [a for a in (obj.get("attributes") or []) if a.get("attributeName") == name]
+
+
+def _hasheous_tags(obj: dict) -> list:
+    """Flatten Hasheous' nested Tags attribute to a de-duped list of tag texts."""
+    texts: list = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            t = x.get("text")
+            if isinstance(t, str) and t.strip():
+                texts.append(t.strip())
+            for v in x.values():
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+
+    for a in _hasheous_attrs(obj, "Tags"):
+        walk(a.get("value"))
+    seen, out = set(), []
+    for t in texts:
+        k = t.lower()
+        if k not in seen:
+            seen.add(k)
+            out.append(t)
+    return out[:16]
+
+
+def _normalize_hasheous(obj: dict) -> dict:
+    """Map a Hasheous DataObjects/Game object onto the AppDetails contract.
+    reviews/news/deck are supplied as {ok:False} by the caller and hide cleanly."""
+    name = obj.get("name") or ""
+
+    desc_md = ""
+    ad = _hasheous_attrs(obj, "AIDescription")
+    if ad:
+        desc_md = ad[0].get("value") or ""
+    about_html = _sanitize_html(_md_to_html(desc_md))
+    # Plain-text lead-in for the "what's this game about" card (strip md syntax).
+    short = re.sub(r"[#*_`>]", "", str(desc_md))
+    short = re.sub(r"\s+", " ", short).strip()[:320]
+
+    header = ""
+    for a in _hasheous_attrs(obj, "Logo"):
+        h = a.get("value")
+        if h and str(h) != _HASHEOUS_EMPTY_IMG:
+            header = HASHEOUS_IMAGE + str(h)
+            break
+
+    publishers = []
+    pub = obj.get("publisher")
+    if isinstance(pub, dict) and pub.get("name"):
+        publishers.append(pub["name"])
+
+    platform_name = ""
+    pl = _hasheous_attrs(obj, "Platform")
+    if pl and isinstance(pl[0].get("value"), dict):
+        sd = pl[0]["value"].get("signatureDataObjects") or []
+        if sd:
+            platform_name = sd[0].get("Platform") or ""
+
+    website = None
+    for m in (obj.get("metadata") or []):
+        if m.get("source") == "IGDB" and m.get("status") == "Mapped" and m.get("link"):
+            website = m["link"]
+            break
+
+    year = ""
+    for sd in (obj.get("signatureDataObjects") or []):
+        y = _year_from(sd.get("Year", ""))
+        if y:
+            year = y
+            break
+
+    langs = ""
+    la = _hasheous_attrs(obj, "Language")
+    if la and la[0].get("value"):
+        langs = html.escape(str(la[0]["value"]), quote=False)
+
+    genres = [{"id": t, "description": t[:1].upper() + t[1:]} for t in _hasheous_tags(obj)]
+    categories = ([{"id": "platform", "description": platform_name}] if platform_name else [])
+
+    return {
+        "ok": True,
+        "name": name,
+        "type": "game",
+        "short_description": short,
+        "about_html": about_html,
+        "detailed_html": "",
+        "header_image": header,
+        "background": "",
+        "developers": [],
+        "publishers": publishers,
+        "release_date": year,
+        "coming_soon": False,
+        "website": website,
+        "controller_support": None,
+        "platforms": {},
+        "genres": genres,
+        "categories": categories,
+        "screenshots": [],
+        "movies": [],
+        "metacritic": None,
+        "price": None,
+        "recommendations_total": None,
+        "achievements_total": None,
+        "supported_languages_html": langs,
+        "pc_requirements": None,
+        "content_descriptor_notes": None,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Plugin
 # --------------------------------------------------------------------------- #
 class Plugin:
@@ -1155,42 +1394,144 @@ class Plugin:
         err = d.get("error") if isinstance(d, dict) else None
         return {"ok": False, "appid": int(appid), "error": err or "no store data"}
 
+    # --- Hasheous (non-Steam / emulated metadata) -------------------------- #
+    async def _hasheous_search(self, title: str, platform: str = "") -> list:
+        """MCP hasheous_search_games -> signature game records (with reference
+        ROM hashes). Keyless. The cleanest title matcher Hasheous offers."""
+        args = {"name": title, "limit": 8, "includeRoms": True}
+        if platform:
+            args["platform"] = platform
+        payload = {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                   "params": {"name": "hasheous_search_games", "arguments": args}}
+        loop = asyncio.get_running_loop()
+        raw = await loop.run_in_executor(
+            None, _http_post_json, HASHEOUS_BASE + "/Mcp", payload)
+        content = ((raw or {}).get("result") or {}).get("content") or []
+        text = content[0].get("text") if content else None
+        data = json.loads(text) if text else {}
+        return data.get("games") or []
+
+    async def _hasheous_lookup_hash(self, alg: str, value: str):
+        url = f"{HASHEOUS_BASE}/Lookup/ByHash/{alg}/{value}"
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, _http_get_json, url)
+
+    async def _hasheous_resolve(self, title: str, platform: str = ""):
+        """Keyless title -> stable Hasheous game (DataObject) id. Search by name,
+        pick the best normalized-title match that carries a reference ROM hash,
+        then bridge that hash to the metadata-side game id via Lookup/ByHash."""
+        try:
+            games = await self._hasheous_search(title, platform)
+        except Exception as exc:
+            decky.logger.warning(f"hasheous search failed: {exc}")
+            return {"ok": False, "error": f"hasheous search: {exc}"}
+        if not games:
+            return {"ok": False, "error": "no hasheous match"}
+        nt = _norm_title(title)
+        ranked = [g for g in games if _norm_title(g.get("name")) == nt] or games
+        for g in ranked:
+            for rom in (g.get("roms") or []):
+                for alg in ("sha1", "md5", "crc"):
+                    hv = rom.get(alg)
+                    if not hv:
+                        continue
+                    try:
+                        res = await self._hasheous_lookup_hash(alg, hv)
+                    except Exception:
+                        continue
+                    rec = res[0] if isinstance(res, list) and res else res
+                    if isinstance(rec, dict) and rec.get("id"):
+                        return {"ok": True, "id": int(rec["id"]),
+                                "name": rec.get("name") or g.get("name") or title,
+                                "year": _year_from(g.get("year", "")),
+                                "platform": (g.get("platform") or {}).get("name", "")}
+        return {"ok": False, "error": "no resolvable rom hash"}
+
+    async def get_all_provider(self, provider, id, lang: str = "english",
+                               cc: str = "us"):
+        """Non-Steam metadata aggregate — same AppData shape as get_all, with
+        reviews/news/deck = {ok:False} (they hide cleanly in the panel)."""
+        if provider != "hasheous":
+            return {"ok": False, "error": f"unknown provider: {provider}"}
+        try:
+            gid = int(id)
+        except Exception:
+            return {"ok": False, "error": "invalid provider id"}
+        url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
+
+        def norm(raw):
+            if not isinstance(raw, dict) or not raw.get("name"):
+                return {"ok": False, "error": "no hasheous data"}
+            return _normalize_hasheous(raw)
+
+        appdetails = await self._fetch("hasheous", str(gid), url, norm)
+        return {
+            "ok": True,
+            "appid": gid,
+            "appdetails": appdetails,
+            "reviews": {"ok": False, "error": "reviews are Steam-only"},
+            "news": {"ok": False, "error": "update history is Steam-only"},
+            "deck": {"ok": False, "error": "not a Steam app"},
+        }
+
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
-                           title: str = "", lang: str = "english", cc: str = "us"):
-        """Resolve a library game (Steam or non-Steam shortcut) to the Steam store
-        appid to fetch content for. Uses a saved match if present; otherwise a
-        Steam game maps to itself and a non-Steam game is searched by title
-        (best result auto-accepted). The resolved match is PERSISTED so it is
-        never re-identified — only the user changes it (set_match/clear_match)."""
+                           title: str = "", lang: str = "english", cc: str = "us",
+                           platform: str = ""):
+        """Resolve a library game (Steam or non-Steam shortcut) to the SOURCE to
+        fetch content for. A saved match wins. Otherwise a Steam game maps to
+        itself, and a non-Steam shortcut is searched on Steam first (best result
+        auto-accepted); if Steam has nothing AND non-Steam sources are enabled,
+        it falls back to Hasheous by title (+platform). The match is PERSISTED so
+        it's never re-identified — only the user changes it. `platform`, when the
+        frontend can infer it, disambiguates the Hasheous lookup."""
         try:
             game_appid = int(game_appid)
         except Exception:
             return {"ok": False, "error": "invalid appid"}
-        matches = _read_matches()
-        rec = matches.get(str(game_appid))
+        rec = _read_matches().get(str(game_appid))
         if rec is not None:
-            sa = rec.get("store_appid")
-            if sa:
-                return {"ok": True, "store_appid": int(sa),
-                        "name": rec.get("name", ""), "year": rec.get("year", ""),
-                        "source": rec.get("source", "auto"), "matched": True,
-                        "from_cache": True}
-            # A deliberately-blank ("cleared") record: the user chose no match, so
-            # NEVER auto-search over it. Only Re-detect (which DELETES the record)
-            # restores auto-matching.
-            return {"ok": True, "store_appid": None, "matched": False,
-                    "name": "", "year": "", "source": rec.get("source", "cleared"),
-                    "reason": "cleared"}
+            return _rec_to_result(rec)
+
         if is_shortcut:
             res = await self._search_store(title or "", lang, cc)
             items = res.get("items") if isinstance(res, dict) and res.get("ok") else []
-            best = _best_match(title or "", items or [])
-            if not best:
-                return {"ok": True, "store_appid": None, "matched": False,
-                        "name": "", "year": "", "reason": "no store match for title"}
-            store_appid = int(best["appid"])
+            nt = _norm_title(title or "")
+            exact = next((it for it in items if _norm_title(it.get("name")) == nt), None) if nt else None
+            if exact:
+                # An exact Steam title match is the best possible source (full
+                # store page, media, reviews) — always prefer it.
+                store_appid = int(exact["appid"])
+            else:
+                # No EXACT Steam match. When non-Steam sources are on, try Hasheous
+                # BEFORE accepting Steam's fuzzy guess: a retro/emulated title
+                # ("Sonic the Hedgehog" for a Genesis ROM) is usually the wrong
+                # Steam hit ("Sonic 4"), but Hasheous has the real entry. With the
+                # feature OFF this is byte-identical to the old behavior (Steam's
+                # best guess, else unmatched).
+                if _feature_non_steam():
+                    h = await self._hasheous_resolve(title or "", platform)
+                    if h.get("ok"):
+                        prov_rec = {
+                            "provider": "hasheous", "provider_id": int(h["id"]),
+                            "platform": h.get("platform", ""), "name": h.get("name", ""),
+                            "year": h.get("year", ""), "source": "auto",
+                            "ts": int(time.time())}
+                        async with self._matches_lock():
+                            cur = _read_matches()
+                            existing = cur.get(str(game_appid))
+                            if existing is not None:
+                                return _rec_to_result(existing)
+                            cur[str(game_appid)] = prov_rec
+                            _write_matches(cur)
+                        return _rec_to_result(prov_rec)
+                best = _best_match(title or "", items or [])
+                if not best:
+                    return {"ok": True, "store_appid": None, "matched": False,
+                            "name": "", "year": "", "reason": "no store match for title"}
+                store_appid = int(best["appid"])
         else:
             store_appid = game_appid
+
         ny = await self._name_year(store_appid, lang, cc)
         if not ny.get("ok"):
             # Don't persist a broken record. A Steam game still points at itself
@@ -1198,35 +1539,27 @@ class Plugin:
             # that has no store page stays unmatched.
             return {"ok": True,
                     "store_appid": None if is_shortcut else store_appid,
+                    "provider": None if is_shortcut else "steam",
+                    "provider_id": None if is_shortcut else store_appid,
                     "matched": bool(not is_shortcut), "name": "", "year": "",
                     "reason": ny.get("error", "no store data")}
-        # Persist atomically. Re-read UNDER THE LOCK (the snapshot from the top
-        # of this method is stale after the awaits above): a manual set_match —
-        # or another game's resolve — may have written meanwhile. Honor an
-        # existing record instead of overwriting it, so auto-match can NEVER
-        # clobber a user's manual choice or drop another game's entry.
+        # Persist atomically. Re-read UNDER THE LOCK (the snapshot from the top of
+        # this method is stale after the awaits above): a manual set_match — or
+        # another game's resolve — may have written meanwhile. Honor an existing
+        # record instead of overwriting, so auto-match can NEVER clobber a user's
+        # manual choice or drop another game's entry.
         async with self._matches_lock():
-            matches = _read_matches()
-            existing = matches.get(str(game_appid))
+            cur = _read_matches()
+            existing = cur.get(str(game_appid))
             if existing is not None:
-                # Any record written during our search wins — a manual match OR a
-                # deliberate Clear. Auto-match never overrides a user decision.
-                sa = existing.get("store_appid")
-                if sa:
-                    return {"ok": True, "store_appid": int(sa),
-                            "name": existing.get("name", ""), "year": existing.get("year", ""),
-                            "source": existing.get("source", "auto"), "matched": True,
-                            "from_cache": True}
-                return {"ok": True, "store_appid": None, "matched": False,
-                        "name": "", "year": "", "source": existing.get("source", "cleared"),
-                        "reason": "cleared"}
-            matches[str(game_appid)] = {
+                return _rec_to_result(existing)
+            cur[str(game_appid)] = {
                 "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
                 "source": "auto", "ts": int(time.time())}
-            _write_matches(matches)
-        return {"ok": True, "store_appid": store_appid, "name": ny["name"],
-                "year": ny["year"], "source": "auto", "matched": True,
-                "from_cache": False}
+            _write_matches(cur)
+        return {"ok": True, "store_appid": store_appid, "provider": "steam",
+                "provider_id": store_appid, "name": ny["name"], "year": ny["year"],
+                "source": "auto", "matched": True, "from_cache": False}
 
     async def lookup_store_app(self, id_or_url, lang: str = "english", cc: str = "us"):
         """Validate a user-entered Steam app ID or store URL -> name + year."""

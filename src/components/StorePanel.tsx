@@ -334,6 +334,22 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
           <MediaHero movies={d.movies} screenshots={d.screenshots} />
         </div>
       )}
+      {sec.media && !hasMedia && d.header_image && (
+        // No trailers/screenshots (e.g. a non-Steam / Hasheous card) — show the
+        // header art/logo so the card isn't imageless.
+        <div style={{ margin: "2px 0 10px", textAlign: "center" }}>
+          <img
+            src={d.header_image}
+            alt={d.name}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "clamp(120px, 22vh, 320px)",
+              objectFit: "contain",
+              borderRadius: 6,
+            }}
+          />
+        </div>
+      )}
       {sections.map((s) => (
         <CollapsibleSection
           key={s.id}

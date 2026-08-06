@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.19.0
+
+- **Metadata for emulated / non-Steam games (experimental, off by default).** When
+  a non-Steam game has no Steam store page, EnhancedGV can now pull a description,
+  details and artwork from **Hasheous** — a free, keyless community game database.
+  Turn it on in Quick Access → EnhancedGV → *Non-Steam games (experimental)*.
+  - It only kicks in for games that have their own entry in your Steam library
+    (e.g. ROMs added as individual shortcuts via Steam ROM Manager). A single
+    emulator/frontend shortcut (one ES-DE/RetroDeck entry for your whole library)
+    has no per-game page to attach to.
+  - Steam always wins when a game genuinely exists on Steam (you get the full store
+    page); Hasheous is only used as a fallback for titles Steam doesn't have.
+  - Reviews, Steam Deck compatibility and update history are Steam-only, so those
+    sections simply don't appear for a non-Steam game.
+  - You can still override any match by hand (Quick Access → *Store data source*).
+  - This is the keyless baseline (title, description, genres, developer/publisher,
+    platform, logo). Richer artwork/screenshots via an optional API key are a
+    later step.
+
 ## v0.18.0
 
 - **Fixes the remaining crash in co-installed plugins (SDH-PlayTime).** Even after
