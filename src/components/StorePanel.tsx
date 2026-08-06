@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
 import { useResolvedGame } from "../hooks/useResolvedGame";
+import { steamAppidOf } from "../providers";
 import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN } from "../focus";
 import {
   setDiag,
@@ -126,8 +127,11 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // Steam game this is the appid itself; for a non-Steam shortcut it's the
   // matched store appid (or null while resolving / if unidentified).
   const resolved = useResolvedGame(appid);
-  const fetchAppid = resolved.storeAppid;
-  const { data, settings, loading, error } = useAppData(fetchAppid);
+  const fetchRef = resolved.ref;
+  const { data, settings, loading, error } = useAppData(fetchRef);
+  // Steam appid backing this panel (for the reviews chip-filter fetch only) — null
+  // for a non-Steam provider, whose reviews section is {ok:false} and never fetches.
+  const steamAppid = steamAppidOf(fetchRef);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // Mount health: lets the patcher detect "injection succeeded once but the
@@ -287,7 +291,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       node: (
         <ReviewsSection
           reviews={data.reviews}
-          appid={fetchAppid ?? appid}
+          appid={steamAppid ?? appid}
           settings={settings}
         />
       ),

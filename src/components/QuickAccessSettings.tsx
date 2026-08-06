@@ -55,6 +55,7 @@ const DEFAULTS: PluginSettings = {
   expanded: { ...DEFAULT_EXPANDED },
   language: "auto",
   country: "auto",
+  nonSteamSources: false,
 };
 
 const EXPANDED_LABELS: { key: keyof ExpandedToggles; label: string }[] = [

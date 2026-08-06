@@ -1335,6 +1335,10 @@ class Plugin:
             # Opt in to pre-release "beta" builds in the update check. Default off
             # so risky test builds never reach stable users.
             "beta": False,
+            # Opt in to non-Steam / emulated-game metadata via external providers
+            # (Hasheous). OFF by default: when off, resolve_game does Steam
+            # title-search only and non-Steam misses stay "unmatched".
+            "nonSteamSources": False,
         }
         _sub = ("sections", "expanded")  # merged as sub-dicts, not replaced
         try:

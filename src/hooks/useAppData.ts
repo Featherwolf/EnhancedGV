@@ -1,19 +1,22 @@
 import { useEffect, useState } from "react";
-import { getAll, getSettings } from "../api";
+import { getAll, getAllFromProvider, getSettings } from "../api";
 import { DEFAULT_EXPANDED } from "../types";
-import type { AppData, PluginSettings } from "../types";
+import type { AppData, DataRef, PluginSettings } from "../types";
+import { refKey, refIsValid } from "../providers";
 import { resolveLanguage, resolveCountry } from "../lang";
 
 // Module-level caches survive the re-splicing of the panel into the app tree,
 // so navigating back to a game (or a re-render of renderFunc) never refetches.
-const dataCache = new Map<number, AppData>();
-const inflight = new Map<number, Promise<AppData>>();
+// Keyed by the tagged-ref string ("steam:730" / "hasheous:1234") so Steam and
+// non-Steam sources never collide even if their numeric ids overlap.
+const dataCache = new Map<string, AppData>();
+const inflight = new Map<string, Promise<AppData>>();
 
 // Failures are cached too (with a short TTL): the panel remounts on every tab
 // switch (Steam's tab transition is keyed), and without a negative cache a game
 // whose store fetch fails would flash loading -> error and refire the request on
 // every switch, forever.
-const failureCache = new Map<number, { res: AppData; at: number }>();
+const failureCache = new Map<string, { res: AppData; at: number }>();
 const FAILURE_TTL_MS = 60_000;
 
 // A Decky callable against a dead/stale Python backend can hang FOREVER (neither
@@ -78,6 +81,7 @@ const DEFAULT_SETTINGS: PluginSettings = {
   // resolveLanguage/resolveCountry). An explicit language name is an override.
   language: "auto",
   country: "auto",
+  nonSteamSources: false,
 };
 
 function mergeSettings(s: Partial<PluginSettings> | null | undefined): PluginSettings {
@@ -142,34 +146,39 @@ async function loadSettings(): Promise<PluginSettings> {
   return settingsPromise;
 }
 
-async function loadData(appid: number, settings: PluginSettings): Promise<AppData> {
-  const cached = dataCache.get(appid);
+async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData> {
+  const key = refKey(ref);
+  const cached = dataCache.get(key);
   if (cached) {
-    fetchInfo = { startedAt: 0, settledAt: Date.now(), note: `cache hit (${appid})` };
+    fetchInfo = { startedAt: 0, settledAt: Date.now(), note: `cache hit (${key})` };
     return cached;
   }
 
-  const failed = failureCache.get(appid);
+  const failed = failureCache.get(key);
   if (failed) {
     if (Date.now() - failed.at < FAILURE_TTL_MS) return failed.res;
-    failureCache.delete(appid); // TTL expired -> allow a retry
+    failureCache.delete(key); // TTL expired -> allow a retry
   }
 
-  let promise = inflight.get(appid);
+  let promise = inflight.get(key);
   if (!promise) {
-    fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${appid}) in flight` };
-    promise = withTimeout(
-      getAll(appid, resolveLanguage(settings.language), resolveCountry(settings.country)),
-      "get_all"
-    )
+    fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${key}) in flight` };
+    const lang = resolveLanguage(settings.language);
+    const cc = resolveCountry(settings.country);
+    // Steam appid -> get_all; any other provider -> get_all_provider (same shape).
+    const call =
+      ref.provider === "steam"
+        ? getAll(Number(ref.id), lang, cc)
+        : getAllFromProvider(ref.provider, ref.id, lang, cc);
+    promise = withTimeout(call, "get_all")
       .then((res) => {
         fetchInfo = {
           startedAt: fetchInfo.startedAt,
           settledAt: Date.now(),
-          note: res && res.ok ? `ok (${appid})` : `not ok: ${res?.error ?? "?"}`,
+          note: res && res.ok ? `ok (${key})` : `not ok: ${res?.error ?? "?"}`,
         };
-        if (res && res.ok) lruSet(dataCache, appid, res);
-        else lruSet(failureCache, appid, { res, at: Date.now() });
+        if (res && res.ok) lruSet(dataCache, key, res);
+        else lruSet(failureCache, key, { res, at: Date.now() });
         return res;
       })
       .catch((e) => {
@@ -180,14 +189,14 @@ async function loadData(appid: number, settings: PluginSettings): Promise<AppDat
         };
         // Negative-cache the failure (incl. the 45s timeout) so a hung backend
         // serves the error instantly on the next remount instead of re-hanging.
-        lruSet(failureCache, appid, {
+        lruSet(failureCache, key, {
           res: { ok: false, error: String(e) } as AppData,
           at: Date.now(),
         });
         throw e;
       })
-      .finally(() => inflight.delete(appid));
-    inflight.set(appid, promise);
+      .finally(() => inflight.delete(key));
+    inflight.set(key, promise);
   }
   return promise;
 }
@@ -206,35 +215,38 @@ export function getFetchInfo(): { startedAt: number; settledAt: number; note: st
   return fetchInfo;
 }
 
-const hasFreshResult = (appid: number | null): boolean => {
-  if (!appid) return false;
-  if (dataCache.has(appid)) return true;
-  const f = failureCache.get(appid);
+const hasFreshResult = (key: string | null): boolean => {
+  if (!key) return false;
+  if (dataCache.has(key)) return true;
+  const f = failureCache.get(key);
   return !!f && Date.now() - f.at < FAILURE_TTL_MS;
 };
 
-// appid is null while the game is still being resolved to a store appid (or a
-// non-Steam game has no match) — no fetch happens in that case.
-export function useAppData(appid: number | null): UseAppData {
+// ref is null while the game is still being resolved (or a non-Steam game has no
+// match) — no fetch happens in that case. The primitive `key` (not the ref
+// object) drives the effect and the caches, so a fresh ref object with the same
+// provider+id never refires the fetch.
+export function useAppData(ref: DataRef | null): UseAppData {
+  const key = refIsValid(ref) ? refKey(ref) : null;
   const [data, setData] = useState<AppData | null>(
-    appid ? dataCache.get(appid) ?? null : null
+    key ? dataCache.get(key) ?? null : null
   );
   const [settings, setSettings] = useState<PluginSettings>(
     settingsCache ?? DEFAULT_SETTINGS
   );
-  const [loading, setLoading] = useState<boolean>(!hasFreshResult(appid));
+  const [loading, setLoading] = useState<boolean>(!hasFreshResult(key));
   const [error, setError] = useState<string | null>(null);
 
-  // Reconcile state DURING render when the appid changes (e.g. a QAM match edit
-  // flips the resolved store appid X->Y): the async reset in the effect below
-  // runs only after paint, which would flash the previous appid's cached content
-  // for one frame. Adjusting state here re-renders synchronously before paint.
-  const [prevAppid, setPrevAppid] = useState<number | null>(appid);
-  if (appid !== prevAppid) {
-    setPrevAppid(appid);
-    setData(appid ? dataCache.get(appid) ?? null : null);
+  // Reconcile state DURING render when the ref changes (e.g. a QAM match edit
+  // flips the resolved source X->Y): the async reset in the effect below runs
+  // only after paint, which would flash the previous ref's cached content for one
+  // frame. Adjusting state here re-renders synchronously before paint.
+  const [prevKey, setPrevKey] = useState<string | null>(key);
+  if (key !== prevKey) {
+    setPrevKey(key);
+    setData(key ? dataCache.get(key) ?? null : null);
     setError(null);
-    setLoading(!hasFreshResult(appid));
+    setLoading(!hasFreshResult(key));
   }
 
   // Live settings updates (e.g. section toggled in Quick Access).
@@ -249,26 +261,26 @@ export function useAppData(appid: number | null): UseAppData {
   useEffect(() => {
     let cancelled = false;
 
-    // Reset from cache on appid change (covers a reused panel instance).
-    setData(appid ? dataCache.get(appid) ?? null : null);
+    // Reset from cache on ref change (covers a reused panel instance).
+    setData(key ? dataCache.get(key) ?? null : null);
     setError(null);
 
-    // Null (still resolving) / non-positive ids won't have store data; skip the
-    // round-trip. StorePanel gates on the resolver status, so this "no appid"
-    // state is never shown as an error to the user.
-    if (!appid || appid <= 0) {
+    // Null (still resolving) / invalid refs won't have data; skip the round-trip.
+    // StorePanel gates on the resolver status, so this "no data" state is never
+    // shown as an error to the user.
+    if (!key || !refIsValid(ref)) {
       setLoading(false);
       setError("no appid");
       return;
     }
 
-    setLoading(!hasFreshResult(appid));
+    setLoading(!hasFreshResult(key));
 
     (async () => {
       try {
         const s = await loadSettings();
         if (!cancelled) setSettings(s);
-        const res = await loadData(appid, s);
+        const res = await loadData(ref, s);
         if (cancelled) return;
         if (res && res.ok) {
           setData(res);
@@ -285,7 +297,10 @@ export function useAppData(appid: number | null): UseAppData {
     return () => {
       cancelled = true;
     };
-  }, [appid]);
+    // Depend on the primitive key; `ref` is captured in the closure and is
+    // consistent with `key` for this render (both derive from the same ref).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   return { data, settings, loading, error };
 }
