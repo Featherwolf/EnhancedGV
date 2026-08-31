@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
 import { useResolvedGame } from "../hooks/useResolvedGame";
-import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN } from "../focus";
+import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN, focusFirstStop } from "../focus";
 import {
   setDiag,
   markStoreRender,
@@ -13,7 +13,7 @@ import {
 } from "../diag";
 import { CollapsibleSection } from "./CollapsibleSection";
 import { MediaHero } from "./MediaGallery";
-import { SkeletonPanel } from "./SkeletonPanel";
+import { SkeletonPanel, SectionLoading } from "./SkeletonPanel";
 import { DEFAULT_EXPANDED } from "../types";
 import { DescriptionSection } from "./DescriptionSection";
 import { FeaturesSection } from "./FeaturesSection";
@@ -60,6 +60,44 @@ const HEADER_STYLE: CSSProperties = {
   gap: 10,
   marginBottom: 8,
 };
+
+// Everything the panel shows BEFORE its content exists (skeleton, "not matched
+// yet", "store unavailable") lives inside this, and it is a real focus stop.
+// Otherwise the D-pad walks straight from the Play button to the tab strip while
+// the panel is still loading — the section is skipped instead of scrolled
+// through — and the user never comes back to it once content lands.
+function PlaceholderStop({
+  onFocusChange,
+  children,
+}: {
+  onFocusChange?: (focused: boolean) => void;
+  children: ReactNode;
+}) {
+  const [focused, setFocused] = useState(false);
+  const set = (v: boolean) => {
+    setFocused(v);
+    onFocusChange?.(v);
+  };
+  return (
+    <Focusable
+      {...CENTER_ON_FOCUS}
+      // A no-op activate is what makes Valve's nav treat this as a landing spot
+      // rather than a pass-through container (same trick as ShortDescCard).
+      onActivate={() => {}}
+      onFocus={() => set(true)}
+      onBlur={() => set(false)}
+      style={{
+        ...FOCUS_SCROLL_MARGIN,
+        borderRadius: 6,
+        padding: 2,
+        outline: focused ? "2px solid #1a9fff" : "2px solid transparent",
+        outlineOffset: 2,
+      }}
+    >
+      {children}
+    </Focusable>
+  );
+}
 
 function StatusBanner({ tone, text }: { tone: "info" | "warn"; text: string }) {
   return (
@@ -129,6 +167,27 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   const fetchAppid = resolved.storeAppid;
   const { data, settings, loading, error } = useAppData(fetchAppid);
   const rootRef = useRef<HTMLDivElement | null>(null);
+
+  // True while the panel has no store content yet (resolving / loading /
+  // unmatched / unavailable) and is therefore showing its placeholder stop.
+  const hasContent = !!(data && data.appdetails?.ok);
+  // Mirrors the three early-return branches below exactly.
+  const showsPlaceholder = resolved.status === "resolving" || loading || !hasContent;
+  // When content replaces the placeholder the user is standing on, the focused
+  // node disappears — Valve's nav would drop the cursor out of the panel and
+  // scroll the page back up. Hand focus to the panel's first real stop instead.
+  const placeholderFocused = useRef(false);
+  const wasPlaceholder = useRef(showsPlaceholder);
+  useEffect(() => {
+    if (wasPlaceholder.current && !showsPlaceholder && placeholderFocused.current) {
+      placeholderFocused.current = false;
+      const raf = requestAnimationFrame(() => focusFirstStop(rootRef.current));
+      wasPlaceholder.current = showsPlaceholder;
+      return () => cancelAnimationFrame(raf);
+    }
+    wasPlaceholder.current = showsPlaceholder;
+    return;
+  }, [showsPlaceholder]);
 
   // Mount health: lets the patcher detect "injection succeeded once but the
   // committed tree lost the panel" and re-arm the fallback ladder. Keyed by
@@ -203,11 +262,13 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     // content replaces it in place. Also covers the brief "matching a non-Steam
     // game by title" window.
     return (
-      <div ref={rootRef} style={CONTAINER_STYLE}>
+      <Focusable ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
-        <SkeletonPanel sections={settings.sections} />
+        <PlaceholderStop onFocusChange={(f) => (placeholderFocused.current = f)}>
+          <SkeletonPanel sections={settings.sections} />
+        </PlaceholderStop>
         {fallback}
-      </div>
+      </Focusable>
     );
   }
 
@@ -215,18 +276,20 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     // A non-Steam game with no Steam store match (auto-search missed, or it's not
     // on Steam). Managed entirely from the QAM — no in-page matcher.
     return (
-      <div ref={rootRef} style={CONTAINER_STYLE}>
+      <Focusable ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
-        <StatusBanner
-          tone="info"
-          text="This game isn’t matched to a Steam store page yet. Set its Steam App ID from Quick Access → EnhancedGV → Store data source to pull content."
-        />
+        <PlaceholderStop onFocusChange={(f) => (placeholderFocused.current = f)}>
+          <StatusBanner
+            tone="info"
+            text="This game isn’t matched to a Steam store page yet. Set its Steam App ID from Quick Access → EnhancedGV → Store data source to pull content."
+          />
+        </PlaceholderStop>
         {fallback}
-      </div>
+      </Focusable>
     );
   }
 
-  if (error || !data || !data.appdetails?.ok) {
+  if (!hasContent) {
     // Store data unavailable (non-Steam shortcut / region-locked / fetch error).
     // Show the native content as a fallback, but make it clear EnhancedGV IS
     // active and why there's no store content, rather than looking unchanged.
@@ -235,16 +298,22 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
         ? (data.appdetails as { error?: string })?.error
         : error) || "no store data";
     return (
-      <div ref={rootRef} style={CONTAINER_STYLE}>
+      <Focusable ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
-        <StatusBanner tone="warn" text={`Store content unavailable (${why})`} />
+        <PlaceholderStop onFocusChange={(f) => (placeholderFocused.current = f)}>
+          <StatusBanner tone="warn" text={`Store content unavailable (${why})`} />
+        </PlaceholderStop>
         {fallback}
-      </div>
+      </Focusable>
     );
   }
 
   const d = data.appdetails;
   const sec = settings.sections;
+  // First paint: store details are real, the rest is still in flight. Those
+  // sections show a shimmer rather than their empty state, and their subtitle
+  // (review count, news count, Deck rating) fills in when the data lands.
+  const pending = !!data.partial;
   const expanded = { ...DEFAULT_EXPANDED, ...settings.expanded };
   const reviewSummary = data.reviews?.ok ? data.reviews.summary.desc : "";
 
@@ -272,9 +341,9 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     sections.push({
       id: "deck",
       title: "Steam Deck",
-      subtitle: data.deck?.ok ? data.deck.label : undefined,
+      subtitle: data.deck?.ok ? data.deck.label : pending ? "…" : undefined,
       defaultOpen: expanded.deck,
-      node: <DeckCompatDetails deck={data.deck} />,
+      node: pending ? <SectionLoading lines={2} /> : <DeckCompatDetails deck={data.deck} />,
     });
   if (sec.reviews)
     sections.push({
@@ -282,9 +351,13 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       title: "Reviews",
       subtitle: data.reviews?.ok
         ? data.reviews.summary.total_reviews.toLocaleString()
-        : undefined,
+        : pending
+          ? "…"
+          : undefined,
       defaultOpen: expanded.reviews,
-      node: (
+      node: pending ? (
+        <SectionLoading lines={4} />
+      ) : (
         <ReviewsSection
           reviews={data.reviews}
           appid={fetchAppid ?? appid}
@@ -296,9 +369,9 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     sections.push({
       id: "news",
       title: "Update history",
-      subtitle: data.news?.ok ? `${data.news.items.length}` : undefined,
+      subtitle: data.news?.ok ? `${data.news.items.length}` : pending ? "…" : undefined,
       defaultOpen: expanded.news,
-      node: <NewsSection news={data.news} />,
+      node: pending ? <SectionLoading lines={3} /> : <NewsSection news={data.news} />,
     });
 
   const header = (

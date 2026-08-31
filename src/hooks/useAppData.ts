@@ -1,13 +1,21 @@
 import { useEffect, useState } from "react";
-import { getAll, getSettings } from "../api";
+import { getAll, getAppDetails, getSettings } from "../api";
 import { DEFAULT_EXPANDED } from "../types";
-import type { AppData, PluginSettings } from "../types";
+import type { AppData, AppDetails, PluginSettings } from "../types";
 import { resolveLanguage, resolveCountry } from "../lang";
 
 // Module-level caches survive the re-splicing of the panel into the app tree,
 // so navigating back to a game (or a re-render of renderFunc) never refetches.
 const dataCache = new Map<number, AppData>();
 const inflight = new Map<number, Promise<AppData>>();
+
+// First-paint cache: the appdetails-only result (hero, description, features).
+// It is requested alongside the full get_all so the panel can paint the moment
+// the single store-details request lands, instead of waiting for the slowest of
+// appdetails + reviews + news + deck. Superseded by dataCache the moment the
+// full result arrives.
+const coreCache = new Map<number, AppData>();
+const coreInflight = new Map<number, Promise<AppData | null>>();
 
 // Failures are cached too (with a short TTL): the panel remounts on every tab
 // switch (Steam's tab transition is keyed), and without a negative cache a game
@@ -25,6 +33,9 @@ const FAILURE_TTL_MS = 60_000;
 // a local file) uses a much shorter cap — if IT times out the backend is dead.
 const CALL_TIMEOUT_MS = 25_000;
 const SETTINGS_TIMEOUT_MS = 6_000;
+// The first-paint call is a single HTTP request behind a disk cache; if it has
+// not answered well before get_all would, there is nothing to gain from it.
+const CORE_TIMEOUT_MS = 20_000;
 export function withTimeout<T>(p: Promise<T>, what: string, ms = CALL_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout>;
   return Promise.race([
@@ -110,6 +121,8 @@ export function clearFrontendCache(): void {
   dataCache.clear();
   inflight.clear();
   failureCache.clear();
+  coreCache.clear();
+  coreInflight.clear();
   extraCacheClearers.forEach((fn) => {
     try {
       fn();
@@ -192,6 +205,73 @@ async function loadData(appid: number, settings: PluginSettings): Promise<AppDat
   return promise;
 }
 
+// A first-paint AppData: real store details, the other three sections marked
+// pending so StorePanel shows their loading placeholder rather than "no data".
+const PENDING_SECTION = { ok: false, error: "loading" };
+function corePaint(appid: number, d: AppDetails): AppData {
+  return {
+    ok: true,
+    appid,
+    appdetails: d,
+    reviews: PENDING_SECTION as unknown as AppData["reviews"],
+    news: PENDING_SECTION as unknown as AppData["news"],
+    deck: PENDING_SECTION as unknown as AppData["deck"],
+    partial: true,
+  };
+}
+
+// appdetails on its own, for the first paint. Failures resolve to null and are
+// simply ignored — get_all is the authority and reports the real error.
+function loadCore(appid: number, settings: PluginSettings): Promise<AppData | null> {
+  const cached = coreCache.get(appid) ?? dataCache.get(appid);
+  if (cached) return Promise.resolve(cached);
+
+  let promise = coreInflight.get(appid);
+  if (!promise) {
+    promise = withTimeout(
+      getAppDetails(appid, resolveLanguage(settings.language), resolveCountry(settings.country)),
+      "get_appdetails",
+      CORE_TIMEOUT_MS
+    )
+      .then((d) => {
+        if (!d || !d.ok) return null;
+        const paint = corePaint(appid, d);
+        lruSet(coreCache, appid, paint);
+        return paint;
+      })
+      .catch(() => null)
+      .finally(() => coreInflight.delete(appid));
+    coreInflight.set(appid, promise);
+  }
+  return promise;
+}
+
+/**
+ * Start the store fetch for a game BEFORE the panel mounts. The injector calls
+ * this the moment Steam renders the app-page route, so the round-trip overlaps
+ * the page transition and the panel's own DOM/portal work instead of starting
+ * after it. Purely speculative: results land in the same caches the panel reads,
+ * and every failure path is swallowed.
+ */
+export function prefetchAppData(appid: number): void {
+  if (!appid || appid <= 0) return;
+  if (dataCache.has(appid)) return;
+  void (async () => {
+    try {
+      const s = await loadSettings();
+      void loadCore(appid, s).catch(() => null);
+      void loadData(appid, s).catch(() => null);
+    } catch {
+      /* prefetch is best-effort */
+    }
+  })();
+}
+
+/** Read settings once at plugin start so they are never on the panel's path. */
+export function warmSettings(): void {
+  void loadSettings().catch(() => null);
+}
+
 export interface UseAppData {
   data: AppData | null;
   settings: PluginSettings;
@@ -208,7 +288,7 @@ export function getFetchInfo(): { startedAt: number; settledAt: number; note: st
 
 const hasFreshResult = (appid: number | null): boolean => {
   if (!appid) return false;
-  if (dataCache.has(appid)) return true;
+  if (dataCache.has(appid) || coreCache.has(appid)) return true;
   const f = failureCache.get(appid);
   return !!f && Date.now() - f.at < FAILURE_TTL_MS;
 };
@@ -216,9 +296,9 @@ const hasFreshResult = (appid: number | null): boolean => {
 // appid is null while the game is still being resolved to a store appid (or a
 // non-Steam game has no match) — no fetch happens in that case.
 export function useAppData(appid: number | null): UseAppData {
-  const [data, setData] = useState<AppData | null>(
-    appid ? dataCache.get(appid) ?? null : null
-  );
+  const cachedFor = (id: number | null): AppData | null =>
+    id ? dataCache.get(id) ?? coreCache.get(id) ?? null : null;
+  const [data, setData] = useState<AppData | null>(cachedFor(appid));
   const [settings, setSettings] = useState<PluginSettings>(
     settingsCache ?? DEFAULT_SETTINGS
   );
@@ -232,7 +312,7 @@ export function useAppData(appid: number | null): UseAppData {
   const [prevAppid, setPrevAppid] = useState<number | null>(appid);
   if (appid !== prevAppid) {
     setPrevAppid(appid);
-    setData(appid ? dataCache.get(appid) ?? null : null);
+    setData(cachedFor(appid));
     setError(null);
     setLoading(!hasFreshResult(appid));
   }
@@ -250,7 +330,7 @@ export function useAppData(appid: number | null): UseAppData {
     let cancelled = false;
 
     // Reset from cache on appid change (covers a reused panel instance).
-    setData(appid ? dataCache.get(appid) ?? null : null);
+    setData(cachedFor(appid));
     setError(null);
 
     // Null (still resolving) / non-positive ids won't have store data; skip the
@@ -268,15 +348,32 @@ export function useAppData(appid: number | null): UseAppData {
       try {
         const s = await loadSettings();
         if (!cancelled) setSettings(s);
+        // Two requests, one round trip apart at worst: whichever of the two
+        // lands first paints. The first-paint result is only adopted while the
+        // full one is still outstanding.
+        let full = false;
+        const core = loadCore(appid, s).then((paint) => {
+          if (cancelled || full || !paint) return;
+          setData(paint);
+          setLoading(false);
+        });
+        void core;
         const res = await loadData(appid, s);
+        full = true;
         if (cancelled) return;
         if (res && res.ok) {
           setData(res);
         } else {
           setError(res?.error ?? "unavailable");
+          // Keep a first paint that is already on screen, but stop the remaining
+          // sections from waiting on a result that will never arrive.
+          setData((d) => (d && d.partial ? { ...d, partial: false } : d));
         }
       } catch (e) {
-        if (!cancelled) setError(String(e));
+        if (!cancelled) {
+          setError(String(e));
+          setData((d) => (d && d.partial ? { ...d, partial: false } : d));
+        }
       } finally {
         if (!cancelled) setLoading(false);
       }

@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.19.0
+
+- **The panel appears far sooner on a game page.** It used to wait for a
+  once-every-2-seconds re-sync to notice the page had finished laying out, so on
+  most page loads it arrived a beat or two after everything else. It now retries
+  in a tight burst as soon as Steam renders the page and stops the moment it has
+  landed.
+- **Store content is fetched the instant the page opens**, in parallel with the
+  page transition and the panel's own setup, instead of only after the panel has
+  mounted. Plugin settings are read once at startup so they are never on that
+  path either.
+- **Content appears in two stages instead of all at once.** The description,
+  trailers, screenshots and details now paint as soon as they arrive rather than
+  waiting for reviews, update history and the Deck report; those sections show a
+  small shimmer and fill in a moment later.
+- **Revisiting a game is instant.** Cached store data past its refresh window is
+  now shown immediately and refreshed in the background, so a game you've opened
+  before never sends you back to the loading placeholder.
+- **Pressing down before the panel appears no longer skips it.** The placeholder
+  is a real selection stop, so the D-pad/stick scrolls into the section instead
+  of jumping straight to the tab strip — and if the press lands in the split
+  second before the panel is in place, it is replayed into the panel once it is,
+  so you end up where the press would have taken you.
+- **Focus is no longer lost when content replaces the placeholder** you were
+  sitting on — the selection moves to the panel's first item instead of dropping
+  out of the panel and scrolling the page back to the top.
+
 ## v0.18.0
 
 - **Fixes the remaining crash in co-installed plugins (SDH-PlayTime).** Even after

@@ -6,6 +6,15 @@ import type { ReactElement } from "react";
 import { StorePanel } from "./components/StorePanel";
 import { captureNavFromElement, isCaptureLive, appidFromElement } from "./navBridge";
 import type { NavCapture } from "./navBridge";
+import { prefetchAppData, warmSettings } from "./hooks/useAppData";
+import { getGameIdentity } from "./identity";
+import {
+  armEarlyNav,
+  stopEarlyNav,
+  resetEarlyNavPage,
+  consumeSlotCrossing,
+} from "./earlyNav";
+import { focusFirstStop } from "./focus";
 import {
   setDiag,
   markInjectApply,
@@ -100,16 +109,20 @@ function stablePanel(appid: number): ReactElement {
   return p;
 }
 
-// A "resync now" signal (route render) fans out to the mounted host.
-const listeners = new Set<() => void>();
-function notify(): void {
+// A "resync now" signal (route render) fans out to the mounted host. A listener
+// reports whether it is SETTLED (panel attached to the visible page, or there is
+// no app page to attach to) so the retry burst below can stop early.
+const listeners = new Set<() => boolean>();
+function notify(): boolean {
+  let settled = true;
   listeners.forEach((l) => {
     try {
-      l();
+      if (!l()) settled = false;
     } catch {
-      /* ignore */
+      settled = false;
     }
   });
+  return settled;
 }
 
 // PLUGIN-COEXISTENCE (v0.18): NEVER run the resync fan-out synchronously from a
@@ -122,14 +135,73 @@ function notify(): void {
 // THEIR frame and Decky's ErrorBoundary blames them. Deferring to a fresh
 // macrotask guarantees sync() only ever mutates the DOM AFTER commit. Coalesced so
 // a burst of route renders collapses to a single resync.
-let notifyScheduled = false;
+//
+// LOAD TIME: a single deferred resync used to be the only prompt, so whenever the
+// app-details container was not yet laid out (offsetParent === null during the
+// page-enter transition — the common case) the panel had to wait for the 2s
+// heartbeat before it appeared. That is the whole "the panel shows up late, and a
+// D-pad press before it lands skips the section" problem. The route render now
+// starts a short RETRY BURST instead: densely at first, then tapering, stopping
+// the moment a listener reports it is settled. Every attempt still runs off the
+// render stack, so the coexistence guarantee above is unchanged.
+const RETRY_MS = [0, 16, 40, 80, 140, 220, 340, 500, 750, 1100, 1600];
+let burstTimers: ReturnType<typeof setTimeout>[] = [];
+let burstStartedAt = 0;
+
+function clearBurst(): void {
+  burstTimers.forEach(clearTimeout);
+  burstTimers = [];
+}
+
 function scheduleNotify(): void {
-  if (notifyScheduled) return;
-  notifyScheduled = true;
-  setTimeout(() => {
-    notifyScheduled = false;
-    notify();
-  }, 0);
+  // Coalesce the burst of route renders Steam emits while a page settles.
+  if (burstTimers.length && Date.now() - burstStartedAt < 120) return;
+  clearBurst();
+  burstStartedAt = Date.now();
+  for (const ms of RETRY_MS) {
+    burstTimers.push(
+      setTimeout(() => {
+        if (notify()) clearBurst();
+      }, ms)
+    );
+  }
+}
+
+// The appid of the page Steam is rendering, read from the router path. Used ONLY
+// to start the store fetch early (it overlaps the page transition and our own
+// injection work); the panel itself always uses the appid read from the visible
+// page's React fiber.
+function appidFromLocation(): number | null {
+  try {
+    const loc = window.location;
+    const m = /\/library\/app\/(\d+)/.exec(`${loc.pathname}${loc.search}${loc.hash}`);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+let lastPrefetched = 0;
+let lastPrefetchedAt = 0;
+function prefetchForRoute(): void {
+  try {
+    const id = appidFromLocation();
+    if (!id) return;
+    // Steam re-renders the route several times while a page settles; only the
+    // first of those should start a fetch. The window also lets a later visit
+    // re-prime the caches (e.g. after "clear cached store data").
+    if (id === lastPrefetched && Date.now() - lastPrefetchedAt < 10_000) return;
+    lastPrefetched = id;
+    lastPrefetchedAt = Date.now();
+    // A non-Steam shortcut has to be matched to a store appid first (that
+    // happens in the panel), so there is nothing to prefetch for it here.
+    if (getGameIdentity(id).isShortcut) return;
+    prefetchAppData(id);
+  } catch {
+    /* prefetch is best-effort */
+  }
 }
 
 // ---------- the single injector: a Decky-owned global component -------------
@@ -157,10 +229,12 @@ function RestorePortalHost() {
       cap.current = null;
     };
 
-    const sync = () => {
-      if (disposed || unloaded) return;
+    // Returns TRUE when there is nothing left to wait for (panel attached to the
+    // visible page and bridged into its nav tree, or we are not on an app page).
+    const sync = (): boolean => {
+      if (disposed || unloaded) return true;
       const doc = probeRef.current?.ownerDocument ?? getPanelDoc();
-      if (!doc) return;
+      if (!doc) return false;
       const target = findVisibleContainer(doc);
       if (!target) {
         // Not on an app-details page -> tear our panel down and clear state.
@@ -169,12 +243,16 @@ function RestorePortalHost() {
           force();
         }
         if (currentAppid != null) currentAppid = null;
-        return;
+        // Left the app page: the next visit (even to the same game) arms afresh.
+        if (appidFromLocation() == null) resetEarlyNavPage();
+        // On an app page the container appears a beat after the route renders,
+        // so "not found yet" is only settled once we are off the route.
+        return appidFromLocation() == null;
       }
       const id = appidFromElement(target);
       if (id == null) {
         markInjectMiss("portal: appid not resolvable from visible container");
-        return;
+        return false;
       }
       currentAppid = id;
       // Re-render ONLY when something actually changed. The old unconditional
@@ -192,7 +270,7 @@ function RestorePortalHost() {
         const made = makeHostBeforeTarget(target);
         if (!made) {
           markInjectMiss("portal: could not insert host before container");
-          return;
+          return false;
         }
         host.current = made;
         appid.current = id;
@@ -225,11 +303,29 @@ function RestorePortalHost() {
         }
       }
       if (changed) force();
+      // Settled once the host is in the page AND its focus context is bridged —
+      // an unbridged panel is still worth retrying for (its Focusables would
+      // register at route level and be unreachable by the D-pad).
+      const settled = !!host.current?.isConnected && !!cap.current;
+      // The user may already have pressed Down (or flicked the stick) past the
+      // still-empty slot while we were attaching. Now that the panel is in the
+      // page AND reachable, replay that move into it — its loading placeholder
+      // is a focus stop — so the press scrolls into the section instead of
+      // skipping it. One-shot and grace-windowed (see earlyNav).
+      if (settled && consumeSlotCrossing(host.current)) {
+        const target = host.current;
+        setTimeout(() => {
+          if (!disposed && !unloaded && target?.isConnected) focusFirstStop(target);
+        }, 0);
+      }
+      return settled;
     };
 
     const l = () => sync();
     listeners.add(l);
     sync();
+    // Heartbeat for everything the route render can't tell us about (tab
+    // switches, page rebuilds). The fast path is the retry burst above.
     const iv = setInterval(sync, 2000);
     return () => {
       disposed = true;
@@ -261,6 +357,9 @@ function RestorePortalHost() {
 
 export function patchLibraryApp() {
   unloaded = false;
+  // Read the settings file once, now, so the first game page never waits on it
+  // before it can start fetching store data.
+  warmSettings();
   const rootCls = token(basicAppDetailsSectionStylerClasses, "AppDetailsRoot") ?? null;
   const adcCls = token(basicAppDetailsSectionStylerClasses, "AppDetailsContainer") ?? null;
   log(
@@ -289,6 +388,17 @@ export function patchLibraryApp() {
   return routerHook.addPatch(ROUTE, (tree: AnyEl) => {
     try {
       markRouteRender();
+      // Both are cheap and side-effect-free on Steam's tree: start the store
+      // fetch, and begin remembering focus moves so a D-pad press made before
+      // the panel lands can be replayed into it.
+      prefetchForRoute();
+      const routeId = appidFromLocation();
+      if (routeId != null) {
+        armEarlyNav(
+          getPanelDoc() ?? (typeof document !== "undefined" ? document : null),
+          String(routeId)
+        );
+      }
       scheduleNotify();
     } catch {
       /* ignore */
@@ -300,6 +410,8 @@ export function patchLibraryApp() {
 export function unpatchLibraryApp(patch: ReturnType<typeof patchLibraryApp>): void {
   unloaded = true;
   currentAppid = null;
+  clearBurst();
+  stopEarlyNav();
   notify(); // let the host detach + unmount its portal (Focusable RemoveChild runs cleanly)
   try {
     routerHook.removeGlobalComponent(GLOBAL_COMPONENT);

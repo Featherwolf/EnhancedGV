@@ -1,9 +1,25 @@
 import { callable } from "@decky/api";
-import type { AppData, PatchNotes, PluginSettings, Reviews, UpdateInfo } from "./types";
+import type {
+  AppData,
+  AppDetails,
+  PatchNotes,
+  PluginSettings,
+  Reviews,
+  UpdateInfo,
+} from "./types";
 
 // Each string MUST match an `async def` name on the Python `class Plugin`.
 export const getAll = callable<[appid: number, lang: string, cc: string], AppData>(
   "get_all"
+);
+
+// The store-details half of get_all on its own. Requested in parallel with
+// get_all so the hero/description/features can paint as soon as the single
+// appdetails request lands, instead of waiting on reviews + news + deck. The
+// backend de-duplicates in-flight requests per resource, so get_all reuses this
+// very fetch rather than issuing a second one.
+export const getAppDetails = callable<[appid: number, lang: string, cc: string], AppDetails>(
+  "get_appdetails"
 );
 
 export const getSettings = callable<[], PluginSettings>("get_settings");

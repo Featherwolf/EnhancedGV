@@ -50,12 +50,22 @@ Access** panel.
   and above the tab strip — re-providing the page's gamepad-focus node so the
   panel stays controller-navigable. The route patch is read-only. Every step is
   guarded, so a Steam client update degrades to "no panel" rather than crashing.
+- **Getting on screen fast**: the route render starts the store fetch straight
+  away and kicks off a short retry burst that injects the host the moment the
+  page is laid out (a 2 s heartbeat then just covers tab switches and page
+  rebuilds). Store details paint as soon as they land — reviews, update history
+  and the Deck report fill in behind a shimmer — and the loading placeholder is
+  a real gamepad focus stop, so a D-pad press made before the panel appears
+  scrolls into the section instead of skipping past it.
 - **Backend** (`main.py`, Python stdlib only): fetches from Steam's store/web
   APIs (bypassing the browser's CORS restrictions), **normalizes and
   allowlist-sanitizes** the HTML/JSON, converts news BBCODE → safe HTML, resolves
   non-Steam games to a store appid by title search, and caches responses to disk
   (`DECKY_PLUGIN_RUNTIME_DIR`) with per-kind TTLs plus negative caching and
-  in-flight de-duplication to stay well under Steam's rate limits.
+  in-flight de-duplication to stay well under Steam's rate limits. Expired
+  entries are served **stale-while-revalidate** — the last known-good copy is
+  returned immediately and refreshed in the background — so revisiting a game
+  never puts you back on the loading placeholder.
 
 Data sources (no API key required): store **appdetails**, reviews
 (**appreviews** + **appreviewhistogram**), store **search** (`storesearch`, for
@@ -219,6 +229,7 @@ EnhancedGV/
     ├── index.tsx            # definePlugin: registers the route patch + QAM panel
     ├── patchLibraryApp.tsx  # app-page injection (Decky-owned portal, no render-fn patching)
     ├── navBridge.ts         # re-provides Steam's gamepad-focus context to the panel
+    ├── earlyNav.ts          # replays a D-pad press made before the panel landed
     ├── api.ts               # callable() bindings to main.py
     ├── identity.ts          # reads game identity (Steam vs non-Steam shortcut)
     ├── matches.ts           # non-Steam match-change pub/sub

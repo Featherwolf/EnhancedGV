@@ -42,3 +42,29 @@ export const CENTER_ON_FOCUS = {
     return false; // let the native scroller take it
   },
 } as Record<string, unknown>;
+
+// Move gamepad focus to the first focus stop inside `root` (Valve's nav reacts
+// to real DOM focus, which is how decky-ui's own autoFocus works). Used when
+// the loading placeholder the user is standing on is replaced by real content,
+// and when replaying a D-pad press that landed before the panel existed — in
+// both cases dropping focus would bounce the page back to the top.
+export function focusFirstStop(root: HTMLElement | null | undefined): boolean {
+  try {
+    if (!root || !root.isConnected) return false;
+    const all = Array.from(
+      root.querySelectorAll<HTMLElement>('[tabindex]:not([tabindex="-1"])')
+    );
+    // Prefer a laid-out stop, but never give up just because the measurement is
+    // unavailable — an unfocusable panel is worse than an odd landing spot.
+    const visible = all.filter(
+      (el) => el.offsetParent !== null || (el.getClientRects?.().length ?? 0) > 0
+    );
+    const target =
+      visible[0] ?? all[0] ?? (root.hasAttribute("tabindex") ? root : null);
+    if (!target) return false;
+    target.focus();
+    return root.ownerDocument.activeElement === target;
+  } catch {
+    return false;
+  }
+}

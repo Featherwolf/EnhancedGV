@@ -28,6 +28,21 @@ function Skel({ style }: { style: CSSProperties }) {
   return <div className="ssp-skel" style={style} />;
 }
 
+// Placeholder for a single section whose data is still in flight after the
+// first paint (store details land first; reviews / news / Deck report follow).
+// Without it those sections would briefly render their "nothing here" text and
+// then swap to real content, which reads as wrong data rather than as loading.
+export function SectionLoading({ lines = 3 }: { lines?: number }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      <style>{SHIMMER_CSS}</style>
+      {Array.from({ length: lines }, (_, i) => (
+        <Skel key={i} style={{ width: `${100 - i * 12}%`, height: 13 }} />
+      ))}
+    </div>
+  );
+}
+
 export function SkeletonPanel({ sections }: { sections: SectionToggles }) {
   const sectionBars =
     [sections.about, sections.features, sections.deck, sections.reviews, sections.news].filter(

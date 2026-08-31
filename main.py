@@ -43,6 +43,12 @@ TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
+# How long past its TTL a cached entry may still be SERVED while a refresh runs
+# in the background (stale-while-revalidate). Revisiting a game after the TTL
+# expired used to mean sitting on the loading placeholder through a full set of
+# store round-trips; now the last known content paints immediately and the fresh
+# copy replaces it on the next visit. Only positive results go stale-warm.
+STALE_GRACE = 7 * 86400
 
 REQUEST_TIMEOUT = 15
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; SteamDeck) DeckyStorePanel/0.1"
@@ -135,20 +141,26 @@ def _cache_path(kind: str, key: str) -> str:
     return os.path.join(CACHE_DIR, f"{safe}.json")
 
 
-def _read_cache(kind: str, key: str):
+def _read_cache_entry(kind: str, key: str):
+    """-> (data, fresh). `data` is None on a miss; `fresh` is False for an entry
+    that is past its TTL but still inside the stale-serve grace window."""
     path = _cache_path(kind, key)
     try:
         with open(path, "r", encoding="utf-8") as fh:
             blob = json.load(fh)
     except Exception:
-        return None
+        return None, False
     if not isinstance(blob, dict):
-        return None  # corrupt/foreign file -> treat as a cache miss, never raise
+        return None, False  # corrupt/foreign file -> a cache miss, never raise
     age = time.time() - blob.get("fetched_at", 0)
-    ttl = NEGATIVE_TTL if blob.get("negative") else TTL.get(kind, 3600)
+    negative = bool(blob.get("negative"))
+    ttl = NEGATIVE_TTL if negative else TTL.get(kind, 3600)
     if age < ttl:
-        return blob.get("data")
-    return None
+        return blob.get("data"), True
+    # A stale FAILURE is worthless — never serve it; retry instead.
+    if not negative and age < ttl + STALE_GRACE:
+        return blob.get("data"), False
+    return None, False
 
 
 def _write_cache(kind: str, key: str, data, negative: bool = False) -> None:
@@ -822,9 +834,13 @@ class Plugin:
         decky.logger.info("EnhancedGV backend uninstalling")
 
     # --- generic fetch with cache + in-flight dedup ------------------------ #
+    def _clear_inflight(self, inflight_key: str, task) -> None:
+        if getattr(self, "_inflight", {}).get(inflight_key) is task:
+            self._inflight.pop(inflight_key, None)
+
     async def _fetch(self, kind: str, key: str, url: str, normalize):
-        cached = _read_cache(kind, key)
-        if cached is not None:
+        cached, fresh = _read_cache_entry(kind, key)
+        if cached is not None and fresh:
             return cached
 
         # Always schedule on the loop that is executing THIS call. A loop captured
@@ -840,6 +856,10 @@ class Plugin:
         inflight_key = f"{kind}:{key}"
         existing = self._inflight.get(inflight_key)
         if existing is not None and not existing.done():
+            # A stale-but-usable copy beats waiting on the refresh that is
+            # already running for it.
+            if cached is not None:
+                return cached
             return await existing
 
         async def _do():
@@ -864,12 +884,22 @@ class Plugin:
 
         task = asyncio.create_task(_do())
         self._inflight[inflight_key] = task
+        # Always clear the slot when the task ends, so a task nobody awaits
+        # (the background refresh below) can't leave a poisoned entry behind.
+        task.add_done_callback(lambda t: self._clear_inflight(inflight_key, t))
+
+        if cached is not None:
+            # Stale-while-revalidate: answer NOW with the last known-good copy
+            # and let the refresh land in the cache for the next read. `_do`
+            # swallows its own exceptions, so this task never goes unretrieved.
+            return cached
+
         try:
             return await task
         finally:
-            # Pop in the awaiter (not inside _do) so even a cancelled/never-run
-            # task cannot leave a permanent poisoned entry behind.
-            self._inflight.pop(inflight_key, None)
+            # Pop in the awaiter too (not only inside _do) so even a
+            # cancelled/never-run task cannot leave a permanent poisoned entry.
+            self._clear_inflight(inflight_key, task)
 
     # --- individual endpoints ---------------------------------------------- #
     async def get_appdetails(self, appid: int, lang: str = "english", cc: str = "us"):

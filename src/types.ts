@@ -155,6 +155,10 @@ export interface AppData {
   reviews: Reviews;
   news: News;
   deck: DeckCompat;
+  // First-paint result: appdetails is real, the other three sections are still
+  // in flight (see useAppData). Sections render a small loading placeholder
+  // instead of their "nothing here" state while this is set.
+  partial?: boolean;
 }
 
 export interface SectionToggles {
