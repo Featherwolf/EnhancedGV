@@ -2,6 +2,7 @@ import { callable } from "@decky/api";
 import type {
   AppData,
   AppDetails,
+  DataProvider,
   PatchNotes,
   PluginSettings,
   Reviews,
@@ -21,6 +22,13 @@ export const getAll = callable<[appid: number, lang: string, cc: string], AppDat
 export const getAppDetails = callable<[appid: number, lang: string, cc: string], AppDetails>(
   "get_appdetails"
 );
+
+// Non-Steam metadata provider (Hasheous, …) — returns the SAME AppData shape as
+// get_all, with reviews/news/deck = {ok:false} (they hide cleanly in the panel).
+export const getAllFromProvider = callable<
+  [provider: string, id: number | string, lang: string, cc: string],
+  AppData
+>("get_all_provider");
 
 export const getSettings = callable<[], PluginSettings>("get_settings");
 
@@ -45,6 +53,12 @@ export const getPatchNotes = callable<[version: string], PatchNotes>("get_patch_
 export interface ResolveResult {
   ok: boolean;
   store_appid: number | null;
+  // Tagged source. Steam matches also set provider:"steam"/provider_id:store_appid;
+  // a non-Steam provider match (e.g. Hasheous) sets store_appid:null and carries
+  // the provider + its id here. Older backends omit these (treated as Steam).
+  provider?: DataProvider;
+  provider_id?: number | string | null;
+  platform?: string; // inferred emulator platform, when known (non-Steam)
   name: string;
   year: string;
   source?: string; // "auto" | "manual"

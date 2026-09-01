@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
 import { useResolvedGame } from "../hooks/useResolvedGame";
+import { steamAppidOf } from "../providers";
 import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN, focusFirstStop } from "../focus";
 import {
   setDiag,
@@ -164,8 +165,11 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // Steam game this is the appid itself; for a non-Steam shortcut it's the
   // matched store appid (or null while resolving / if unidentified).
   const resolved = useResolvedGame(appid);
-  const fetchAppid = resolved.storeAppid;
-  const { data, settings, loading, error } = useAppData(fetchAppid);
+  const fetchRef = resolved.ref;
+  const { data, settings, loading, error } = useAppData(fetchRef);
+  // Steam appid backing this panel (for the reviews chip-filter fetch only) — null
+  // for a non-Steam provider, whose reviews section is {ok:false} and never fetches.
+  const steamAppid = steamAppidOf(fetchRef);
   const rootRef = useRef<HTMLDivElement | null>(null);
 
   // True while the panel has no store content yet (resolving / loading /
@@ -360,7 +364,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       ) : (
         <ReviewsSection
           reviews={data.reviews}
-          appid={fetchAppid ?? appid}
+          appid={steamAppid ?? appid}
           settings={settings}
         />
       ),
@@ -401,6 +405,22 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       {sec.media && hasMedia && (
         <div style={{ margin: "2px 0 10px" }}>
           <MediaHero movies={d.movies} screenshots={d.screenshots} />
+        </div>
+      )}
+      {sec.media && !hasMedia && d.header_image && (
+        // No trailers/screenshots (e.g. a non-Steam / Hasheous card) — show the
+        // header art/logo so the card isn't imageless.
+        <div style={{ margin: "2px 0 10px", textAlign: "center" }}>
+          <img
+            src={d.header_image}
+            alt={d.name}
+            style={{
+              maxWidth: "100%",
+              maxHeight: "clamp(120px, 22vh, 320px)",
+              objectFit: "contain",
+              borderRadius: 6,
+            }}
+          />
         </div>
       )}
       {sections.map((s) => (

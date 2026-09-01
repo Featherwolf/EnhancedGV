@@ -1,5 +1,16 @@
 // Shapes returned by the Python backend (already normalized/sanitized there).
 
+// A resolved data SOURCE for a library game. "steam" pulls from the Steam store
+// (the id is a Steam appid); other providers (e.g. "hasheous") serve non-Steam /
+// emulated games that have no Steam page. Everything below the resolver is keyed
+// on this tagged ref instead of a bare Steam appid, so a new source plugs in
+// without touching any section component.
+export type DataProvider = "steam" | "hasheous";
+export interface DataRef {
+  provider: DataProvider;
+  id: number | string;
+}
+
 export interface Movie {
   // DASH manifest (AV1-first) for trailers with no progressive files — played
   // via the built-in MSE streamer. hls stays informational (h264-only).
@@ -186,6 +197,10 @@ export interface PluginSettings {
   language: string;
   country: string;
   beta?: boolean; // opt in to pre-release update checks
+  // Opt in to pulling metadata for non-Steam / emulated games from external
+  // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
+  // as before (Steam title-search only, then "unmatched").
+  nonSteamSources?: boolean;
 }
 
 export const DEFAULT_EXPANDED: ExpandedToggles = {

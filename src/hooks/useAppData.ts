@@ -1,27 +1,31 @@
 import { useEffect, useState } from "react";
-import { getAll, getAppDetails, getSettings } from "../api";
+import { getAll, getAllFromProvider, getAppDetails, getSettings } from "../api";
 import { DEFAULT_EXPANDED } from "../types";
-import type { AppData, AppDetails, PluginSettings } from "../types";
+import type { AppData, AppDetails, DataRef, PluginSettings } from "../types";
+import { refKey, refIsValid } from "../providers";
 import { resolveLanguage, resolveCountry } from "../lang";
 
 // Module-level caches survive the re-splicing of the panel into the app tree,
 // so navigating back to a game (or a re-render of renderFunc) never refetches.
-const dataCache = new Map<number, AppData>();
-const inflight = new Map<number, Promise<AppData>>();
+// Keyed by the tagged-ref string ("steam:730" / "hasheous:1234") so Steam and
+// non-Steam sources never collide even if their numeric ids overlap.
+const dataCache = new Map<string, AppData>();
+const inflight = new Map<string, Promise<AppData>>();
 
 // First-paint cache: the appdetails-only result (hero, description, features).
 // It is requested alongside the full get_all so the panel can paint the moment
 // the single store-details request lands, instead of waiting for the slowest of
-// appdetails + reviews + news + deck. Superseded by dataCache the moment the
-// full result arrives.
-const coreCache = new Map<number, AppData>();
-const coreInflight = new Map<number, Promise<AppData | null>>();
+// appdetails + reviews + news + deck. Steam-only — a non-Steam provider answers
+// from one call already, so it has no slower half to run ahead of. Superseded by
+// dataCache the moment the full result arrives.
+const coreCache = new Map<string, AppData>();
+const coreInflight = new Map<string, Promise<AppData | null>>();
 
 // Failures are cached too (with a short TTL): the panel remounts on every tab
 // switch (Steam's tab transition is keyed), and without a negative cache a game
 // whose store fetch fails would flash loading -> error and refire the request on
 // every switch, forever.
-const failureCache = new Map<number, { res: AppData; at: number }>();
+const failureCache = new Map<string, { res: AppData; at: number }>();
 const FAILURE_TTL_MS = 60_000;
 
 // A Decky callable against a dead/stale Python backend can hang FOREVER (neither
@@ -89,6 +93,7 @@ const DEFAULT_SETTINGS: PluginSettings = {
   // resolveLanguage/resolveCountry). An explicit language name is an override.
   language: "auto",
   country: "auto",
+  nonSteamSources: false,
 };
 
 function mergeSettings(s: Partial<PluginSettings> | null | undefined): PluginSettings {
@@ -155,34 +160,39 @@ async function loadSettings(): Promise<PluginSettings> {
   return settingsPromise;
 }
 
-async function loadData(appid: number, settings: PluginSettings): Promise<AppData> {
-  const cached = dataCache.get(appid);
+async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData> {
+  const key = refKey(ref);
+  const cached = dataCache.get(key);
   if (cached) {
-    fetchInfo = { startedAt: 0, settledAt: Date.now(), note: `cache hit (${appid})` };
+    fetchInfo = { startedAt: 0, settledAt: Date.now(), note: `cache hit (${key})` };
     return cached;
   }
 
-  const failed = failureCache.get(appid);
+  const failed = failureCache.get(key);
   if (failed) {
     if (Date.now() - failed.at < FAILURE_TTL_MS) return failed.res;
-    failureCache.delete(appid); // TTL expired -> allow a retry
+    failureCache.delete(key); // TTL expired -> allow a retry
   }
 
-  let promise = inflight.get(appid);
+  let promise = inflight.get(key);
   if (!promise) {
-    fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${appid}) in flight` };
-    promise = withTimeout(
-      getAll(appid, resolveLanguage(settings.language), resolveCountry(settings.country)),
-      "get_all"
-    )
+    fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${key}) in flight` };
+    const lang = resolveLanguage(settings.language);
+    const cc = resolveCountry(settings.country);
+    // Steam appid -> get_all; any other provider -> get_all_provider (same shape).
+    const call =
+      ref.provider === "steam"
+        ? getAll(Number(ref.id), lang, cc)
+        : getAllFromProvider(ref.provider, ref.id, lang, cc);
+    promise = withTimeout(call, "get_all")
       .then((res) => {
         fetchInfo = {
           startedAt: fetchInfo.startedAt,
           settledAt: Date.now(),
-          note: res && res.ok ? `ok (${appid})` : `not ok: ${res?.error ?? "?"}`,
+          note: res && res.ok ? `ok (${key})` : `not ok: ${res?.error ?? "?"}`,
         };
-        if (res && res.ok) lruSet(dataCache, appid, res);
-        else lruSet(failureCache, appid, { res, at: Date.now() });
+        if (res && res.ok) lruSet(dataCache, key, res);
+        else lruSet(failureCache, key, { res, at: Date.now() });
         return res;
       })
       .catch((e) => {
@@ -193,14 +203,14 @@ async function loadData(appid: number, settings: PluginSettings): Promise<AppDat
         };
         // Negative-cache the failure (incl. the 45s timeout) so a hung backend
         // serves the error instantly on the next remount instead of re-hanging.
-        lruSet(failureCache, appid, {
+        lruSet(failureCache, key, {
           res: { ok: false, error: String(e) } as AppData,
           at: Date.now(),
         });
         throw e;
       })
-      .finally(() => inflight.delete(appid));
-    inflight.set(appid, promise);
+      .finally(() => inflight.delete(key));
+    inflight.set(key, promise);
   }
   return promise;
 }
@@ -220,13 +230,17 @@ function corePaint(appid: number, d: AppDetails): AppData {
   };
 }
 
-// appdetails on its own, for the first paint. Failures resolve to null and are
-// simply ignored — get_all is the authority and reports the real error.
-function loadCore(appid: number, settings: PluginSettings): Promise<AppData | null> {
-  const cached = coreCache.get(appid) ?? dataCache.get(appid);
+// appdetails on its own, for the first paint. Non-Steam refs resolve to null
+// (nothing to run ahead of), as do failures — get_all is the authority and
+// reports the real error.
+function loadCore(ref: DataRef, settings: PluginSettings): Promise<AppData | null> {
+  if (ref.provider !== "steam") return Promise.resolve(null);
+  const appid = Number(ref.id);
+  const key = refKey(ref);
+  const cached = coreCache.get(key) ?? dataCache.get(key);
   if (cached) return Promise.resolve(cached);
 
-  let promise = coreInflight.get(appid);
+  let promise = coreInflight.get(key);
   if (!promise) {
     promise = withTimeout(
       getAppDetails(appid, resolveLanguage(settings.language), resolveCountry(settings.country)),
@@ -236,12 +250,12 @@ function loadCore(appid: number, settings: PluginSettings): Promise<AppData | nu
       .then((d) => {
         if (!d || !d.ok) return null;
         const paint = corePaint(appid, d);
-        lruSet(coreCache, appid, paint);
+        lruSet(coreCache, key, paint);
         return paint;
       })
       .catch(() => null)
-      .finally(() => coreInflight.delete(appid));
-    coreInflight.set(appid, promise);
+      .finally(() => coreInflight.delete(key));
+    coreInflight.set(key, promise);
   }
   return promise;
 }
@@ -253,14 +267,14 @@ function loadCore(appid: number, settings: PluginSettings): Promise<AppData | nu
  * after it. Purely speculative: results land in the same caches the panel reads,
  * and every failure path is swallowed.
  */
-export function prefetchAppData(appid: number): void {
-  if (!appid || appid <= 0) return;
-  if (dataCache.has(appid)) return;
+export function prefetchAppData(ref: DataRef): void {
+  if (!refIsValid(ref)) return;
+  if (dataCache.has(refKey(ref))) return;
   void (async () => {
     try {
       const s = await loadSettings();
-      void loadCore(appid, s).catch(() => null);
-      void loadData(appid, s).catch(() => null);
+      void loadCore(ref, s).catch(() => null);
+      void loadData(ref, s).catch(() => null);
     } catch {
       /* prefetch is best-effort */
     }
@@ -286,35 +300,38 @@ export function getFetchInfo(): { startedAt: number; settledAt: number; note: st
   return fetchInfo;
 }
 
-const hasFreshResult = (appid: number | null): boolean => {
-  if (!appid) return false;
-  if (dataCache.has(appid) || coreCache.has(appid)) return true;
-  const f = failureCache.get(appid);
+const hasFreshResult = (key: string | null): boolean => {
+  if (!key) return false;
+  if (dataCache.has(key) || coreCache.has(key)) return true;
+  const f = failureCache.get(key);
   return !!f && Date.now() - f.at < FAILURE_TTL_MS;
 };
 
-// appid is null while the game is still being resolved to a store appid (or a
-// non-Steam game has no match) — no fetch happens in that case.
-export function useAppData(appid: number | null): UseAppData {
-  const cachedFor = (id: number | null): AppData | null =>
-    id ? dataCache.get(id) ?? coreCache.get(id) ?? null : null;
-  const [data, setData] = useState<AppData | null>(cachedFor(appid));
+// ref is null while the game is still being resolved (or a non-Steam game has no
+// match) — no fetch happens in that case. The primitive `key` (not the ref
+// object) drives the effect and the caches, so a fresh ref object with the same
+// provider+id never refires the fetch.
+export function useAppData(ref: DataRef | null): UseAppData {
+  const key = refIsValid(ref) ? refKey(ref) : null;
+  const cachedFor = (k: string | null): AppData | null =>
+    k ? dataCache.get(k) ?? coreCache.get(k) ?? null : null;
+  const [data, setData] = useState<AppData | null>(cachedFor(key));
   const [settings, setSettings] = useState<PluginSettings>(
     settingsCache ?? DEFAULT_SETTINGS
   );
-  const [loading, setLoading] = useState<boolean>(!hasFreshResult(appid));
+  const [loading, setLoading] = useState<boolean>(!hasFreshResult(key));
   const [error, setError] = useState<string | null>(null);
 
-  // Reconcile state DURING render when the appid changes (e.g. a QAM match edit
-  // flips the resolved store appid X->Y): the async reset in the effect below
-  // runs only after paint, which would flash the previous appid's cached content
-  // for one frame. Adjusting state here re-renders synchronously before paint.
-  const [prevAppid, setPrevAppid] = useState<number | null>(appid);
-  if (appid !== prevAppid) {
-    setPrevAppid(appid);
-    setData(cachedFor(appid));
+  // Reconcile state DURING render when the ref changes (e.g. a QAM match edit
+  // flips the resolved source X->Y): the async reset in the effect below runs
+  // only after paint, which would flash the previous ref's cached content for one
+  // frame. Adjusting state here re-renders synchronously before paint.
+  const [prevKey, setPrevKey] = useState<string | null>(key);
+  if (key !== prevKey) {
+    setPrevKey(key);
+    setData(cachedFor(key));
     setError(null);
-    setLoading(!hasFreshResult(appid));
+    setLoading(!hasFreshResult(key));
   }
 
   // Live settings updates (e.g. section toggled in Quick Access).
@@ -329,20 +346,20 @@ export function useAppData(appid: number | null): UseAppData {
   useEffect(() => {
     let cancelled = false;
 
-    // Reset from cache on appid change (covers a reused panel instance).
-    setData(cachedFor(appid));
+    // Reset from cache on ref change (covers a reused panel instance).
+    setData(cachedFor(key));
     setError(null);
 
-    // Null (still resolving) / non-positive ids won't have store data; skip the
-    // round-trip. StorePanel gates on the resolver status, so this "no appid"
-    // state is never shown as an error to the user.
-    if (!appid || appid <= 0) {
+    // Null (still resolving) / invalid refs won't have data; skip the round-trip.
+    // StorePanel gates on the resolver status, so this "no data" state is never
+    // shown as an error to the user.
+    if (!key || !refIsValid(ref)) {
       setLoading(false);
       setError("no appid");
       return;
     }
 
-    setLoading(!hasFreshResult(appid));
+    setLoading(!hasFreshResult(key));
 
     (async () => {
       try {
@@ -350,15 +367,14 @@ export function useAppData(appid: number | null): UseAppData {
         if (!cancelled) setSettings(s);
         // Two requests, one round trip apart at worst: whichever of the two
         // lands first paints. The first-paint result is only adopted while the
-        // full one is still outstanding.
+        // full one is still outstanding (and is a no-op for non-Steam refs).
         let full = false;
-        const core = loadCore(appid, s).then((paint) => {
+        void loadCore(ref, s).then((paint) => {
           if (cancelled || full || !paint) return;
           setData(paint);
           setLoading(false);
         });
-        void core;
-        const res = await loadData(appid, s);
+        const res = await loadData(ref, s);
         full = true;
         if (cancelled) return;
         if (res && res.ok) {
@@ -382,7 +398,10 @@ export function useAppData(appid: number | null): UseAppData {
     return () => {
       cancelled = true;
     };
-  }, [appid]);
+    // Depend on the primitive key; `ref` is captured in the closure and is
+    // consistent with `key` for this render (both derive from the same ref).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
 
   return { data, settings, loading, error };
 }

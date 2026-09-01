@@ -195,10 +195,10 @@ function prefetchForRoute(): void {
     if (id === lastPrefetched && Date.now() - lastPrefetchedAt < 10_000) return;
     lastPrefetched = id;
     lastPrefetchedAt = Date.now();
-    // A non-Steam shortcut has to be matched to a store appid first (that
-    // happens in the panel), so there is nothing to prefetch for it here.
+    // A non-Steam shortcut has to be resolved to a source first (that happens in
+    // the panel), so there is nothing to prefetch for it here.
     if (getGameIdentity(id).isShortcut) return;
-    prefetchAppData(id);
+    prefetchAppData({ provider: "steam", id });
   } catch {
     /* prefetch is best-effort */
   }
