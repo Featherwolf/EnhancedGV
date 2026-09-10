@@ -55,6 +55,19 @@ jobs:
           mkdir -p "dist_pkg/$PLUGIN"
           cp -r dist "dist_pkg/$PLUGIN/dist"
           cp main.py plugin.json package.json decky.pyi LICENSE README.md CHANGELOG.md "dist_pkg/$PLUGIN/"
+          # A tag build stamps the FULL tag version into the packaged manifests
+          # (zip only — git stays at the bare X.Y.Z). So a beta installs as
+          # "0.19.0-beta": Decky displays it, and the in-plugin updater can tell
+          # it apart from the finished 0.19.0 and offer that when it ships. The
+          # version gate already proved the tag matches the tree's X.Y.Z.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+            for f in package.json plugin.json; do
+              jq --arg v "$V" '.version = $v' "dist_pkg/$PLUGIN/$f" > "dist_pkg/$PLUGIN/$f.tmp"
+              mv "dist_pkg/$PLUGIN/$f.tmp" "dist_pkg/$PLUGIN/$f"
+            done
+            echo "Stamped packaged version: $V"
+          fi
           cd dist_pkg
           zip -r "../$PLUGIN.zip" "$PLUGIN"
 
@@ -86,28 +99,30 @@ jobs:
                   f"publish a release with placeholder notes.")
           open("release_notes.md", "w", encoding="utf-8").write(m.group(1).strip() + foot)
           EOF
-          # A hyphenated tag (e.g. v0.17.0-beta) is a PRIVATE beta: publish it as a
-          # DRAFT release, which is visible only to repo collaborators and is
-          # excluded from the public releases API — so it can never reach anyone on
-          # the stable channel. A plain vX.Y.Z tag publishes a normal (latest) release.
+          # Two release shapes, chosen by tag form:
+          #   vX.Y.Z-beta  -> a GitHub PRE-RELEASE. Excluded from /releases/latest,
+          #                   so the stable update channel never sees it; the
+          #                   in-plugin Beta toggle opts in. A beta carries the
+          #                   version it becomes, and its tag is MOVED to newer
+          #                   commits during testing, so an existing release for
+          #                   the tag is replaced rather than appended to.
+          #   vX.Y.Z        -> the normal (latest) release. Never overwritten. Once
+          #                   it ships, its beta is retired (release + tag), which
+          #                   is the repo's convention and keeps the list clean.
           case "${GITHUB_REF_NAME}" in
             *-*)
-              # Private beta: a DRAFT prerelease, invisible to stable users.
-              # Remove any stale draft for this tag first — otherwise the new zip
-              # is attached to a release still describing an older commit.
-              if gh release view "${GITHUB_REF_NAME}" --json isDraft -q .isDraft 2>/dev/null | grep -qx true; then
-                echo "Deleting stale draft for ${GITHUB_REF_NAME}"
+              if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+                echo "Replacing existing release for moved beta tag ${GITHUB_REF_NAME}"
                 gh release delete "${GITHUB_REF_NAME}" --yes
               fi
-              EXTRA="--draft --prerelease"
+              EXTRA="--prerelease"
               ;;
             *)
-              # Public release: never overwrite one that already exists.
               if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
                 echo "::error::Release ${GITHUB_REF_NAME} already exists; refusing to overwrite." >&2
                 exit 1
               fi
-              EXTRA=""
+              EXTRA="--latest"
               ;;
           esac
           gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip $EXTRA \
@@ -120,3 +135,16 @@ jobs:
           gh release view "${GITHUB_REF_NAME}" --json assets \
             -q '.assets[].name' | grep -qx 'EnhancedGV.zip' \
             || { echo "::error::EnhancedGV.zip missing from ${GITHUB_REF_NAME}" >&2; exit 1; }
+
+          # A shipped stable release retires its beta: the pre-release and the
+          # tag it hangs on. Beta-channel testers are offered the stable build by
+          # version order, so nothing is left dangling for them.
+          case "${GITHUB_REF_NAME}" in
+            *-*) ;;
+            *)
+              if gh release view "${GITHUB_REF_NAME}-beta" >/dev/null 2>&1; then
+                echo "Retiring ${GITHUB_REF_NAME}-beta now that ${GITHUB_REF_NAME} has shipped"
+                gh release delete "${GITHUB_REF_NAME}-beta" --yes --cleanup-tag
+              fi
+              ;;
+          esac

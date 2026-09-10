@@ -2083,27 +2083,37 @@ class Plugin:
             core, _, pre = str(v).lstrip("vV").partition("-")
             nums = tuple(int(x) for x in re.sub(r"[^0-9.]", "", core).split(".") if x)
             if not nums:
-                return ((0,), 1, "")
-            return (nums, 0 if pre else 1, pre)
+                return ((0,), 1, ())
+            # Natural order for the label: "beta.10" must beat "beta.9", which
+            # plain string comparison gets wrong.
+            label = tuple((0, int(p)) if p.isdigit() else (1, p) for p in pre.split(".") if p)
+            return (nums, 0 if pre else 1, label)
         except Exception:
-            return ((0,), 1, "")
+            return ((0,), 1, ())
 
     async def check_update(self, beta: bool = False):
         """Newest GitHub release vs the installed version (+ notes + download URL).
 
         Stable channel uses the `releases/latest` endpoint, which EXCLUDES
         pre-releases — so a `-beta` build is invisible to stable users. The beta
-        channel looks at all releases and takes the most-recently-published one
-        (which may be a pre-release), so opting in is the ONLY way to see betas.
+        channel looks at all releases (pre-releases included) and takes the
+        highest version, so opting in is the ONLY way to be offered a beta, and
+        a beta tester is still offered the stable release once it ships.
         """
         current = self._installed_version()
         try:
             loop = asyncio.get_running_loop()
             if beta:
+                # Beta channel: consider pre-releases too, and take the HIGHEST
+                # version rather than the most recently created — a stable
+                # release cut after a beta must still win over it.
                 rels = await loop.run_in_executor(
                     None, _http_get_json,
-                    "https://api.github.com/repos/Featherwolf/EnhancedGV/releases?per_page=10")
-                raw = rels[0] if isinstance(rels, list) and rels else {}
+                    "https://api.github.com/repos/Featherwolf/EnhancedGV/releases?per_page=20")
+                cands = [r for r in (rels if isinstance(rels, list) else [])
+                         if isinstance(r, dict) and not r.get("draft")]
+                raw = max(cands, key=lambda r: self._ver_tuple(str(r.get("tag_name", ""))),
+                          default={})
             else:
                 raw = await loop.run_in_executor(
                     None, _http_get_json,
@@ -2140,8 +2150,13 @@ class Plugin:
                 text = fh.read()
         except Exception as exc:
             return {"ok": False, "version": version, "error": str(exc)}
-        m = re.search(rf"^## v{re.escape(version)}\s*?\n(.*?)(?=^## |\Z)",
-                      text, re.S | re.M)
+        base = version.split("-", 1)[0]
+        m = (re.search(rf"^## v{re.escape(version)}\s*?\n(.*?)(?=^## |\Z)",
+                       text, re.S | re.M)
+             # A beta build is stamped "X.Y.Z-beta" but its notes live under
+             # "## vX.Y.Z" — a beta carries the version it becomes.
+             or re.search(rf"^## v{re.escape(base)}\s*?\n(.*?)(?=^## |\Z)",
+                          text, re.S | re.M))
         return {"ok": True, "version": version,
                 "notes": m.group(1).strip() if m else ""}
 

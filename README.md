@@ -143,6 +143,9 @@ game first so the game-specific options appear.
 - **Store language** follows your Steam client language automatically (there's no
   in-app language picker); the Status row shows the language it detected.
 - **Clear cached store data** forces a fresh fetch if anything looks stale.
+- **Updates → Beta channel (test builds)** opts in to pre-release builds. Betas
+  are GitHub pre-releases tagged `vX.Y.Z-beta` — excluded from the stable update
+  check, and superseded by the `vX.Y.Z` release when it ships.
 
 **Matching non-Steam games**
 

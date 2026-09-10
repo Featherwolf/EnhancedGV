@@ -389,8 +389,10 @@ export function QuickAccessSettings() {
   };
 
   const runUpdateCheck = async () => {
-    // Stable channel only — beta builds are private drafts, not offered in-app.
-    const info = await checkUpdate(false).catch(
+    // Beta builds are published as GitHub PRE-RELEASES: excluded from
+    // /releases/latest (so stable users never see them) but visible to the
+    // beta channel, which opts in here.
+    const info = await checkUpdate(!!settings.beta).catch(
       (e) => ({ ok: false, error: String(e), current: "?" }) as UpdateInfo
     );
     setUpdate(info);
@@ -578,6 +580,20 @@ export function QuickAccessSettings() {
           <ButtonItem layout="below" onClick={runUpdateCheck}>
             Check for updates
           </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Beta channel (test builds)"
+            description="Include pre-release test builds in the update check. Off by default. A beta carries the version number it will become, and you'll be offered the final release when it ships."
+            checked={!!settings.beta}
+            onChange={(v: boolean) => {
+              persist({ ...settings, beta: v });
+              // Re-run immediately so the readout reflects the channel just chosen.
+              void checkUpdate(v)
+                .then(setUpdate)
+                .catch((e) => setUpdate({ ok: false, error: String(e), current: "?" } as UpdateInfo));
+            }}
+          />
         </PanelSectionRow>
         {update?.ok && update.has_update && (
           <>
