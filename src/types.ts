@@ -66,6 +66,9 @@ export interface AppDetails {
   recommendations_total: number | null;
   achievements_total: number | null;
   supported_languages_html: string;
+  // Set by the backend when the IGDB pass added artwork/details on top of the
+  // keyless Hasheous baseline (drives the source note in the panel).
+  igdb_enriched?: boolean;
   pc_requirements: Requirements | null;
   content_descriptor_notes: string | null;
 }
@@ -197,6 +200,9 @@ export interface PluginSettings {
   language: string;
   country: string;
   beta?: boolean; // opt in to pre-release update checks
+  // Hasheous CLIENT API key. Empty = keyless baseline (logo + description);
+  // set = IGDB artwork/details for non-Steam games. Stored locally only.
+  hasheousApiKey?: string;
   // Opt in to pulling metadata for non-Steam / emulated games from external
   // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
   // as before (Steam title-search only, then "unmatched").

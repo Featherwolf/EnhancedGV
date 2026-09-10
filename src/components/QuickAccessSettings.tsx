@@ -19,12 +19,13 @@ import {
   testVideo,
   getBackendInfo,
   resolveGame,
+  testIgdb,
   lookupStoreApp,
   setMatch,
   clearMatch,
   blankMatch,
 } from "../api";
-import type { VideoProbe, BackendInfo, ResolveResult } from "../api";
+import type { VideoProbe, BackendInfo, ResolveResult, IgdbStep } from "../api";
 import type { UpdateInfo } from "../types";
 import { getGameIdentity } from "../identity";
 import { providerLabel } from "../providers";
@@ -230,6 +231,108 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
   );
 }
 
+// Artwork upgrade for non-Steam games: paste a Hasheous CLIENT API key and the
+// backend layers IGDB covers/screenshots/genres/developers over the keyless
+// baseline. The key lives in the plugin's local settings file and is sent only
+// to hasheous.org — the test below never echoes it back.
+function IgdbKeyRow() {
+  const [key, setKey] = useState<string>("");
+  const [saved, setSaved] = useState<boolean>(false);
+  const [busy, setBusy] = useState(false);
+  const [steps, setSteps] = useState<IgdbStep[] | null>(null);
+  const [note, setNote] = useState<string>("");
+
+  useEffect(() => {
+    let alive = true;
+    getSettings()
+      .then((s) => {
+        if (!alive) return;
+        setSaved(!!(s as PluginSettings).hasheousApiKey);
+      })
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const save = async (value: string) => {
+    try {
+      const cur = await getSettings();
+      const next = { ...(cur as PluginSettings), hasheousApiKey: value };
+      await setSettings(next);
+      primeSettings(next);
+      setSaved(!!value);
+      setNote(value ? "Key saved." : "Key cleared — back to the keyless baseline.");
+      // Cached non-Steam payloads were built without artwork; drop them so the
+      // next visit refetches with the key in play.
+      await clearCache().catch(() => undefined);
+      clearFrontendCache();
+    } catch (e) {
+      setNote(`Could not save: ${String(e)}`);
+    }
+  };
+
+  const runTest = async () => {
+    setBusy(true);
+    setSteps(null);
+    setNote("");
+    try {
+      const res = await testIgdb(getCurrentAppid() ?? 0);
+      setSteps(res.steps ?? []);
+      if (!res.ok && res.error) setNote(res.error);
+    } catch (e) {
+      setNote(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <PanelSectionRow>
+        <TextField
+          label="Hasheous API key (optional)"
+          description={
+            saved
+              ? "A key is saved. With one, retro games get IGDB covers, screenshots, genres and developers instead of just a logo and description."
+              : "Without a key you get the keyless baseline: logo + description. Paste a Hasheous client API key to add IGDB covers and screenshots."
+          }
+          value={key}
+          bIsPassword
+          onChange={(e: { target: { value: string } }) => setKey(e.target.value)}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => save(key.trim())} disabled={!key.trim()}>
+          Save key
+        </ButtonItem>
+      </PanelSectionRow>
+      {saved && (
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => {
+              setKey("");
+              void save("");
+            }}
+          >
+            Remove key
+          </ButtonItem>
+        </PanelSectionRow>
+      )}
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={runTest} disabled={busy}>
+          {busy ? "Testing…" : "Test artwork lookup"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {steps?.map((st) => (
+        <DiagRow key={st.name} label={st.name} value={`${st.ok ? "✔" : "✖"} ${st.detail}`} />
+      ))}
+      {!!note && <DiagRow label="Result" value={note} />}
+    </>
+  );
+}
+
 export function QuickAccessSettings() {
   const [settings, setLocal] = useState<PluginSettings>(DEFAULTS);
   const [diag, setDiag] = useState<DiagState>(getDiag());
@@ -399,6 +502,7 @@ export function QuickAccessSettings() {
             onChange={toggleNonSteam}
           />
         </PanelSectionRow>
+        {!!settings.nonSteamSources && <IgdbKeyRow />}
       </PanelSection>
 
       <PanelSection title="Sections shown on the game page">

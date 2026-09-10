@@ -17,6 +17,7 @@ import json
 import time
 import html
 import asyncio
+import functools
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -41,7 +42,7 @@ CACHE_VERSION = "0.15.0-lang"
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
        "reviews_recent": 3600, "news": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
-       "hasheous": 604800}
+       "hasheous": 604800, "igdb": 604800}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
@@ -93,6 +94,27 @@ CLAN_IMAGE_BASE = "https://clan.akamai.steamstatic.com/images"
 #   -> DataObjects/Game/{id} (name, AIDescription, Logo, Tags, publisher, IGDB id)
 # The rich IGDB proxy (cover/screenshots/genres) is key-gated (a later, opt-in
 # phase); this baseline is entirely keyless and works with the feature toggled on.
+# --- IGDB enrichment (opt-in, needs a Hasheous CLIENT API key) --------------- #
+# Hasheous proxies IGDB at /MetadataProxy/IGDB/*. Verified against the live
+# OpenAPI spec and by probing the running service:
+#   * METADATA is key-gated: /MetadataProxy/IGDB/Game?Id=… answers 401 without an
+#     `X-Client-API-Key` header (securityScheme "Client API Key").
+#   * IMAGES are NOT key-gated: /MetadataProxy/IGDB/Image/{hash}.jpg answers 200
+#     with no key — but it serves the ORIGINAL (a cover measured at 2.7 MB), and
+#     it takes no size parameter (a t_cover_big-style path 404s).
+# So metadata goes through the proxy with the key, and image URLs point at IGDB's
+# own public CDN, which does serve sized renditions keylessly. Measured on the
+# same cover: t_thumb 3 KB / t_cover_big 21 KB / t_screenshot_med 40 KB /
+# t_1080p 163 KB, versus 2.7 MB from the proxy. On a Deck over wifi, with a
+# thumbnail strip of a dozen shots, that difference is the whole feature.
+IGDB_IMG_CDN = "https://images.igdb.com/igdb/image/upload"
+IGDB_SIZE_COVER = "t_cover_big"
+IGDB_SIZE_THUMB = "t_screenshot_med"
+IGDB_SIZE_FULL = "t_1080p"
+# Screenshot/artwork metadata is one request PER image id, so cap how many we
+# resolve: enough to fill the carousel, few enough to stay polite and quick.
+IGDB_MAX_SHOTS = 12
+
 HASHEOUS_BASE = "https://hasheous.org/api/v1"
 HASHEOUS_IMAGE = HASHEOUS_BASE + "/Images/"  # + {image_hash}
 # sha1("") — Hasheous stores this as a placeholder/empty Logo; never use it.
@@ -131,8 +153,11 @@ _SSL_CTX = _build_ssl_context()
 _SSL_UNVERIFIED = ssl._create_unverified_context()
 
 
-def _http_get_json(url: str) -> dict:
-    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+def _http_get_json(url: str, headers: dict = None) -> dict:
+    hdrs = {"User-Agent": USER_AGENT}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
     try:
         with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
             raw = resp.read().decode("utf-8", "replace")
@@ -246,6 +271,42 @@ def _feature_non_steam() -> bool:
             return bool(json.load(fh).get("nonSteamSources", False))
     except Exception:
         return False
+
+
+def _igdb_key() -> str:
+    """The Hasheous CLIENT API key, or "" when enrichment is off. Read from the
+    settings file for the same reason as _feature_non_steam. NEVER logged."""
+    try:
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+            return str(json.load(fh).get("hasheousApiKey", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _igdb_img(image_hash: str, size: str) -> str:
+    """A sized IGDB CDN URL. Keyless and public (see the note above)."""
+    h = re.sub(r"[^A-Za-z0-9_-]", "", str(image_hash or ""))
+    return f"{IGDB_IMG_CDN}/{size}/{h}.jpg" if h else ""
+
+
+def _igdb_pick(obj, *names):
+    """Read the first present key from an IGDB proxy object.
+
+    The proxy is a C# service in front of IGDB's snake_case JSON, and the OpenAPI
+    spec types most nested objects as bare `object` — so the exact casing of a
+    field is not guaranteed by the contract. Rather than pin one spelling and
+    break on the other, try the plausible ones. Unverified against a live keyed
+    response (no key available here), so this stays deliberately forgiving.
+    """
+    if not isinstance(obj, dict):
+        return None
+    for n in names:
+        for cand in (n, n[:1].upper() + n[1:], n[:1].lower() + n[1:],
+                     n.replace("_", ""), n.replace("_", "").lower(),
+                     "".join(w[:1].upper() + w[1:] for w in n.split("_"))):
+            if cand in obj and obj[cand] not in (None, ""):
+                return obj[cand]
+    return None
 
 
 def _rec_to_result(rec: dict) -> dict:
@@ -978,10 +1039,20 @@ def _normalize_hasheous(obj: dict) -> dict:
             platform_name = sd[0].get("Platform") or ""
 
     website = None
+    igdb_id = 0
     for m in (obj.get("metadata") or []):
-        if m.get("source") == "IGDB" and m.get("status") == "Mapped" and m.get("link"):
-            website = m["link"]
-            break
+        if m.get("source") == "IGDB" and m.get("status") == "Mapped":
+            if m.get("link") and not website:
+                website = m["link"]
+            # `id` (== immutableId) is the IGDB game id — the handle the keyed
+            # MetadataProxy needs. Verified on a live DataObject: Super Metroid
+            # (Hasheous 6292) carries IGDB id 1103.
+            try:
+                igdb_id = int(m.get("id") or m.get("immutableId") or 0)
+            except Exception:
+                igdb_id = 0
+            if website and igdb_id:
+                break
 
     year = ""
     for sd in (obj.get("signatureDataObjects") or []):
@@ -1025,6 +1096,8 @@ def _normalize_hasheous(obj: dict) -> dict:
         "supported_languages_html": langs,
         "pc_requirements": None,
         "content_descriptor_notes": None,
+        # Handle for the opt-in IGDB enrichment pass (0 = unmapped).
+        "igdb_id": igdb_id,
     }
 
 
@@ -1477,32 +1550,231 @@ class Plugin:
                                 "platform": (g.get("platform") or {}).get("name", "")}
         return {"ok": False, "error": "no resolvable rom hash"}
 
-    async def get_all_provider(self, provider, id, lang: str = "english",
-                               cc: str = "us"):
-        """Non-Steam metadata aggregate — same AppData shape as get_all, with
-        reviews/news/deck = {ok:False} (they hide cleanly in the panel)."""
-        if provider != "hasheous":
-            return {"ok": False, "error": f"unknown provider: {provider}"}
+    # --- IGDB enrichment (opt-in; needs a Hasheous client API key) --------- #
+    async def _igdb_get(self, path: str, params: dict, key: str):
+        """One keyed GET against the IGDB metadata proxy."""
+        url = f"{HASHEOUS_BASE}/MetadataProxy/IGDB/{path}?" + urllib.parse.urlencode(params)
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None, functools.partial(_http_get_json, url, {"X-Client-API-Key": key})
+        )
+
+    async def _igdb_image_hash(self, kind: str, image_id, key: str):
+        """Resolve one Cover/Screenshot/Artwork id to its IGDB image hash."""
         try:
-            gid = int(id)
+            obj = await self._igdb_get(kind, {"Id": int(image_id)}, key)
         except Exception:
-            return {"ok": False, "error": "invalid provider id"}
-        url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
+            return None
+        return _igdb_pick(obj, "image_id", "imageId", "hash")
 
-        def norm(raw):
-            if not isinstance(raw, dict) or not raw.get("name"):
-                return {"ok": False, "error": "no hasheous data"}
-            return _normalize_hasheous(raw)
+    async def _igdb_names(self, kind: str, ids, key: str, limit: int = 12):
+        """Resolve a list of ids (Genre, Company, …) to their display names."""
+        out = []
+        for chunk in [list(ids)[:limit]]:
+            got = await asyncio.gather(
+                *[self._igdb_get(kind, {"Id": int(i)}, key) for i in chunk],
+                return_exceptions=True,
+            )
+            for o in got:
+                if isinstance(o, BaseException):
+                    continue
+                n = _igdb_pick(o, "name")
+                if n:
+                    out.append(str(n))
+        return out
 
-        appdetails = await self._fetch("hasheous", str(gid), url, norm)
-        return {
-            "ok": True,
-            "appid": gid,
-            "appdetails": appdetails,
-            "reviews": {"ok": False, "error": "reviews are Steam-only"},
-            "news": {"ok": False, "error": "update history is Steam-only"},
-            "deck": {"ok": False, "error": "not a Steam app"},
-        }
+    async def _igdb_delta(self, igdb_id: int, key: str) -> dict:
+        """Fetch the IGDB-derived fields for a game. CACHED ON ITS OWN — never
+        cache the merged result: the merge depends on what the Hasheous baseline
+        already had, so a cached merge made against one baseline would be served
+        over a different one. Returns {} on any failure."""
+        cached = _read_cache_entry("igdb", str(igdb_id))[0]
+        if isinstance(cached, dict):
+            return cached
+
+        try:
+            game = await self._igdb_get("Game", {"Id": int(igdb_id)}, key)
+        except urllib.error.HTTPError as exc:
+            # 401/403 = missing/rejected key. Logged without the key itself.
+            decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
+            return {}
+        except Exception as exc:
+            decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
+            return {}
+        if not isinstance(game, dict):
+            return {}
+
+        delta = {}
+
+        cover_id = _igdb_pick(game, "cover")
+        if cover_id:
+            h = await self._igdb_image_hash("Cover", cover_id, key)
+            if h:
+                delta["header_image"] = _igdb_img(h, IGDB_SIZE_COVER)
+
+        # Screenshots (+ artworks as filler) — the media hero is the whole point
+        # of this phase; the keyless baseline has none.
+        pairs = ([("Screenshot", i) for i in (_igdb_pick(game, "screenshots") or [])] +
+                 [("Artwork", i) for i in (_igdb_pick(game, "artworks") or [])])[:IGDB_MAX_SHOTS]
+        shots = []
+        if pairs:
+            hashes = await asyncio.gather(
+                *[self._igdb_image_hash(k, i, key) for k, i in pairs],
+                return_exceptions=True,
+            )
+            for (_kind, ident), h in zip(pairs, hashes):
+                if isinstance(h, BaseException) or not h:
+                    continue
+                shots.append({"id": int(ident),
+                              "thumb": _igdb_img(h, IGDB_SIZE_THUMB),
+                              "full": _igdb_img(h, IGDB_SIZE_FULL)})
+        if shots:
+            delta["screenshots"] = shots
+
+        gids = list(_igdb_pick(game, "genres") or [])
+        if gids:
+            names = await self._igdb_names("Genre", gids, key)
+            if names:
+                delta["genres"] = [{"id": n, "description": n} for n in names]
+
+        ic_ids = list(_igdb_pick(game, "involved_companies") or [])
+        if ic_ids:
+            devs, pubs = [], []
+            got = await asyncio.gather(
+                *[self._igdb_get("InvolvedCompany", {"Id": int(i)}, key)
+                  for i in ic_ids[:8]],
+                return_exceptions=True,
+            )
+            for ic in got:
+                if isinstance(ic, BaseException) or not isinstance(ic, dict):
+                    continue
+                cid = _igdb_pick(ic, "company")
+                if not cid:
+                    continue
+                try:
+                    comp = await self._igdb_get("Company", {"Id": int(cid)}, key)
+                except Exception:
+                    continue
+                nm = _igdb_pick(comp, "name")
+                if not nm:
+                    continue
+                if _igdb_pick(ic, "developer"):
+                    devs.append(str(nm))
+                elif _igdb_pick(ic, "publisher"):
+                    pubs.append(str(nm))
+            if devs:
+                delta["developers"] = devs
+            if pubs:
+                delta["publishers"] = pubs
+
+        summary = _igdb_pick(game, "summary")
+        if summary:
+            delta["summary_html"] = _sanitize_html(
+                "<p>" + html.escape(str(summary), quote=False).replace("\n", "<br>") + "</p>")
+            delta["summary_text"] = re.sub(r"\s+", " ", str(summary)).strip()[:320]
+
+        url_ = _igdb_pick(game, "url")
+        if url_:
+            delta["website"] = _safe_url(url_)
+
+        if delta:
+            _write_cache("igdb", str(igdb_id), delta)
+        return delta
+
+    async def _igdb_enrich(self, igdb_id: int, base: dict) -> dict:
+        """Layer IGDB artwork/details onto a normalized Hasheous AppDetails.
+
+        Best-effort throughout: a bad key, a rate limit or an unexpected shape
+        degrades to the keyless baseline rather than blanking the panel. Hasheous
+        data WINS wherever it has some — IGDB only fills what was empty. The one
+        exception is `screenshots`, which the baseline can never populate.
+        """
+        key = _igdb_key()
+        if not key or not igdb_id:
+            return base
+        delta = await self._igdb_delta(int(igdb_id), key)
+        if not delta:
+            return base
+
+        out = dict(base)
+        if delta.get("screenshots"):
+            out["screenshots"] = delta["screenshots"]
+        for field in ("header_image", "website", "developers", "publishers"):
+            if delta.get(field) and not out.get(field):
+                out[field] = delta[field]
+        # Genres: the baseline's are Hasheous tag soup, so prefer IGDB's when it
+        # has any — this is a quality upgrade, not a gap-fill.
+        if delta.get("genres"):
+            out["genres"] = delta["genres"]
+        if delta.get("summary_html") and not (base.get("about_html") or "").strip():
+            out["about_html"] = delta["summary_html"]
+            if not (base.get("short_description") or "").strip():
+                out["short_description"] = delta.get("summary_text", "")
+        out["igdb_enriched"] = True
+        return out
+
+    async def test_igdb(self, game_appid=0):
+        """Per-step IGDB probe for the QAM, so a beta tester can see exactly
+        where enrichment stops instead of just 'no artwork appeared'. Never
+        returns the key itself — only whether one is set and how long it is."""
+        key = _igdb_key()
+        steps = []
+
+        def step(name, ok, detail=""):
+            steps.append({"name": name, "ok": bool(ok), "detail": str(detail)[:200]})
+
+        step("Non-Steam sources enabled", _feature_non_steam(),
+             "on" if _feature_non_steam() else "turn it on above")
+        step("API key present", bool(key), f"{len(key)} chars" if key else "no key saved")
+        if not key:
+            return {"ok": False, "steps": steps, "error": "no API key"}
+
+        # Which game? The one on screen if it resolves to Hasheous, else a known
+        # public mapping (Super Metroid) so the key itself can still be tested.
+        igdb_id, label = 0, ""
+        try:
+            rec = _read_matches().get(str(int(game_appid or 0)))
+        except Exception:
+            rec = None
+        if isinstance(rec, dict) and rec.get("provider") == "hasheous":
+            try:
+                raw = await self._fetch(
+                    "hasheous", str(rec["provider_id"]),
+                    f"{HASHEOUS_BASE}/DataObjects/Game/{int(rec['provider_id'])}",
+                    lambda r: _normalize_hasheous(r) if isinstance(r, dict) and r.get("name")
+                    else {"ok": False, "error": "no hasheous data"})
+                igdb_id = int((raw or {}).get("igdb_id") or 0)
+                label = (raw or {}).get("name") or ""
+            except Exception as exc:
+                step("Look up this game on Hasheous", False, str(exc))
+        if igdb_id:
+            step("This game maps to IGDB", True, f"{label} -> IGDB {igdb_id}")
+        else:
+            igdb_id, label = 1103, "Super Metroid (fallback probe)"
+            step("This game maps to IGDB", False,
+                 "no IGDB mapping for this game; testing the key against a known title")
+
+        try:
+            game = await self._igdb_get("Game", {"Id": igdb_id}, key)
+            step("IGDB metadata (key accepted)", isinstance(game, dict),
+                 _igdb_pick(game, "name") or "no name field")
+        except urllib.error.HTTPError as exc:
+            step("IGDB metadata (key accepted)", False,
+                 f"HTTP {exc.code}" + (" — key rejected" if exc.code in (401, 403) else ""))
+            return {"ok": False, "steps": steps, "error": f"HTTP {exc.code}"}
+        except Exception as exc:
+            step("IGDB metadata (key accepted)", False, str(exc))
+            return {"ok": False, "steps": steps, "error": str(exc)}
+
+        shots = list(_igdb_pick(game, "screenshots") or [])
+        step("Screenshots listed", bool(shots), f"{len(shots)} found")
+        sample = ""
+        if shots:
+            h = await self._igdb_image_hash("Screenshot", shots[0], key)
+            sample = _igdb_img(h, IGDB_SIZE_THUMB) if h else ""
+            step("Image address resolved", bool(sample), sample or "no image id on the object")
+        return {"ok": True, "steps": steps, "igdb_id": igdb_id,
+                "name": label, "sample_image": sample}
 
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
                            title: str = "", lang: str = "english", cc: str = "us",
@@ -1702,6 +1974,11 @@ class Plugin:
             # (Hasheous). OFF by default: when off, resolve_game does Steam
             # title-search only and non-Steam misses stay "unmatched".
             "nonSteamSources": False,
+            # Hasheous CLIENT API key. Empty = the keyless baseline (logo +
+            # description only). With a key, non-Steam games are enriched from
+            # IGDB (cover, screenshots, genres, developers). Stored locally in
+            # the plugin's settings file and sent ONLY to hasheous.org.
+            "hasheousApiKey": "",
         }
         _sub = ("sections", "expanded")  # merged as sub-dicts, not replaced
         try:

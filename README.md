@@ -60,7 +60,9 @@ Access** panel.
 - **Backend** (`main.py`, Python stdlib only): fetches from Steam's store/web
   APIs (bypassing the browser's CORS restrictions), **normalizes and
   allowlist-sanitizes** the HTML/JSON, converts news BBCODE → safe HTML, resolves
-  non-Steam games to a store appid by title search, and caches responses to disk
+  non-Steam games to a store appid by title search, enriches non-Steam matches
+  with IGDB artwork when a Hasheous API key is set (metadata via the keyed
+  proxy; images from IGDB's public CDN in display sizes), and caches responses to disk
   (`DECKY_PLUGIN_RUNTIME_DIR`) with per-kind TTLs plus negative caching and
   in-flight de-duplication to stay well under Steam's rate limits. Expired
   entries are served **stale-while-revalidate** — the last known-good copy is

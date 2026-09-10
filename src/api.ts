@@ -108,6 +108,22 @@ export interface BackendInfo {
 }
 export const getBackendInfo = callable<[], BackendInfo>("get_backend_info");
 
+export interface IgdbStep {
+  name: string;
+  ok: boolean;
+  detail: string;
+}
+export interface IgdbTest {
+  ok: boolean;
+  error?: string;
+  steps: IgdbStep[];
+  igdb_id?: number;
+  name?: string;
+  sample_image?: string;
+}
+// Per-step probe of the IGDB enrichment path. Never returns the key itself.
+export const testIgdb = callable<[game_appid: number], IgdbTest>("test_igdb");
+
 export interface VideoProbe {
   url: string;
   status: number;

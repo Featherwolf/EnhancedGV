@@ -3,7 +3,7 @@ import type { CSSProperties, ReactNode } from "react";
 import { Focusable } from "@decky/ui";
 import { useAppData } from "../hooks/useAppData";
 import { useResolvedGame } from "../hooks/useResolvedGame";
-import { steamAppidOf } from "../providers";
+import { steamAppidOf, providerLabel } from "../providers";
 import { CENTER_ON_FOCUS, FOCUS_SCROLL_MARGIN, focusFirstStop } from "../focus";
 import {
   setDiag,
@@ -318,6 +318,14 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // sections show a shimmer rather than their empty state, and their subtitle
   // (review count, news count, Deck rating) fills in when the data lands.
   const pending = !!data.partial;
+  // Non-Steam content is worth attributing: the panel otherwise looks like a
+  // Steam store page, and which database supplied it changes what to expect
+  // (no reviews, no Deck rating, and artwork only when IGDB enrichment ran).
+  const provider = fetchRef?.provider ?? "steam";
+  const sourceNote =
+    provider === "steam"
+      ? ""
+      : `via ${providerLabel(provider)}${d.igdb_enriched ? " + IGDB" : ""}`;
   const expanded = { ...DEFAULT_EXPANDED, ...settings.expanded };
   const reviewSummary = data.reviews?.ok ? data.reviews.summary.desc : "";
 
@@ -384,6 +392,9 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         {reviewSummary && (
           <span style={{ fontSize: 12.5, opacity: 0.85 }}>{reviewSummary}</span>
+        )}
+        {sourceNote && (
+          <span style={{ fontSize: 12, opacity: 0.6 }}>{sourceNote}</span>
         )}
         {data.deck?.ok && <DeckCompatBadge deck={data.deck} />}
       </div>
