@@ -2068,10 +2068,25 @@ class Plugin:
 
     @staticmethod
     def _ver_tuple(v: str):
+        """Order versions with prereleases BELOW the release they precede.
+
+        The old form stripped every non-digit, so "0.19.0-beta" collapsed to
+        (0,19,0) — identical to the finished 0.19.0, meaning a beta tester was
+        told "up to date" forever and never offered the real release. Worse,
+        "0.17.0-beta.1" became (0,17,0,1), which sorts ABOVE (0,17,0) and offered
+        a prerelease as an upgrade over the finished version.
+
+        Now: compare the numeric core first, then rank release (1) above
+        prerelease (0), tie-broken by the prerelease label so beta.2 > beta.1.
+        """
         try:
-            return tuple(int(x) for x in re.sub(r"[^0-9.]", "", v).split(".") if x)
+            core, _, pre = str(v).lstrip("vV").partition("-")
+            nums = tuple(int(x) for x in re.sub(r"[^0-9.]", "", core).split(".") if x)
+            if not nums:
+                return ((0,), 1, "")
+            return (nums, 0 if pre else 1, pre)
         except Exception:
-            return (0,)
+            return ((0,), 1, "")
 
     async def check_update(self, beta: bool = False):
         """Newest GitHub release vs the installed version (+ notes + download URL).
