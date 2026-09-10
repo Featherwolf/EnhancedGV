@@ -1,25 +1,5 @@
 # Changelog
 
-## v0.20.0
-
-- **Artwork for emulated / non-Steam games (opt-in, needs a free key).** The
-  non-Steam support added in 0.19.0 could only show a logo and a description.
-  Paste a **Hasheous API key** in Quick Access → EnhancedGV → *Non-Steam games*
-  and retro titles now get proper **cover art, screenshots, genres and
-  developers** from IGDB — so the media gallery works for a SNES ROM the same
-  way it does for a Steam game.
-  - Entirely optional. With no key, nothing changes: you still get the keyless
-    logo + description baseline.
-  - Steam games are untouched — this only affects games matched to a non-Steam
-    source.
-  - **Test artwork lookup** button reports, step by step, whether the key was
-    accepted and whether artwork came back, so a failure tells you *which* part
-    broke instead of just showing an empty gallery.
-  - Images load in display sizes rather than originals (a cover is ~21 KB
-    instead of ~2.7 MB), so the gallery doesn't stall on a handheld connection.
-  - The panel header now notes where non-Steam content came from
-    ("via Hasheous + IGDB").
-
 ## v0.19.0
 
 - **Metadata for emulated / non-Steam games (experimental, off by default).** When
@@ -36,8 +16,24 @@
     sections simply don't appear for a non-Steam game.
   - You can still override any match by hand (Quick Access → *Store data source*).
   - This is the keyless baseline (title, description, genres, developer/publisher,
-    platform, logo). Richer artwork/screenshots via an optional API key are a
-    later step.
+    platform, logo).
+- **Optional artwork upgrade for those games (needs a free key).** The keyless
+  baseline above shows a logo and a description. Paste a **Hasheous API key** in
+  Quick Access → EnhancedGV → *Non-Steam games* and retro titles also get proper
+  **cover art, screenshots, genres and developers** from IGDB — so the media
+  gallery works for a SNES ROM the same way it does for a Steam game.
+  - Entirely optional; with no key you get the keyless baseline unchanged.
+  - Steam games are untouched — this only affects games matched to a non-Steam
+    source.
+  - **Test artwork lookup** reports, step by step, whether the key was accepted
+    and whether artwork came back, so a failure tells you *which* part broke
+    instead of just showing an empty gallery.
+  - Images load in display sizes rather than originals (a cover is ~21 KB
+    instead of ~2.7 MB), so the gallery doesn't stall on a handheld connection.
+  - Trailers stay Steam-only: IGDB supplies YouTube ids, not playable video
+    URLs.
+  - The panel header notes where non-Steam content came from
+    ("via Hasheous + IGDB").
 - **The panel appears far sooner on a game page.** It used to wait for a
   once-every-2-seconds re-sync to notice the page had finished laying out, so on
   most page loads it arrived a beat or two after everything else. It now retries
