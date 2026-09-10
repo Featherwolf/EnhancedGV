@@ -37,9 +37,13 @@
 - **Beta channel is back.** Quick Access → EnhancedGV → Updates → *Beta channel
   (test builds)*. Betas are now published as GitHub pre-releases instead of
   private drafts, so the toggle can actually see them; stable users are never
-  offered one. A beta installs as e.g. `0.19.0-beta`, and you'll be offered the
-  finished release when it ships — previously the updater treated the two as
+  offered one. Each beta cut is numbered (`0.19.0-beta.1`, `.2`, …) and installs
+  under that version, so you're offered the next cut and, when it ships, the
+  finished release — previously the updater treated a beta and its release as
   the same version and left beta testers stranded.
+- **Store content survives a flaky connection.** If a background refresh of
+  cached store data fails (offline, rate-limited), the last good copy is kept
+  instead of being replaced by the error.
 - **The panel appears far sooner on a game page.** It used to wait for a
   once-every-2-seconds re-sync to notice the page had finished laying out, so on
   most page loads it arrived a beat or two after everything else. It now retries

@@ -144,8 +144,9 @@ game first so the game-specific options appear.
   in-app language picker); the Status row shows the language it detected.
 - **Clear cached store data** forces a fresh fetch if anything looks stale.
 - **Updates → Beta channel (test builds)** opts in to pre-release builds. Betas
-  are GitHub pre-releases tagged `vX.Y.Z-beta` — excluded from the stable update
-  check, and superseded by the `vX.Y.Z` release when it ships.
+  are GitHub pre-releases tagged `vX.Y.Z-beta.N` (a new number per cut) —
+  excluded from the stable update check, and retired when the `vX.Y.Z` release
+  ships.
 
 **Matching non-Steam games**
 

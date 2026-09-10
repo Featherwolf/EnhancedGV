@@ -19,8 +19,11 @@ permissions:
 # died twice at ~15 minutes and nobody noticed the beta never published. Never
 # auto-cancel a tag (release) run, and cap the job so a hang turns into a red X
 # that does notify.
+# All tag runs share ONE group and never cancel each other, so they serialize:
+# a beta run can never race the stable run that retires it and resurrect the
+# beta after the fact.
 concurrency:
-  group: build-${{ github.ref }}
+  group: ${{ github.ref_type == 'tag' && 'release' || format('build-{0}', github.ref) }}
   cancel-in-progress: ${{ github.ref_type != 'tag' }}
 
 jobs:
@@ -100,51 +103,81 @@ jobs:
           open("release_notes.md", "w", encoding="utf-8").write(m.group(1).strip() + foot)
           EOF
           # Two release shapes, chosen by tag form:
-          #   vX.Y.Z-beta  -> a GitHub PRE-RELEASE. Excluded from /releases/latest,
-          #                   so the stable update channel never sees it; the
-          #                   in-plugin Beta toggle opts in. A beta carries the
-          #                   version it becomes, and its tag is MOVED to newer
-          #                   commits during testing, so an existing release for
-          #                   the tag is replaced rather than appended to.
+          #   vX.Y.Z-beta.N -> a GitHub PRE-RELEASE. Excluded from /releases/latest,
+          #                    so the stable update channel never sees it; the
+          #                    in-plugin Beta toggle opts in. EACH CUT GETS ITS OWN
+          #                    NUMBER: republishing under a reused tag would ship
+          #                    the identical stamped version, and beta-channel
+          #                    testers already on it would never be offered the
+          #                    new build. So an existing published pre-release for
+          #                    this tag is an error, not something to replace.
           #   vX.Y.Z        -> the normal (latest) release. Never overwritten. Once
-          #                   it ships, its beta is retired (release + tag), which
-          #                   is the repo's convention and keeps the list clean.
-          case "${GITHUB_REF_NAME}" in
+          #                    it ships, every vX.Y.Z-beta* pre-release and tag is
+          #                    retired, which keeps the releases list clean.
+          #
+          # In both branches a leftover DRAFT is cleaned up rather than refused:
+          # `gh release create` with assets creates a draft first and publishes
+          # only after upload, so a killed run strands a draft under the tag name
+          # — and `gh release view` finds drafts, so without this the tag could
+          # never be published by CI again.
+          TAG="${GITHUB_REF_NAME}"
+          STABLE="${TAG%%-*}"
+          state_of() {  # -> "published" | "draft" | "" (absent)
+            local d
+            d=$(gh release view "$1" --json isDraft -q .isDraft 2>/dev/null || true)
+            case "$d" in true) echo draft;; false) echo published;; *) echo "";; esac
+          }
+          case "$TAG" in
             *-*)
-              if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-                echo "Replacing existing release for moved beta tag ${GITHUB_REF_NAME}"
-                gh release delete "${GITHUB_REF_NAME}" --yes
+              if [ "$(state_of "$STABLE")" = published ]; then
+                echo "::error::${STABLE} has already shipped; refusing to publish ${TAG}." >&2
+                exit 1
               fi
+              case "$(state_of "$TAG")" in
+                draft)
+                  echo "Removing stranded draft for ${TAG}"
+                  gh release delete "$TAG" --yes ;;
+                published)
+                  echo "::error::${TAG} is already published. Cut the next beta as a NEW tag (${STABLE}-beta.N+1) so beta testers are offered it." >&2
+                  exit 1 ;;
+              esac
               EXTRA="--prerelease"
               ;;
             *)
-              if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-                echo "::error::Release ${GITHUB_REF_NAME} already exists; refusing to overwrite." >&2
-                exit 1
-              fi
+              case "$(state_of "$TAG")" in
+                draft)
+                  echo "Removing stranded draft for ${TAG}"
+                  gh release delete "$TAG" --yes ;;
+                published)
+                  echo "::error::Release ${TAG} already exists; refusing to overwrite." >&2
+                  exit 1 ;;
+              esac
               EXTRA="--latest"
               ;;
           esac
-          gh release create "${GITHUB_REF_NAME}" EnhancedGV.zip $EXTRA \
+          gh release create "$TAG" EnhancedGV.zip $EXTRA \
             --target "${GITHUB_SHA}" \
-            --title "EnhancedGV ${GITHUB_REF_NAME}" \
+            --title "EnhancedGV ${TAG}" \
             --notes-file release_notes.md
 
           # Publishing half-way is worse than failing: the in-plugin updater
           # downloads the asset named exactly EnhancedGV.zip, so verify it landed.
-          gh release view "${GITHUB_REF_NAME}" --json assets \
+          gh release view "$TAG" --json assets \
             -q '.assets[].name' | grep -qx 'EnhancedGV.zip' \
-            || { echo "::error::EnhancedGV.zip missing from ${GITHUB_REF_NAME}" >&2; exit 1; }
+            || { echo "::error::EnhancedGV.zip missing from ${TAG}" >&2; exit 1; }
 
-          # A shipped stable release retires its beta: the pre-release and the
-          # tag it hangs on. Beta-channel testers are offered the stable build by
-          # version order, so nothing is left dangling for them.
-          case "${GITHUB_REF_NAME}" in
+          # A shipped stable release retires every one of its betas — release AND
+          # tag. Beta-channel testers are offered the stable build by version
+          # order, so nothing is left dangling for them.
+          case "$TAG" in
             *-*) ;;
             *)
-              if gh release view "${GITHUB_REF_NAME}-beta" >/dev/null 2>&1; then
-                echo "Retiring ${GITHUB_REF_NAME}-beta now that ${GITHUB_REF_NAME} has shipped"
-                gh release delete "${GITHUB_REF_NAME}-beta" --yes --cleanup-tag
-              fi
+              gh release list --limit 100 --json tagName,isPrerelease \
+                -q ".[] | select(.isPrerelease and (.tagName | startswith(\"${TAG}-\"))) | .tagName" \
+              | while read -r t; do
+                  [ -n "$t" ] || continue
+                  echo "Retiring $t now that ${TAG} has shipped"
+                  gh release delete "$t" --yes --cleanup-tag
+                done
               ;;
           esac

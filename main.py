@@ -224,6 +224,20 @@ def _read_cache_entry(kind: str, key: str):
     return None, False
 
 
+def _write_negative(kind: str, key: str, res) -> None:
+    """Negative-cache a failure — unless a GOOD blob is already on disk.
+
+    A stale-while-revalidate refresh runs in the background against a blob we
+    are still happily serving; if that refresh fails (offline, 429, SSL), the
+    old code replaced the good blob with the failure, and the content that was
+    on screen a moment ago was gone for good. Keep the positive blob instead: it
+    goes on aging normally and the next read simply retries the refresh."""
+    existing, _fresh = _read_cache_entry(kind, key)
+    if isinstance(existing, dict) and existing.get("ok") is not False:
+        return
+    _write_cache(kind, key, res, negative=True)
+
+
 def _write_cache(kind: str, key: str, data, negative: bool = False) -> None:
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -1181,17 +1195,17 @@ class Plugin:
                 if result.get("ok"):
                     _write_cache(kind, key, result)
                 else:
-                    _write_cache(kind, key, result, negative=True)
+                    _write_negative(kind, key, result)
                 return result
             except urllib.error.HTTPError as exc:
                 decky.logger.error(f"{kind} HTTP {exc.code} for {key}")
                 res = {"ok": False, "error": f"HTTP {exc.code}"}
-                _write_cache(kind, key, res, negative=True)
+                _write_negative(kind, key, res)
                 return res
             except Exception as exc:
                 decky.logger.error(f"{kind} fetch failed for {key}: {exc}")
                 res = {"ok": False, "error": str(exc)}
-                _write_cache(kind, key, res, negative=True)
+                _write_negative(kind, key, res)
                 return res
 
         task = asyncio.create_task(_do())

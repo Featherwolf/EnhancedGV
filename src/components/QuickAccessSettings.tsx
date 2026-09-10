@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   PanelSection,
   PanelSectionRow,
@@ -346,6 +346,7 @@ export function QuickAccessSettings() {
   const [navBridge, setNavBridge] = useState(getNavBridgeNote());
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
   const qamVisible = useQuickAccessVisible();
   const [videoTest, setVideoTest] = useState<string>("");
@@ -388,14 +389,18 @@ export function QuickAccessSettings() {
     }
   };
 
-  const runUpdateCheck = async () => {
+  // Monotonic request id: the channel can flip while a check is in flight,
+  // and the OLDER response must not land on top of the newer one.
+  const updateReq = useRef(0);
+  const runUpdateCheck = async (beta: boolean = !!settings.beta) => {
     // Beta builds are published as GitHub PRE-RELEASES: excluded from
     // /releases/latest (so stable users never see them) but visible to the
     // beta channel, which opts in here.
-    const info = await checkUpdate(!!settings.beta).catch(
+    const id = ++updateReq.current;
+    const info = await checkUpdate(beta).catch(
       (e) => ({ ok: false, error: String(e), current: "?" }) as UpdateInfo
     );
-    setUpdate(info);
+    if (id === updateReq.current) setUpdate(info);
   };
 
 
@@ -415,6 +420,7 @@ export function QuickAccessSettings() {
           sections: { ...DEFAULTS.sections, ...s?.sections },
           expanded: { ...DEFAULT_EXPANDED, ...s?.expanded },
         });
+        setSettingsLoaded(true);
       })
       .catch((e) => {
         settled = true;
@@ -434,9 +440,17 @@ export function QuickAccessSettings() {
   // Poll the synchronous probes ONLY while the QAM is actually visible —
   // otherwise a hidden panel re-renders twice a second forever after the
   // overlay closes (thousands of orphan renders + timer churn on battery).
+  // The automatic update check must wait for the SAVED settings: running it
+  // from the initial DEFAULTS closure checked the stable channel even when the
+  // user had the beta channel on, and nothing re-ran it once settings loaded.
+  useEffect(() => {
+    if (!qamVisible || !settingsLoaded) return;
+    void runUpdateCheck(!!settings.beta);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qamVisible, settingsLoaded, settings.beta]);
+
   useEffect(() => {
     if (!qamVisible) return;
-    runUpdateCheck();
     const iv = setInterval(() => {
       setStoreRenders(getStoreRenders());
       setFetch(describeFetch());
@@ -577,7 +591,7 @@ export function QuickAccessSettings() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={runUpdateCheck}>
+          <ButtonItem layout="below" onClick={() => void runUpdateCheck()}>
             Check for updates
           </ButtonItem>
         </PanelSectionRow>
@@ -586,13 +600,9 @@ export function QuickAccessSettings() {
             label="Beta channel (test builds)"
             description="Include pre-release test builds in the update check. Off by default. A beta carries the version number it will become, and you'll be offered the final release when it ships."
             checked={!!settings.beta}
-            onChange={(v: boolean) => {
-              persist({ ...settings, beta: v });
-              // Re-run immediately so the readout reflects the channel just chosen.
-              void checkUpdate(v)
-                .then(setUpdate)
-                .catch((e) => setUpdate({ ok: false, error: String(e), current: "?" } as UpdateInfo));
-            }}
+            // Persisting flips settings.beta, which re-runs the update check
+            // for the newly chosen channel via the effect above.
+            onChange={(v: boolean) => persist({ ...settings, beta: v })}
           />
         </PanelSectionRow>
         {update?.ok && update.has_update && (
