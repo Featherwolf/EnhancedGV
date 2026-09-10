@@ -2,10 +2,14 @@ name: Build EnhancedGV
 
 on:
   push:
-    branches: [main]
+    branches: [main, beta]
     tags: ["v*"]
   pull_request:
-    branches: [main]
+    # `beta` is a release line too (betas are cut from it and tagged
+    # vX.Y.Z-beta), so PRs into it need the same build gate as main —
+    # without it a beta-targeted PR reports NO checks at all, which reads
+    # like "nothing failed" when nothing actually ran.
+    branches: [main, beta]
   workflow_dispatch:
 
 permissions:
