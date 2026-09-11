@@ -180,11 +180,27 @@ def _build_ssl_context() -> ssl.SSLContext:
     try:
         return ssl.create_default_context()
     except Exception:
+        # Last resort so public, unauthenticated content still loads. Callers
+        # that send credentials must consult _ssl_verifies() and refuse.
         return ssl._create_unverified_context()
 
 
 _SSL_CTX = _build_ssl_context()
 _SSL_UNVERIFIED = ssl._create_unverified_context()
+
+
+def _ssl_verifies(ctx: ssl.SSLContext = None) -> bool:
+    """Whether a context actually validates certificates.
+
+    _build_ssl_context can degrade to an unverified context, and both variants
+    are the same CLASS — so `type(ctx).__name__` (what the startup log used to
+    print) cannot tell them apart. verify_mode/check_hostname can.
+    """
+    ctx = _SSL_CTX if ctx is None else ctx
+    try:
+        return bool(ctx.verify_mode != ssl.CERT_NONE and ctx.check_hostname)
+    except Exception:
+        return False
 
 
 def _http_get_json(url: str, headers: dict = None) -> dict:
@@ -357,6 +373,11 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
     except Exception:
         pass
 
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send IGDB credentials: TLS certificate verification is "
+            "unavailable on this device (no usable CA bundle)")
+
     body = urllib.parse.urlencode({
         "client_id": client_id,
         "client_secret": client_secret,
@@ -395,6 +416,11 @@ def _igdb_forget_token() -> None:
 def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
     """One POST against IGDB v4. Returns the decoded list (IGDB always answers
     with an array). Apicalypse bodies are plain text, not JSON."""
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send IGDB credentials: TLS certificate verification is "
+            "unavailable on this device (no usable CA bundle)")
+
     req = urllib.request.Request(
         f"{IGDB_API}/{endpoint}", data=body.encode("utf-8"), method="POST",
         headers={"User-Agent": USER_AGENT, "Accept": "application/json",
@@ -1231,8 +1257,8 @@ class Plugin:
         self._inflight = {}
         os.makedirs(CACHE_DIR, exist_ok=True)
         self._purge_stale_cache()
-        decky.logger.info("EnhancedGV backend started (SSL ctx: %s)",
-                          type(_SSL_CTX).__name__)
+        decky.logger.info("EnhancedGV backend started (TLS verification: %s)",
+                          "on" if _ssl_verifies() else "OFF - no usable CA bundle")
 
     def _purge_stale_cache(self):
         """Drop the on-disk cache when CACHE_VERSION changes, so a fix ships with
@@ -2214,7 +2240,15 @@ class Plugin:
             try:
                 try:
                     resp = urllib.request.urlopen(req, timeout=12, context=_SSL_CTX)
-                except urllib.error.URLError:
+                except urllib.error.URLError as exc:
+                    # Only a CERTIFICATE failure justifies dropping verification,
+                    # and only here because this probe reads public CDN bytes and
+                    # carries no credentials. A refused connection or DNS failure
+                    # must surface as itself, not be retried unverified.
+                    reason = getattr(exc, "reason", exc)
+                    if not (isinstance(reason, ssl.SSLError)
+                            or "CERTIFICATE_VERIFY_FAILED" in str(exc)):
+                        raise
                     resp = urllib.request.urlopen(req, timeout=12, context=_SSL_UNVERIFIED)
                 with resp:
                     data = resp.read(65536)
