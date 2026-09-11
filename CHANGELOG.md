@@ -9,14 +9,15 @@ ROM that was added to your library as its own shortcut. You should get a title,
 description, genres, developer/publisher, platform and a logo, sourced from
 **Hasheous**. That is the whole feature for now, and it needs no account and no key.
 
-Cover art and screenshots come from IGDB through Hasheous' *keyed* proxy, and those
-client API keys are **not self-serve**: Hasheous issues them per registered
-application, and creating an application is restricted to its admins and moderators
-— on a normal account the **New** button silently does nothing. Only three
-applications exist service-wide, all official integrations. So **leave the key field
-empty** unless you already hold a client API key. If you do have one, note it is not
-the *Submission API Key* from your Hasheous profile; that is a different key type and
-the proxy rejects it with `HTTP 401`.
+Cover art and screenshots come from **IGDB**, which the plugin now queries
+directly. That is optional and free to set up: a Twitch account with two-factor
+enabled, an application registered at dev.twitch.tv with Client Type
+*Confidential*, then paste its Client ID and Client Secret into the same panel.
+The README has the step-by-step.
+
+(Earlier betas tried to reach IGDB through Hasheous' proxy, which needs a client
+API key that only Hasheous admins can issue — so that field could never be
+filled. Going direct removes the gatekeeper.)
 
 **Test artwork lookup** (same panel) reports each stage separately if you want to see
 where things stop.
@@ -37,20 +38,22 @@ where things stop.
   - You can still override any match by hand (Quick Access → *Store data source*).
   - This is the keyless baseline (title, description, genres, developer/publisher,
     platform, logo).
-- **Optional artwork upgrade for those games (needs a key you probably can't get yet).** The keyless
-  baseline above shows a logo and a description. Paste a **Hasheous client API
-  key** in Quick Access → EnhancedGV → *Non-Steam games* and retro titles also
-  get proper **cover art, screenshots, genres and developers** from IGDB — so the media
-  gallery works for a SNES ROM the same way it does for a Steam game.
-  - Entirely optional; with no key you get the keyless baseline unchanged.
-  - **Getting a key is not self-serve yet.** Hasheous issues client API keys per
-    *registered application*, and creating an application is admin/moderator-only
-    — only three exist service-wide, all official integrations. Until EnhancedGV
-    is registered, most users stay on the keyless baseline. Details in the README
-    under *Setup & tips → Metadata & artwork for emulated / non-Steam games*.
-  - If you do have a key, note it is **not** the *Submission API Key* on your
-    Hasheous profile page; that is a different key type and the metadata proxy
-    rejects it with HTTP 401.
+- **Optional artwork upgrade for those games (free IGDB credentials).** The
+  keyless baseline above shows a logo and a description. Add IGDB credentials in
+  Quick Access → EnhancedGV → *Non-Steam games* and retro titles also get proper
+  **cover art, screenshots, genres and developers** — so the media gallery works
+  for a SNES ROM the same way it does for a Steam game.
+  - Entirely optional; with no credentials you get the keyless baseline unchanged.
+  - **IGDB is queried directly** rather than through Hasheous' metadata proxy.
+    The proxy needs a client API key issued per registered application, and only
+    Hasheous admins can create one — three exist service-wide. IGDB's own API is
+    free and self-serve, so anyone can turn this on.
+  - One expanded request per game now returns the cover, screenshots, genres and
+    companies together. The proxy route needed a separate request for every
+    image id.
+  - The access token is minted from your credentials, cached for its ~60-day
+    life and refreshed automatically. The secret travels in a form body, never a
+    URL, and is never logged or shown by the diagnostic.
   - Steam games are untouched — this only affects games matched to a non-Steam
     source.
   - **Test artwork lookup** reports, step by step, whether the key was accepted

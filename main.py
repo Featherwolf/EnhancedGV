@@ -33,6 +33,8 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 # Per-game store-appid matches (device-local). Lives in SETTINGS_DIR (NOT the
 # cache dir) so it survives updates and is never wiped by _purge_stale_cache.
 MATCHES_FILE = os.path.join(SETTINGS_DIR, "matches.json")
+# IGDB app access token cache (derived state, not a preference).
+IGDB_TOKEN_FILE = os.path.join(SETTINGS_DIR, "igdb_token.json")
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
@@ -94,26 +96,58 @@ CLAN_IMAGE_BASE = "https://clan.akamai.steamstatic.com/images"
 #   -> DataObjects/Game/{id} (name, AIDescription, Logo, Tags, publisher, IGDB id)
 # The rich IGDB proxy (cover/screenshots/genres) is key-gated (a later, opt-in
 # phase); this baseline is entirely keyless and works with the feature toggled on.
-# --- IGDB enrichment (opt-in, needs a Hasheous CLIENT API key) --------------- #
-# Hasheous proxies IGDB at /MetadataProxy/IGDB/*. Verified against the live
-# OpenAPI spec and by probing the running service:
-#   * METADATA is key-gated: /MetadataProxy/IGDB/Game?Id=… answers 401 without an
-#     `X-Client-API-Key` header (securityScheme "Client API Key").
-#   * IMAGES are NOT key-gated: /MetadataProxy/IGDB/Image/{hash}.jpg answers 200
-#     with no key — but it serves the ORIGINAL (a cover measured at 2.7 MB), and
-#     it takes no size parameter (a t_cover_big-style path 404s).
-# So metadata goes through the proxy with the key, and image URLs point at IGDB's
-# own public CDN, which does serve sized renditions keylessly. Measured on the
-# same cover: t_thumb 3 KB / t_cover_big 21 KB / t_screenshot_med 40 KB /
-# t_1080p 163 KB, versus 2.7 MB from the proxy. On a Deck over wifi, with a
-# thumbnail strip of a dozen shots, that difference is the whole feature.
+# --- IGDB enrichment (opt-in, needs free IGDB/Twitch credentials) ----------- #
+# We talk to IGDB DIRECTLY, not through Hasheous' proxy. Hasheous does proxy IGDB
+# at /MetadataProxy/IGDB/*, but every metadata endpoint there is declared
+# `security: [Client API Key]`, and those client keys are issued per REGISTERED
+# APPLICATION — creating one is restricted to Hasheous admins/moderators (three
+# applications exist service-wide, all official integrations). So that route is
+# closed to ordinary users, however free it looks.
+#
+# IGDB's own API is free and genuinely self-serve: a Twitch account with 2FA,
+# an application registered in the Twitch Developer Portal (Client Type
+# "Confidential"), and a generated Client Secret. Verified against the live
+# services:
+#   * POST https://id.twitch.tv/oauth2/token (form-encoded client_id /
+#     client_secret / grant_type=client_credentials) answers
+#     {"status":400,"message":"invalid client"} for bad credentials — the
+#     standard OAuth2 client-credentials grant. Form body, not query string, so
+#     the secret never lands in a URL or a proxy log.
+#   * POST https://api.igdb.com/v4/<endpoint> requires BOTH a `Client-ID` header
+#     and `Authorization: Bearer <app access token>`; without them it answers
+#     401 with a tips payload naming exactly those two headers.
+#   * Rate limit is 4 requests/second, 8 concurrent (documented).
+#
+# Hasheous is still what MATCHES a ROM to a game, keylessly, and its record
+# carries the IGDB id — so the expensive half of this feature needs no key at
+# all, and IGDB only supplies artwork on top.
+#
+# Field expansion (`fields cover.image_id,genres.name;`) means ONE request per
+# game instead of the proxy's one-request-per-image-id fan-out.
+#
+# Images stay on IGDB's public CDN, which is keyless and serves sized
+# renditions. Measured on one cover: t_thumb 3 KB / t_cover_big 21 KB /
+# t_screenshot_med 40 KB / t_1080p 163 KB, versus 2.7 MB for the original. On a
+# Deck over wifi, with a strip of a dozen shots, that difference is the feature.
+IGDB_API = "https://api.igdb.com/v4"
+IGDB_TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 IGDB_IMG_CDN = "https://images.igdb.com/igdb/image/upload"
 IGDB_SIZE_COVER = "t_cover_big"
 IGDB_SIZE_THUMB = "t_screenshot_med"
 IGDB_SIZE_FULL = "t_1080p"
-# Screenshot/artwork metadata is one request PER image id, so cap how many we
-# resolve: enough to fill the carousel, few enough to stay polite and quick.
+# How many screenshots/artworks to carry into the gallery.
 IGDB_MAX_SHOTS = 12
+# One expanded query covers everything the panel needs.
+IGDB_GAME_FIELDS = (
+    "fields name,summary,url,"
+    "cover.image_id,"
+    "screenshots.image_id,"
+    "artworks.image_id,"
+    "genres.name,"
+    "involved_companies.developer,"
+    "involved_companies.publisher,"
+    "involved_companies.company.name;"
+)
 
 HASHEOUS_BASE = "https://hasheous.org/api/v1"
 HASHEOUS_IMAGE = HASHEOUS_BASE + "/Images/"  # + {image_hash}
@@ -287,14 +321,87 @@ def _feature_non_steam() -> bool:
         return False
 
 
-def _igdb_key() -> str:
-    """The Hasheous CLIENT API key, or "" when enrichment is off. Read from the
-    settings file for the same reason as _feature_non_steam. NEVER logged."""
+def _igdb_creds():
+    """(client_id, client_secret) for IGDB, or ("", "") when not configured.
+
+    Read from the settings file for the same reason as _feature_non_steam. The
+    SECRET is never logged, never returned to the frontend, and never placed in
+    a URL.
+    """
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
-            return str(json.load(fh).get("hasheousApiKey", "") or "").strip()
+            saved = json.load(fh)
+        return (str(saved.get("igdbClientId", "") or "").strip(),
+                str(saved.get("igdbClientSecret", "") or "").strip())
     except Exception:
-        return ""
+        return ("", "")
+
+
+def _igdb_token_sync(client_id: str, client_secret: str) -> str:
+    """An IGDB app access token, from cache when still valid.
+
+    Twitch's client-credentials tokens last ~60 days, so minting one per request
+    would be both slow and rude. The token is cached beside the settings file
+    (not IN it: settings are read and rewritten by the frontend, and a token is
+    derived state, not a preference) and refreshed once inside a 10-minute
+    safety margin. Sent as a form body so the secret never reaches a URL.
+    """
+    now = time.time()
+    try:
+        with open(IGDB_TOKEN_FILE, "r", encoding="utf-8") as fh:
+            tok = json.load(fh)
+        if (tok.get("client_id") == client_id
+                and float(tok.get("expires_at", 0)) - 600 > now
+                and tok.get("access_token")):
+            return str(tok["access_token"])
+    except Exception:
+        pass
+
+    body = urllib.parse.urlencode({
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "grant_type": "client_credentials",
+    }).encode("ascii")
+    req = urllib.request.Request(
+        IGDB_TOKEN_URL, data=body, method="POST",
+        headers={"User-Agent": USER_AGENT,
+                 "Content-Type": "application/x-www-form-urlencoded",
+                 "Accept": "application/json"})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        got = json.loads(resp.read().decode("utf-8", "replace"))
+
+    token = str(got.get("access_token") or "")
+    if not token:
+        raise RuntimeError("no access_token in the token response")
+    try:
+        os.makedirs(SETTINGS_DIR, exist_ok=True)
+        with open(IGDB_TOKEN_FILE, "w", encoding="utf-8") as fh:
+            json.dump({"client_id": client_id, "access_token": token,
+                       "expires_at": now + float(got.get("expires_in") or 0)}, fh)
+        os.chmod(IGDB_TOKEN_FILE, 0o600)
+    except Exception:
+        pass  # a token we cannot cache still works for this request
+    return token
+
+
+def _igdb_forget_token() -> None:
+    """Drop the cached token — called when the credentials change."""
+    try:
+        os.remove(IGDB_TOKEN_FILE)
+    except Exception:
+        pass
+
+
+def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
+    """One POST against IGDB v4. Returns the decoded list (IGDB always answers
+    with an array). Apicalypse bodies are plain text, not JSON."""
+    req = urllib.request.Request(
+        f"{IGDB_API}/{endpoint}", data=body.encode("utf-8"), method="POST",
+        headers={"User-Agent": USER_AGENT, "Accept": "application/json",
+                 "Content-Type": "text/plain",
+                 "Client-ID": client_id, "Authorization": f"Bearer {token}"})
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        return json.loads(resp.read().decode("utf-8", "replace"))
 
 
 def _igdb_img(image_hash: str, size: str) -> str:
@@ -1565,39 +1672,27 @@ class Plugin:
         return {"ok": False, "error": "no resolvable rom hash"}
 
     # --- IGDB enrichment (opt-in; needs a Hasheous client API key) --------- #
-    async def _igdb_get(self, path: str, params: dict, key: str):
-        """One keyed GET against the IGDB metadata proxy."""
-        url = f"{HASHEOUS_BASE}/MetadataProxy/IGDB/{path}?" + urllib.parse.urlencode(params)
+    async def _igdb_token(self, client_id: str, client_secret: str) -> str:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, functools.partial(_http_get_json, url, {"X-Client-API-Key": key})
-        )
+            None, functools.partial(_igdb_token_sync, client_id, client_secret))
 
-    async def _igdb_image_hash(self, kind: str, image_id, key: str):
-        """Resolve one Cover/Screenshot/Artwork id to its IGDB image hash."""
-        try:
-            obj = await self._igdb_get(kind, {"Id": int(image_id)}, key)
-        except Exception:
-            return None
-        return _igdb_pick(obj, "image_id", "imageId", "hash")
+    async def _igdb_game(self, igdb_id: int, client_id: str, token: str):
+        """The one expanded request that backs the whole enrichment.
 
-    async def _igdb_names(self, kind: str, ids, key: str, limit: int = 12):
-        """Resolve a list of ids (Genre, Company, …) to their display names."""
-        out = []
-        for chunk in [list(ids)[:limit]]:
-            got = await asyncio.gather(
-                *[self._igdb_get(kind, {"Id": int(i)}, key) for i in chunk],
-                return_exceptions=True,
-            )
-            for o in got:
-                if isinstance(o, BaseException):
-                    continue
-                n = _igdb_pick(o, "name")
-                if n:
-                    out.append(str(n))
-        return out
+        Field expansion resolves covers, screenshots, artworks, genres and
+        companies inline, so this replaces the proxy-era fan-out of one request
+        per image id. IGDB answers with an array; we want its single element.
+        """
+        body = f"{IGDB_GAME_FIELDS} where id = {int(igdb_id)}; limit 1;"
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(
+            None, functools.partial(_igdb_post_sync, "games", body, client_id, token))
+        if isinstance(got, list) and got and isinstance(got[0], dict):
+            return got[0]
+        return None
 
-    async def _igdb_delta(self, igdb_id: int, key: str) -> dict:
+    async def _igdb_delta(self, igdb_id: int, client_id: str, token: str) -> dict:
         """Fetch the IGDB-derived fields for a game. CACHED ON ITS OWN — never
         cache the merged result: the merge depends on what the Hasheous baseline
         already had, so a cached merge made against one baseline would be served
@@ -1607,9 +1702,10 @@ class Plugin:
             return cached
 
         try:
-            game = await self._igdb_get("Game", {"Id": int(igdb_id)}, key)
+            game = await self._igdb_game(int(igdb_id), client_id, token)
         except urllib.error.HTTPError as exc:
-            # 401/403 = missing/rejected key. Logged without the key itself.
+            # 401/403 = rejected credentials, 429 = over the 4 req/s limit.
+            # Logged without the credentials themselves.
             decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
             return {}
         except Exception as exc:
@@ -1620,66 +1716,49 @@ class Plugin:
 
         delta = {}
 
-        cover_id = _igdb_pick(game, "cover")
-        if cover_id:
-            h = await self._igdb_image_hash("Cover", cover_id, key)
-            if h:
-                delta["header_image"] = _igdb_img(h, IGDB_SIZE_COVER)
+        # Expanded objects: cover/screenshots/artworks arrive as dicts carrying
+        # image_id, so no follow-up request is needed to resolve any of them.
+        cover_hash = _igdb_pick(_igdb_pick(game, "cover") or {}, "image_id")
+        if cover_hash:
+            url = _igdb_img(cover_hash, IGDB_SIZE_COVER)
+            if url:
+                delta["header_image"] = url
 
         # Screenshots (+ artworks as filler) — the media hero is the whole point
         # of this phase; the keyless baseline has none.
-        pairs = ([("Screenshot", i) for i in (_igdb_pick(game, "screenshots") or [])] +
-                 [("Artwork", i) for i in (_igdb_pick(game, "artworks") or [])])[:IGDB_MAX_SHOTS]
         shots = []
-        if pairs:
-            hashes = await asyncio.gather(
-                *[self._igdb_image_hash(k, i, key) for k, i in pairs],
-                return_exceptions=True,
-            )
-            for (_kind, ident), h in zip(pairs, hashes):
-                if isinstance(h, BaseException) or not h:
-                    continue
-                shots.append({"id": int(ident),
-                              "thumb": _igdb_img(h, IGDB_SIZE_THUMB),
-                              "full": _igdb_img(h, IGDB_SIZE_FULL)})
+        for obj in (list(_igdb_pick(game, "screenshots") or [])
+                    + list(_igdb_pick(game, "artworks") or [])):
+            if len(shots) >= IGDB_MAX_SHOTS:
+                break
+            h = _igdb_pick(obj, "image_id") if isinstance(obj, dict) else None
+            thumb, full = _igdb_img(h, IGDB_SIZE_THUMB), _igdb_img(h, IGDB_SIZE_FULL)
+            if thumb and full:
+                shots.append({"id": int(_igdb_pick(obj, "id") or len(shots)),
+                              "thumb": thumb, "full": full})
         if shots:
             delta["screenshots"] = shots
 
-        gids = list(_igdb_pick(game, "genres") or [])
-        if gids:
-            names = await self._igdb_names("Genre", gids, key)
-            if names:
-                delta["genres"] = [{"id": n, "description": n} for n in names]
+        names = [str(_igdb_pick(g, "name")) for g in (_igdb_pick(game, "genres") or [])
+                 if isinstance(g, dict) and _igdb_pick(g, "name")]
+        if names:
+            delta["genres"] = [{"id": n, "description": n} for n in names]
 
-        ic_ids = list(_igdb_pick(game, "involved_companies") or [])
-        if ic_ids:
-            devs, pubs = [], []
-            got = await asyncio.gather(
-                *[self._igdb_get("InvolvedCompany", {"Id": int(i)}, key)
-                  for i in ic_ids[:8]],
-                return_exceptions=True,
-            )
-            for ic in got:
-                if isinstance(ic, BaseException) or not isinstance(ic, dict):
-                    continue
-                cid = _igdb_pick(ic, "company")
-                if not cid:
-                    continue
-                try:
-                    comp = await self._igdb_get("Company", {"Id": int(cid)}, key)
-                except Exception:
-                    continue
-                nm = _igdb_pick(comp, "name")
-                if not nm:
-                    continue
-                if _igdb_pick(ic, "developer"):
-                    devs.append(str(nm))
-                elif _igdb_pick(ic, "publisher"):
-                    pubs.append(str(nm))
-            if devs:
-                delta["developers"] = devs
-            if pubs:
-                delta["publishers"] = pubs
+        devs, pubs = [], []
+        for ic in (_igdb_pick(game, "involved_companies") or []):
+            if not isinstance(ic, dict):
+                continue
+            nm = _igdb_pick(_igdb_pick(ic, "company") or {}, "name")
+            if not nm:
+                continue
+            if _igdb_pick(ic, "developer"):
+                devs.append(str(nm))
+            elif _igdb_pick(ic, "publisher"):
+                pubs.append(str(nm))
+        if devs:
+            delta["developers"] = devs
+        if pubs:
+            delta["publishers"] = pubs
 
         summary = _igdb_pick(game, "summary")
         if summary:
@@ -1698,15 +1777,20 @@ class Plugin:
     async def _igdb_enrich(self, igdb_id: int, base: dict) -> dict:
         """Layer IGDB artwork/details onto a normalized Hasheous AppDetails.
 
-        Best-effort throughout: a bad key, a rate limit or an unexpected shape
-        degrades to the keyless baseline rather than blanking the panel. Hasheous
+        Best-effort throughout: bad credentials, a rate limit or an unexpected
+        shape degrades to the keyless baseline rather than blanking the panel. Hasheous
         data WINS wherever it has some — IGDB only fills what was empty. The one
         exception is `screenshots`, which the baseline can never populate.
         """
-        key = _igdb_key()
-        if not key or not igdb_id:
+        client_id, client_secret = _igdb_creds()
+        if not (client_id and client_secret and igdb_id):
             return base
-        delta = await self._igdb_delta(int(igdb_id), key)
+        try:
+            token = await self._igdb_token(client_id, client_secret)
+        except Exception as exc:
+            decky.logger.error(f"igdb: could not obtain an access token: {exc}")
+            return base
+        delta = await self._igdb_delta(int(igdb_id), client_id, token)
         if not delta:
             return base
 
@@ -1728,10 +1812,10 @@ class Plugin:
         return out
 
     async def test_igdb(self, game_appid=0):
-        """Per-step IGDB probe for the QAM, so a beta tester can see exactly
-        where enrichment stops instead of just 'no artwork appeared'. Never
-        returns the key itself — only whether one is set and how long it is."""
-        key = _igdb_key()
+        """Per-step IGDB probe for the QAM, so a tester can see exactly where
+        enrichment stops instead of just 'no artwork appeared'. Never returns the
+        credentials — only whether they are set, and the client id's length."""
+        client_id, client_secret = _igdb_creds()
         steps = []
 
         def step(name, ok, detail=""):
@@ -1739,9 +1823,26 @@ class Plugin:
 
         step("Non-Steam sources enabled", _feature_non_steam(),
              "on" if _feature_non_steam() else "turn it on above")
-        step("API key present", bool(key), f"{len(key)} chars" if key else "no key saved")
-        if not key:
-            return {"ok": False, "steps": steps, "error": "no API key"}
+        step("Credentials present", bool(client_id and client_secret),
+             ("client id + secret saved" if client_id and client_secret else
+              "missing " + (" and ".join(
+                  ([] if client_id else ["Client ID"])
+                  + ([] if client_secret else ["Client Secret"])))))
+        if not (client_id and client_secret):
+            return {"ok": False, "steps": steps, "error": "no IGDB credentials"}
+
+        try:
+            token = await self._igdb_token(client_id, client_secret)
+            step("Access token from Twitch", bool(token), "token obtained")
+        except urllib.error.HTTPError as exc:
+            detail = f"HTTP {exc.code}"
+            if exc.code in (400, 401, 403):
+                detail += " — Twitch rejected the client id/secret pair"
+            step("Access token from Twitch", False, detail)
+            return {"ok": False, "steps": steps, "error": detail}
+        except Exception as exc:
+            step("Access token from Twitch", False, str(exc))
+            return {"ok": False, "steps": steps, "error": str(exc)}
 
         # Which game? The one on screen if it resolves to Hasheous, else a known
         # public mapping (Super Metroid) so the key itself can still be tested.
@@ -1766,27 +1867,32 @@ class Plugin:
         else:
             igdb_id, label = 1103, "Super Metroid (fallback probe)"
             step("This game maps to IGDB", False,
-                 "no IGDB mapping for this game; testing the key against a known title")
+                 "no IGDB mapping for this game; testing the credentials against a known title")
 
         try:
-            game = await self._igdb_get("Game", {"Id": igdb_id}, key)
-            step("IGDB metadata (key accepted)", isinstance(game, dict),
-                 _igdb_pick(game, "name") or "no name field")
+            game = await self._igdb_game(igdb_id, client_id, token)
+            step("IGDB game fetched", isinstance(game, dict),
+                 _igdb_pick(game, "name") if isinstance(game, dict)
+                 else "no game returned for that id")
         except urllib.error.HTTPError as exc:
-            step("IGDB metadata (key accepted)", False,
-                 f"HTTP {exc.code}" + (" — key rejected" if exc.code in (401, 403) else ""))
-            return {"ok": False, "steps": steps, "error": f"HTTP {exc.code}"}
+            detail = f"HTTP {exc.code}"
+            if exc.code in (401, 403):
+                detail += " — IGDB rejected the token or client id"
+            elif exc.code == 429:
+                detail += " — over the 4 requests/second limit"
+            step("IGDB game fetched", False, detail)
+            return {"ok": False, "steps": steps, "error": detail}
         except Exception as exc:
-            step("IGDB metadata (key accepted)", False, str(exc))
+            step("IGDB game fetched", False, str(exc))
             return {"ok": False, "steps": steps, "error": str(exc)}
 
         shots = list(_igdb_pick(game, "screenshots") or [])
         step("Screenshots listed", bool(shots), f"{len(shots)} found")
         sample = ""
         if shots:
-            h = await self._igdb_image_hash("Screenshot", shots[0], key)
-            sample = _igdb_img(h, IGDB_SIZE_THUMB) if h else ""
-            step("Image address resolved", bool(sample), sample or "no image id on the object")
+            sample = _igdb_img(_igdb_pick(shots[0], "image_id"), IGDB_SIZE_THUMB)
+            step("Image address resolved", bool(sample),
+                 sample or "no image_id on the expanded screenshot")
         return {"ok": True, "steps": steps, "igdb_id": igdb_id,
                 "name": label, "sample_image": sample}
 
@@ -1988,11 +2094,16 @@ class Plugin:
             # (Hasheous). OFF by default: when off, resolve_game does Steam
             # title-search only and non-Steam misses stay "unmatched".
             "nonSteamSources": False,
-            # Hasheous CLIENT API key. Empty = the keyless baseline (logo +
-            # description only). With a key, non-Steam games are enriched from
-            # IGDB (cover, screenshots, genres, developers). Stored locally in
-            # the plugin's settings file and sent ONLY to hasheous.org.
-            "hasheousApiKey": "",
+            # IGDB (via Twitch) application credentials. Both empty = the
+            # keyless baseline (logo + description only). With them, non-Steam
+            # games are enriched from IGDB (cover, screenshots, genres,
+            # developers). Free and self-serve: a Twitch account with 2FA and an
+            # application registered in the Twitch Developer Portal. Stored
+            # locally in this file; the secret is sent ONLY to id.twitch.tv to
+            # mint an access token, and is never logged or reported by
+            # test_igdb.
+            "igdbClientId": "",
+            "igdbClientSecret": "",
         }
         _sub = ("sections", "expanded")  # merged as sub-dicts, not replaced
         try:
@@ -2011,6 +2122,16 @@ class Plugin:
         return defaults
 
     async def set_settings(self, settings: dict):
+        try:
+            # A cached access token belongs to one client id/secret pair. If
+            # either changed, the cached token is either wrong or about to be,
+            # so drop it rather than let a stale token mask new credentials.
+            prev_id, prev_secret = _igdb_creds()
+            if (str(settings.get("igdbClientId", "") or "").strip() != prev_id
+                    or str(settings.get("igdbClientSecret", "") or "").strip() != prev_secret):
+                _igdb_forget_token()
+        except Exception:
+            pass
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             tmp = SETTINGS_FILE + ".tmp"

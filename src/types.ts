@@ -202,7 +202,8 @@ export interface PluginSettings {
   beta?: boolean; // opt in to pre-release update checks
   // Hasheous CLIENT API key. Empty = keyless baseline (logo + description);
   // set = IGDB artwork/details for non-Steam games. Stored locally only.
-  hasheousApiKey?: string;
+  igdbClientId?: string;
+  igdbClientSecret?: string;
   // Opt in to pulling metadata for non-Steam / emulated games from external
   // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
   // as before (Steam title-search only, then "unmatched").
