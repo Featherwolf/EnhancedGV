@@ -2,6 +2,26 @@
 
 ## v0.19.0
 
+### Testing non-Steam / emulated game metadata
+
+Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
+ROM that was added to your library as its own shortcut. You should get a title,
+description, genres, developer/publisher, platform and a logo, sourced from
+**Hasheous**. That is the whole feature for now, and it needs no account and no key.
+
+Cover art and screenshots come from IGDB through Hasheous' *keyed* proxy, and those
+client API keys are **not self-serve**: Hasheous issues them per registered
+application, and creating an application is restricted to its admins and moderators
+— on a normal account the **New** button silently does nothing. Only three
+applications exist service-wide, all official integrations. So **leave the key field
+empty** unless you already hold a client API key. If you do have one, note it is not
+the *Submission API Key* from your Hasheous profile; that is a different key type and
+the proxy rejects it with `HTTP 401`.
+
+**Test artwork lookup** (same panel) reports each stage separately if you want to see
+where things stop.
+
+
 - **Metadata for emulated / non-Steam games (experimental, off by default).** When
   a non-Steam game has no Steam store page, EnhancedGV can now pull a description,
   details and artwork from **Hasheous** — a free, keyless community game database.
@@ -17,7 +37,7 @@
   - You can still override any match by hand (Quick Access → *Store data source*).
   - This is the keyless baseline (title, description, genres, developer/publisher,
     platform, logo).
-- **Optional artwork upgrade for those games (needs a free key).** The keyless
+- **Optional artwork upgrade for those games (needs a key you probably can't get yet).** The keyless
   baseline above shows a logo and a description. Paste a **Hasheous client API
   key** in Quick Access → EnhancedGV → *Non-Steam games* and retro titles also
   get proper **cover art, screenshots, genres and developers** from IGDB — so the media
