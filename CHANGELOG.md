@@ -4,6 +4,13 @@
 
 ### Testing non-Steam / emulated game metadata
 
+> **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
+> calls a backend method that an earlier commit had deleted, so every non-Steam
+> game failed before any provider was contacted. If you tried beta.1, beta.2 or
+> beta.3 and saw nothing happen for a ROM, that is why — this build is the first
+> where the feature actually runs.
+
+
 Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
 ROM that was added to your library as its own shortcut. You should get a title,
 description, genres, developer/publisher, platform and a logo, sourced from

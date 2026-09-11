@@ -42,6 +42,13 @@ jobs:
       - name: Check version consistency
         run: python3 scripts/check_version.py
 
+      # The frontend reaches the backend by STRING name (callable<>("get_all")),
+      # so tsc cannot see a method that was renamed or deleted. 63078f1 dropped
+      # get_all_provider while editing the same region and three beta cuts
+      # shipped with the entire non-Steam path answering "unknown method".
+      - name: Check frontend/backend callable contract
+        run: python3 scripts/check_callables.py
+
       - name: Install dependencies
         run: npm install
 

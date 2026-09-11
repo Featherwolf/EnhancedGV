@@ -1811,6 +1811,52 @@ class Plugin:
         out["igdb_enriched"] = True
         return out
 
+    async def get_all_provider(self, provider, id, lang: str = "english",
+                               cc: str = "us"):
+        """Non-Steam metadata aggregate — same AppData shape as get_all, with
+        reviews/news/deck = {ok:False} (they hide cleanly in the panel).
+
+        This is the callable the frontend reaches for every non-Steam game
+        (src/api.ts -> "get_all_provider"), so without it the whole Hasheous
+        path answers "unknown method" and no non-Steam panel can render.
+        """
+        if provider != "hasheous":
+            return {"ok": False, "error": f"unknown provider: {provider}"}
+        try:
+            gid = int(id)
+        except Exception:
+            return {"ok": False, "error": "invalid provider id"}
+        url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
+
+        def norm(raw):
+            if not isinstance(raw, dict) or not raw.get("name"):
+                return {"ok": False, "error": "no hasheous data"}
+            return _normalize_hasheous(raw)
+
+        appdetails = await self._fetch("hasheous", str(gid), url, norm)
+
+        # IGDB artwork rides on top of the keyless baseline. Deliberately AFTER
+        # _fetch, never inside norm(): _fetch caches its callback's output, and
+        # a merged result cached against one baseline would later be served over
+        # a different one. _igdb_delta caches only the IGDB half, so a cached
+        # baseline still gets enriched here.
+        if isinstance(appdetails, dict) and appdetails.get("ok") is not False:
+            try:
+                igdb_id = int(appdetails.get("igdb_id") or 0)
+            except Exception:
+                igdb_id = 0
+            if igdb_id:
+                appdetails = await self._igdb_enrich(igdb_id, appdetails)
+
+        return {
+            "ok": True,
+            "appid": gid,
+            "appdetails": appdetails,
+            "reviews": {"ok": False, "error": "reviews are Steam-only"},
+            "news": {"ok": False, "error": "update history is Steam-only"},
+            "deck": {"ok": False, "error": "not a Steam app"},
+        }
+
     async def test_igdb(self, game_appid=0):
         """Per-step IGDB probe for the QAM, so a tester can see exactly where
         enrichment stops instead of just 'no artwork appeared'. Never returns the
