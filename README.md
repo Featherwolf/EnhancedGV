@@ -171,6 +171,78 @@ while viewing the game:
 This works for regular Steam games too — you'll rarely need it, but you can point
 any game at a different store page the same way.
 
+
+**Metadata & artwork for emulated / non-Steam games**
+
+Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individual
+shortcuts) fall back to **Hasheous**, a free community game database. Turn on
+**Quick Access → EnhancedGV → Non-Steam games (experimental)**.
+
+Without a key this is the *keyless baseline*: title, description, genres,
+developer/publisher, platform and a logo. To also get **cover art, screenshots,
+genres and developers** from IGDB, add a free Hasheous **client API key** — IGDB
+metadata is served through Hasheous' keyed proxy, so requests without a key are
+rejected with `HTTP 401`. Images themselves are keyless.
+
+> ⚠️ **A client API key is not self-serve today.** Hasheous issues client API keys
+> *per registered application*, and creating an application is restricted to
+> Hasheous admins/moderators — on a normal account the **New** button on the Apps
+> page silently does nothing, because the request is refused server-side with no
+> message. At the time of writing only three applications exist on the whole
+> service (Gaseous, Hasheous Test Client and RomM), all of them official
+> integrations. So unless you already hold a key, **the keyless baseline is what
+> you get**, and the key field below is only useful if EnhancedGV is registered
+> with Hasheous or you have been issued a key another way.
+>
+> Tracking this: getting EnhancedGV registered as a Hasheous application is a
+> maintainer-side conversation with the Hasheous project, not something an
+> individual user can do.
+
+*If you already have a client API key,* it is the one created under **Create Client
+API Key** on an application's page (revealed once, under *Your Client API Key*).
+
+> ⚠️ **It is not the "Submission API Key."** Your Hasheous profile page shows one of
+> those, described as being "for your ROM manager tool". That is a different key
+> type (`X-API-Key` rather than `X-Client-API-Key`), and the metadata proxy
+> **rejects** it with `HTTP 401`. Because IGDB *images* are un-keyed while IGDB
+> *metadata* is keyed, using the wrong key looks like "no artwork appeared" rather
+> than an error.
+
+*Entering it on the Deck:*
+
+1. **Quick Access → EnhancedGV → Non-Steam games (experimental)** — make sure it's on.
+2. Paste the key into **Hasheous API key (optional)** and press **Save key**. The
+   field is masked, and saving clears cached store data so games you've already
+   opened refetch with artwork.
+3. **Remove key** reverts to the keyless baseline at any time.
+
+*Checking that it worked:* open a retro game's page, then press **Test artwork
+lookup** in the same panel. It reports each stage separately, so a failure tells you
+which part broke:
+
+| Row | ✖ means |
+| --- | --- |
+| Non-Steam sources enabled | The feature toggle above is off. |
+| API key present | Nothing saved — paste the key and press **Save key**. |
+| This game maps to IGDB | Hasheous has no IGDB link for *this* title. Not fatal: the key is then tested against a known game, so the rows below still tell you if the key is good. |
+| IGDB metadata (key accepted) | `HTTP 401`/`403` = wrong or expired key (most often the Submission key). Anything else is a network or Hasheous-side error. |
+| Screenshots listed | The key works, but IGDB has no screenshots for that title. |
+| Image address resolved | Screenshots exist but the image id couldn't be read — worth reporting. |
+
+*Scope and limits:*
+
+- **Steam games are untouched.** This only affects games matched to a non-Steam
+  source; a game that genuinely exists on Steam always uses the Steam store page.
+- **No trailers.** IGDB supplies YouTube ids rather than playable video URLs, so the
+  video gallery stays Steam-only.
+- **Per-game shortcuts only.** A single emulator/frontend entry (one RetroDeck or
+  ES-DE shortcut covering your whole library) has no per-game page to attach to.
+- **Images are fetched in display sizes** (a cover is ~21 KB rather than ~2.7 MB),
+  so the gallery doesn't stall on a handheld connection.
+- **The key is stored locally** in the plugin's own settings file and is sent only
+  to hasheous.org. It is never included in diagnostics — **Test artwork lookup**
+  reports only whether a key is present and how long it is.
+
 ## Notes & limits
 
 - **Plays nicely with other plugins.** EnhancedGV never patches Steam's render
