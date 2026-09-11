@@ -291,11 +291,11 @@ function IgdbKeyRow() {
     <>
       <PanelSectionRow>
         <TextField
-          label="Hasheous API key (optional)"
+          label="Hasheous client API key (optional)"
           description={
             saved
               ? "A key is saved. With one, retro games get IGDB covers, screenshots, genres and developers instead of just a logo and description."
-              : "Without a key you get the keyless baseline: logo + description. Paste a Hasheous client API key to add IGDB covers and screenshots."
+              : "Without a key you get the keyless baseline: logo + description. Add IGDB covers and screenshots with a free key: register at hasheous.org, create an App, then use 'Create Client API Key' on that app's page. This is NOT the Submission API Key on your profile — that one is rejected. Full steps are in the plugin README."
           }
           value={key}
           bIsPassword

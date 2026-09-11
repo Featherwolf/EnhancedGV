@@ -18,11 +18,16 @@
   - This is the keyless baseline (title, description, genres, developer/publisher,
     platform, logo).
 - **Optional artwork upgrade for those games (needs a free key).** The keyless
-  baseline above shows a logo and a description. Paste a **Hasheous API key** in
-  Quick Access → EnhancedGV → *Non-Steam games* and retro titles also get proper
-  **cover art, screenshots, genres and developers** from IGDB — so the media
+  baseline above shows a logo and a description. Paste a **Hasheous client API
+  key** in Quick Access → EnhancedGV → *Non-Steam games* and retro titles also
+  get proper **cover art, screenshots, genres and developers** from IGDB — so the media
   gallery works for a SNES ROM the same way it does for a Steam game.
   - Entirely optional; with no key you get the keyless baseline unchanged.
+  - **Setting it up:** register at hasheous.org, create an app, and mint a *Client
+    API Key* against it — the step-by-step is in the README under *Setup & tips →
+    Metadata & artwork for emulated / non-Steam games*. Note this is **not** the
+    *Submission API Key* on your Hasheous profile page; that one is for ROM
+    managers and the metadata proxy rejects it with HTTP 401.
   - Steam games are untouched — this only affects games matched to a non-Steam
     source.
   - **Test artwork lookup** reports, step by step, whether the key was accepted

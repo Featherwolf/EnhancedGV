@@ -171,6 +171,72 @@ while viewing the game:
 This works for regular Steam games too — you'll rarely need it, but you can point
 any game at a different store page the same way.
 
+
+**Metadata & artwork for emulated / non-Steam games**
+
+Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individual
+shortcuts) fall back to **Hasheous**, a free community game database. Turn on
+**Quick Access → EnhancedGV → Non-Steam games (experimental)**.
+
+Without a key this is the *keyless baseline*: title, description, genres,
+developer/publisher, platform and a logo. To also get **cover art, screenshots,
+genres and developers** from IGDB, add a free Hasheous **client API key** — IGDB
+metadata is served through Hasheous' keyed proxy, so requests without a key are
+rejected with `HTTP 401`. Images themselves are keyless.
+
+*Getting a client API key (about five minutes, free):*
+
+1. **Create a Hasheous account.** Go to <https://hasheous.org>, choose **Sign In**,
+   then **Register Account**, and confirm the verification email.
+2. **Register an app.** Open
+   <https://hasheous.org/index.html?page=dataobjects&type=app>, press **New**, and
+   give it any name you like (e.g. `EnhancedGV on my Deck`). The "app" is just the
+   thing your key is issued against.
+3. **Mint the key.** Open that app's page and find **Create Client API Key**. Enter
+   a name, leave **Expires** on **Never**, and press **Create**.
+4. **Copy it immediately.** The key is revealed once, under **Your Client API Key**.
+   If you lose it, create another — there's no way to re-read an existing one.
+
+> ⚠️ **Not the "Submission API Key."** Your profile page also shows a *Submission
+> API Key*, described as being "for your ROM manager tool". That one submits hashes
+> to Hasheous and is **rejected** by the metadata proxy. You want the **Client API
+> Key** created against an app, as above.
+
+*Entering it on the Deck:*
+
+1. **Quick Access → EnhancedGV → Non-Steam games (experimental)** — make sure it's on.
+2. Paste the key into **Hasheous API key (optional)** and press **Save key**. The
+   field is masked, and saving clears cached store data so games you've already
+   opened refetch with artwork.
+3. **Remove key** reverts to the keyless baseline at any time.
+
+*Checking that it worked:* open a retro game's page, then press **Test artwork
+lookup** in the same panel. It reports each stage separately, so a failure tells you
+which part broke:
+
+| Row | ✖ means |
+| --- | --- |
+| Non-Steam sources enabled | The feature toggle above is off. |
+| API key present | Nothing saved — paste the key and press **Save key**. |
+| This game maps to IGDB | Hasheous has no IGDB link for *this* title. Not fatal: the key is then tested against a known game, so the rows below still tell you if the key is good. |
+| IGDB metadata (key accepted) | `HTTP 401`/`403` = wrong or expired key (most often the Submission key). Anything else is a network or Hasheous-side error. |
+| Screenshots listed | The key works, but IGDB has no screenshots for that title. |
+| Image address resolved | Screenshots exist but the image id couldn't be read — worth reporting. |
+
+*Scope and limits:*
+
+- **Steam games are untouched.** This only affects games matched to a non-Steam
+  source; a game that genuinely exists on Steam always uses the Steam store page.
+- **No trailers.** IGDB supplies YouTube ids rather than playable video URLs, so the
+  video gallery stays Steam-only.
+- **Per-game shortcuts only.** A single emulator/frontend entry (one RetroDeck or
+  ES-DE shortcut covering your whole library) has no per-game page to attach to.
+- **Images are fetched in display sizes** (a cover is ~21 KB rather than ~2.7 MB),
+  so the gallery doesn't stall on a handheld connection.
+- **The key is stored locally** in the plugin's own settings file and is sent only
+  to hasheous.org. It is never included in diagnostics — **Test artwork lookup**
+  reports only whether a key is present and how long it is.
+
 ## Notes & limits
 
 - **Plays nicely with other plugins.** EnhancedGV never patches Steam's render
