@@ -23,11 +23,14 @@
   get proper **cover art, screenshots, genres and developers** from IGDB — so the media
   gallery works for a SNES ROM the same way it does for a Steam game.
   - Entirely optional; with no key you get the keyless baseline unchanged.
-  - **Setting it up:** register at hasheous.org, create an app, and mint a *Client
-    API Key* against it — the step-by-step is in the README under *Setup & tips →
-    Metadata & artwork for emulated / non-Steam games*. Note this is **not** the
-    *Submission API Key* on your Hasheous profile page; that one is for ROM
-    managers and the metadata proxy rejects it with HTTP 401.
+  - **Getting a key is not self-serve yet.** Hasheous issues client API keys per
+    *registered application*, and creating an application is admin/moderator-only
+    — only three exist service-wide, all official integrations. Until EnhancedGV
+    is registered, most users stay on the keyless baseline. Details in the README
+    under *Setup & tips → Metadata & artwork for emulated / non-Steam games*.
+  - If you do have a key, note it is **not** the *Submission API Key* on your
+    Hasheous profile page; that is a different key type and the metadata proxy
+    rejects it with HTTP 401.
   - Steam games are untouched — this only affects games matched to a non-Steam
     source.
   - **Test artwork lookup** reports, step by step, whether the key was accepted

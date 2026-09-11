@@ -184,23 +184,29 @@ genres and developers** from IGDB, add a free Hasheous **client API key** — IG
 metadata is served through Hasheous' keyed proxy, so requests without a key are
 rejected with `HTTP 401`. Images themselves are keyless.
 
-*Getting a client API key (about five minutes, free):*
+> ⚠️ **A client API key is not self-serve today.** Hasheous issues client API keys
+> *per registered application*, and creating an application is restricted to
+> Hasheous admins/moderators — on a normal account the **New** button on the Apps
+> page silently does nothing, because the request is refused server-side with no
+> message. At the time of writing only three applications exist on the whole
+> service (Gaseous, Hasheous Test Client and RomM), all of them official
+> integrations. So unless you already hold a key, **the keyless baseline is what
+> you get**, and the key field below is only useful if EnhancedGV is registered
+> with Hasheous or you have been issued a key another way.
+>
+> Tracking this: getting EnhancedGV registered as a Hasheous application is a
+> maintainer-side conversation with the Hasheous project, not something an
+> individual user can do.
 
-1. **Create a Hasheous account.** Go to <https://hasheous.org>, choose **Sign In**,
-   then **Register Account**, and confirm the verification email.
-2. **Register an app.** Open
-   <https://hasheous.org/index.html?page=dataobjects&type=app>, press **New**, and
-   give it any name you like (e.g. `EnhancedGV on my Deck`). The "app" is just the
-   thing your key is issued against.
-3. **Mint the key.** Open that app's page and find **Create Client API Key**. Enter
-   a name, leave **Expires** on **Never**, and press **Create**.
-4. **Copy it immediately.** The key is revealed once, under **Your Client API Key**.
-   If you lose it, create another — there's no way to re-read an existing one.
+*If you already have a client API key,* it is the one created under **Create Client
+API Key** on an application's page (revealed once, under *Your Client API Key*).
 
-> ⚠️ **Not the "Submission API Key."** Your profile page also shows a *Submission
-> API Key*, described as being "for your ROM manager tool". That one submits hashes
-> to Hasheous and is **rejected** by the metadata proxy. You want the **Client API
-> Key** created against an app, as above.
+> ⚠️ **It is not the "Submission API Key."** Your Hasheous profile page shows one of
+> those, described as being "for your ROM manager tool". That is a different key
+> type (`X-API-Key` rather than `X-Client-API-Key`), and the metadata proxy
+> **rejects** it with `HTTP 401`. Because IGDB *images* are un-keyed while IGDB
+> *metadata* is keyed, using the wrong key looks like "no artwork appeared" rather
+> than an error.
 
 *Entering it on the Deck:*
 

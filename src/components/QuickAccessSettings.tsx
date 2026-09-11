@@ -295,7 +295,7 @@ function IgdbKeyRow() {
           description={
             saved
               ? "A key is saved. With one, retro games get IGDB covers, screenshots, genres and developers instead of just a logo and description."
-              : "Without a key you get the keyless baseline: logo + description. Add IGDB covers and screenshots with a free key: register at hasheous.org, create an App, then use 'Create Client API Key' on that app's page. This is NOT the Submission API Key on your profile — that one is rejected. Full steps are in the plugin README."
+              : "Without a key you get the keyless baseline: logo + description. A key adds IGDB covers and screenshots. Note Hasheous only issues client API keys to registered applications, so most users cannot obtain one yet and stay on the baseline. If you do have one, it is the Client API Key from an application's page — NOT the Submission API Key on your profile, which is rejected."
           }
           value={key}
           bIsPassword
