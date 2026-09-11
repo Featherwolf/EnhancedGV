@@ -235,8 +235,9 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
 // backend layers IGDB covers/screenshots/genres/developers over the keyless
 // baseline. The key lives in the plugin's local settings file and is sent only
 // to hasheous.org — the test below never echoes it back.
-function IgdbKeyRow() {
-  const [key, setKey] = useState<string>("");
+function IgdbCredentialsRow() {
+  const [clientId, setClientId] = useState<string>("");
+  const [clientSecret, setClientSecret] = useState<string>("");
   const [saved, setSaved] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<IgdbStep[] | null>(null);
@@ -247,7 +248,9 @@ function IgdbKeyRow() {
     getSettings()
       .then((s) => {
         if (!alive) return;
-        setSaved(!!(s as PluginSettings).hasheousApiKey);
+        const st = s as PluginSettings;
+        setSaved(!!(st.igdbClientId && st.igdbClientSecret));
+        setClientId(st.igdbClientId ?? "");
       })
       .catch(() => undefined);
     return () => {
@@ -255,16 +258,20 @@ function IgdbKeyRow() {
     };
   }, []);
 
-  const save = async (value: string) => {
+  const save = async (id: string, secret: string) => {
     try {
       const cur = await getSettings();
-      const next = { ...(cur as PluginSettings), hasheousApiKey: value };
+      const next = { ...(cur as PluginSettings), igdbClientId: id, igdbClientSecret: secret };
       await setSettings(next);
       primeSettings(next);
-      setSaved(!!value);
-      setNote(value ? "Key saved." : "Key cleared — back to the keyless baseline.");
+      setSaved(!!(id && secret));
+      setNote(
+        id && secret
+          ? "Credentials saved."
+          : "Credentials cleared — back to the keyless baseline.",
+      );
       // Cached non-Steam payloads were built without artwork; drop them so the
-      // next visit refetches with the key in play.
+      // next visit refetches with IGDB in play.
       await clearCache().catch(() => undefined);
       clearFrontendCache();
     } catch (e) {
@@ -291,20 +298,32 @@ function IgdbKeyRow() {
     <>
       <PanelSectionRow>
         <TextField
-          label="Hasheous client API key (optional)"
+          label="IGDB Client ID (optional)"
           description={
             saved
-              ? "A key is saved. With one, retro games get IGDB covers, screenshots, genres and developers instead of just a logo and description."
-              : "Without a key you get the keyless baseline: logo + description. A key adds IGDB covers and screenshots. Note Hasheous only issues client API keys to registered applications, so most users cannot obtain one yet and stay on the baseline. If you do have one, it is the Client API Key from an application's page — NOT the Submission API Key on your profile, which is rejected."
+              ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description."
+              : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
           }
-          value={key}
-          bIsPassword
-          onChange={(e: { target: { value: string } }) => setKey(e.target.value)}
+          value={clientId}
+          onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
         />
       </PanelSectionRow>
       <PanelSectionRow>
-        <ButtonItem layout="below" onClick={() => save(key.trim())} disabled={!key.trim()}>
-          Save key
+        <TextField
+          label="IGDB Client Secret"
+          description="Generated with [New Secret] on that same Twitch application page. Stored on this device and sent only to id.twitch.tv to mint an access token."
+          value={clientSecret}
+          bIsPassword
+          onChange={(e: { target: { value: string } }) => setClientSecret(e.target.value)}
+        />
+      </PanelSectionRow>
+      <PanelSectionRow>
+        <ButtonItem
+          layout="below"
+          onClick={() => save(clientId.trim(), clientSecret.trim())}
+          disabled={!clientId.trim() || !clientSecret.trim()}
+        >
+          Save credentials
         </ButtonItem>
       </PanelSectionRow>
       {saved && (
@@ -312,11 +331,12 @@ function IgdbKeyRow() {
           <ButtonItem
             layout="below"
             onClick={() => {
-              setKey("");
-              void save("");
+              setClientId("");
+              setClientSecret("");
+              void save("", "");
             }}
           >
-            Remove key
+            Remove credentials
           </ButtonItem>
         </PanelSectionRow>
       )}
@@ -332,6 +352,7 @@ function IgdbKeyRow() {
     </>
   );
 }
+
 
 export function QuickAccessSettings() {
   const [settings, setLocal] = useState<PluginSettings>(DEFAULTS);
@@ -518,7 +539,7 @@ export function QuickAccessSettings() {
             onChange={toggleNonSteam}
           />
         </PanelSectionRow>
-        {!!settings.nonSteamSources && <IgdbKeyRow />}
+        {!!settings.nonSteamSources && <IgdbCredentialsRow />}
       </PanelSection>
 
       <PanelSection title="Sections shown on the game page">
