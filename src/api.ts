@@ -124,6 +124,12 @@ export interface IgdbTest {
 // Per-step probe of the IGDB enrichment path. Never returns the key itself.
 export const testIgdb = callable<[game_appid: number], IgdbTest>("test_igdb");
 
+// Removal needs its own call: get_settings redacts the secret, so set_settings
+// treats an absent one as "keep" — otherwise any unrelated save would wipe it.
+export const clearIgdbCredentials = callable<[], { ok: boolean; error?: string }>(
+  "clear_igdb_credentials",
+);
+
 export interface VideoProbe {
   url: string;
   status: number;

@@ -186,7 +186,33 @@ def _build_ssl_context() -> ssl.SSLContext:
 
 
 _SSL_CTX = _build_ssl_context()
+# Kept ONLY for the trailer byte-probe diagnostic, which reads public CDN bytes
+# and carries nothing. Every content path verifies: an attacker who can make the
+# certificate check fail is exactly the attacker who then gets to choose the
+# HTML the sanitizer sees, the URLs the panel opens and the release JSON the
+# updater trusts. An automatic downgrade handed all of that away for free.
 _SSL_UNVERIFIED = ssl._create_unverified_context()
+
+# Ceiling on any JSON body we will buffer. The store and provider payloads are
+# tens of KB; anything near this is a hostile or broken upstream.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects on credential-bearing requests.
+
+    urllib's default opener rebuilds a redirected request keeping every header
+    except Content-Length/Content-Type — so Authorization and Client-ID follow
+    the Location to ANY host, http:// included. A compromised api.igdb.com could
+    therefore turn one 302 into credential exfiltration in the clear.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_IGDB_OPENER = urllib.request.build_opener(
+    _NoRedirect, urllib.request.HTTPSHandler(context=_SSL_CTX))
 
 
 def _ssl_verifies(ctx: ssl.SSLContext = None) -> bool:
@@ -208,20 +234,10 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, headers=hdrs)
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        # Retry without verification if the failure is a certificate problem.
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
-            decky.logger.warning("SSL verify failed; retrying unverified (public data)")
-            with urllib.request.urlopen(
-                req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
-            ) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        else:
-            raise
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
     return json.loads(raw)
 
 
@@ -232,18 +248,10 @@ def _http_post_json(url: str, payload: dict) -> dict:
         headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
                  "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
-            with urllib.request.urlopen(
-                req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
-            ) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        else:
-            raise
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
     return json.loads(raw)
 
 
@@ -337,6 +345,9 @@ def _feature_non_steam() -> bool:
         return False
 
 
+SECRET_KEY = "igdbClientSecret"   # never returned by get_settings
+
+
 def _igdb_creds():
     """(client_id, client_secret) for IGDB, or ("", "") when not configured.
 
@@ -388,8 +399,8 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
         headers={"User-Agent": USER_AGENT,
                  "Content-Type": "application/x-www-form-urlencoded",
                  "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-        got = json.loads(resp.read().decode("utf-8", "replace"))
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        got = json.loads(resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace"))
 
     token = str(got.get("access_token") or "")
     if not token:
@@ -426,8 +437,11 @@ def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
         headers={"User-Agent": USER_AGENT, "Accept": "application/json",
                  "Content-Type": "text/plain",
                  "Client-ID": client_id, "Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("IGDB response exceeds the size limit")
+    return json.loads(raw)
 
 
 def _igdb_img(image_hash: str, size: str) -> str:
@@ -522,6 +536,29 @@ def _parse_appid(s):
 # --------------------------------------------------------------------------- #
 # Text helpers: HTML sanitize + BBCODE -> HTML
 # --------------------------------------------------------------------------- #
+_GITHUB_HOSTS = frozenset((
+    "github.com", "api.github.com", "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com", "codeload.github.com",
+))
+
+
+def _github_url(u) -> str:
+    """A URL from the release API, or "" if it is not plainly GitHub over https.
+
+    check_update's result is handed to Navigation.NavigateToExternalWeb and shown
+    as the place to download a new build, so whoever controls that JSON chooses
+    where the user is sent. Pin it to https and to GitHub's own hosts rather than
+    trusting the field.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(u or "").strip())
+    except Exception:
+        return ""
+    if parts.scheme != "https" or parts.hostname is None:
+        return ""
+    return u if parts.hostname.lower() in _GITHUB_HOSTS else ""
+
+
 def _safe_url(u) -> str:
     """Only allow http(s) (and protocol-relative / relative / anchor) URLs in
     HTML rendered via dangerouslySetInnerHTML; neutralize javascript:/data:/
@@ -2191,7 +2228,44 @@ class Plugin:
                         defaults[key].update(saved[key])
         except Exception:
             pass
+        # The client SECRET never leaves the backend. This method is a
+        # string-named RPC with no caller check, so ANY code in the Steam UI —
+        # including another Decky plugin — can invoke it; returning the secret
+        # made it readable by all of them. The UI only ever needs to know
+        # whether one is stored, and it never prefills the field.
+        defaults.pop(SECRET_KEY, None)
+        defaults["igdbClientSecretSet"] = bool(_igdb_creds()[1])
         return defaults
+
+    async def clear_igdb_credentials(self):
+        """Erase the stored IGDB credentials and any token minted from them.
+
+        set_settings deliberately treats an absent or empty secret as "leave it
+        alone", because get_settings redacts it and the frontend writes back what
+        it was given — without that rule, every unrelated settings save would
+        wipe the secret. Removal therefore needs its own explicit call.
+        """
+        try:
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+                    saved = json.load(fh)
+            except Exception:
+                saved = {}
+            if not isinstance(saved, dict):
+                saved = {}
+            saved["igdbClientId"] = ""
+            saved[SECRET_KEY] = ""
+            os.makedirs(SETTINGS_DIR, exist_ok=True)
+            tmp = SETTINGS_FILE + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(saved, fh, indent=2)
+            os.replace(tmp, SETTINGS_FILE)
+            _igdb_forget_token()
+            return {"ok": True}
+        except Exception as exc:
+            decky.logger.error(f"clear_igdb_credentials failed: {exc}")
+            return {"ok": False, "error": str(exc)}
 
     async def set_settings(self, settings: dict):
         try:
@@ -2199,16 +2273,36 @@ class Plugin:
             # either changed, the cached token is either wrong or about to be,
             # so drop it rather than let a stale token mask new credentials.
             prev_id, prev_secret = _igdb_creds()
+            new_secret = str(settings.get(SECRET_KEY, "") or "").strip()
             if (str(settings.get("igdbClientId", "") or "").strip() != prev_id
-                    or str(settings.get("igdbClientSecret", "") or "").strip() != prev_secret):
+                    or (new_secret and new_secret != prev_secret)):
                 _igdb_forget_token()
         except Exception:
             pass
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
+            try:
+                os.chmod(SETTINGS_DIR, 0o700)
+            except Exception:
+                pass
+            # get_settings redacts the secret, and the frontend writes back what
+            # it was given — so an incoming payload with no secret means "leave
+            # it alone", not "erase it". Only an explicit non-empty value sets a
+            # new one, and only clear_igdb_credentials removes it.
+            merged = dict(settings)
+            if not str(merged.get(SECRET_KEY, "") or "").strip():
+                kept = _igdb_creds()[1]
+                if kept:
+                    merged[SECRET_KEY] = kept
+            merged.pop("igdbClientSecretSet", None)  # a report, not a setting
             tmp = SETTINGS_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(settings, fh, indent=2)
+            # 0600 from the moment of creation. open(tmp, "w") would have used
+            # 0666 & ~umask = 0644, and os.replace carries that mode onto the
+            # real file — which is how a Twitch client secret ended up
+            # world-readable next to a 0600 token file.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(merged, fh, indent=2)
             os.replace(tmp, SETTINGS_FILE)
             return {"ok": True}
         except Exception as exc:
@@ -2233,6 +2327,11 @@ class Plugin:
             return {"ok": False, "error": "no source candidates"}
 
         def probe(url: str) -> dict:
+            # Candidates come from appdetails, i.e. from the network. Without a
+            # scheme check this diagnostic reads file:// and probes the LAN on
+            # behalf of whoever controls that response.
+            if urllib.parse.urlsplit(url).scheme != "https":
+                return {"url": str(url)[:60], "status": 0, "error": "non-https source"}
             req = urllib.request.Request(
                 url, headers={"User-Agent": USER_AGENT, "Range": "bytes=0-65535"}
             )
@@ -2337,7 +2436,7 @@ class Plugin:
             zip_url = ""
             for a in raw.get("assets") or []:
                 if a.get("name") == "EnhancedGV.zip":
-                    zip_url = a.get("browser_download_url", "")
+                    zip_url = _github_url(a.get("browser_download_url", ""))
                     break
             return {
                 "ok": True,
@@ -2347,7 +2446,7 @@ class Plugin:
                 "has_update": bool(latest) and self._ver_tuple(latest) > self._ver_tuple(current),
                 "prerelease": bool(raw.get("prerelease")),
                 "channel": "beta" if beta else "stable",
-                "url": raw.get("html_url", ""),
+                "url": _github_url(raw.get("html_url", "")),
                 "zip_url": zip_url,
             }
         except Exception as exc:

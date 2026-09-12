@@ -4,6 +4,27 @@
 
 ### Testing non-Steam / emulated game metadata
 
+### Security
+
+A multi-lens audit ran over the plugin once it started collecting credentials.
+Six issues were confirmed and fixed in this build:
+
+- **The IGDB client secret is no longer readable by other plugins.** `get_settings`
+  is an unauthenticated RPC that any code in the Steam UI can call, and it was
+  returning the secret in cleartext. It now reports only whether one is stored.
+- **The file holding it is no longer world-readable.** It was written `0644` in a
+  `0755` directory, next to a token file that was correctly `0600`.
+- **Credentials no longer follow redirects.** A redirect from IGDB would have
+  re-sent the bearer token and client id to any host, over plain HTTP.
+- **Certificate verification is no longer dropped automatically.** On a
+  certificate error the plugin used to silently retry unverified, which handed an
+  on-path attacker control of every Steam, Hasheous and GitHub response.
+- **Update links are pinned to GitHub over https.** A forged release response
+  could otherwise choose where the "download the update" link sent you.
+- **The trailer diagnostic only speaks https**, so an upstream response cannot
+  point it at local files or the local network.
+
+
 > **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
 > calls a backend method that an earlier commit had deleted, so every non-Steam
 > game failed before any provider was contacted. If you tried beta.1, beta.2 or
