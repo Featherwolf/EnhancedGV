@@ -196,6 +196,13 @@ _SSL_UNVERIFIED = ssl._create_unverified_context()
 # Ceiling on any JSON body we will buffer. The store and provider payloads are
 # tens of KB; anything near this is a hostile or broken upstream.
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Ceiling on one HTML field handed to the sanitizer.
+MAX_SANITIZE_BYTES = 512 * 1024
+# Caps on the Hasheous hash-lookup walk: one panel open must not become an
+# unbounded request series driven by whatever that search returned.
+HASHEOUS_MAX_GAMES = 8
+HASHEOUS_MAX_ROMS = 8
+HASHEOUS_MAX_LOOKUPS = 24
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -559,21 +566,77 @@ def _github_url(u) -> str:
     return u if parts.hostname.lower() in _GITHUB_HOSTS else ""
 
 
+_SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
+
+
 def _safe_url(u) -> str:
     """Only allow http(s) (and protocol-relative / relative / anchor) URLs in
     HTML rendered via dangerouslySetInnerHTML; neutralize javascript:/data:/
-    vbscript:/etc. Decodes entities and strips control chars first so tricks
-    like `java&#09;script:` or leading whitespace can't smuggle a scheme."""
-    u = html.unescape(str(u or "")).strip()
+    vbscript:/etc.
+
+    DOES NOT ESCAPE QUOTES. Every caller that interpolates the result into an
+    attribute MUST wrap it in html.escape(..., quote=True) — see _filter_attrs
+    and _bbcode_to_html.
+
+    Two bugs this has had, both fixed here and covered by tests:
+      * ONE unescape pass let `&amp;#106;avascript:` survive as `&#106;...`,
+        which the browser then decodes back to `javascript:`. Now unescaped to a
+        fixed point.
+      * The scheme was derived by splitting on "#" FIRST. Every numeric
+        character reference starts with "#", so a single entity truncated the
+        string before the colon and the "no colon means relative" branch
+        returned a live javascript: URL verbatim. The scheme is now matched
+        directly, and any leftover "&" is treated as hostile.
+    """
+    u = str(u or "")
+    for _ in range(8):                      # collapse &amp;#106; -> &#106; -> j
+        nxt = html.unescape(u)
+        if nxt == u:
+            break
+        u = nxt
+    u = u.strip()
     u = "".join(ch for ch in u if ord(ch) >= 0x20)  # drop TAB/NEWLINE/etc.
     low = u.lower()
     if low.startswith(("http://", "https://", "//", "/", "#", "mailto:")):
         return u
-    # Relative path with no scheme (no colon before the first / ? #) is safe.
-    scheme = low.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if ":" not in scheme:
-        return u
-    return "#"
+    # Anything carrying a scheme, or an entity we could not resolve, is refused.
+    if _SCHEME_RE.match(low) or "&" in u:
+        return "#"
+    return u
+
+
+def _steam_media_url(u) -> str:
+    """A media URL, or "" unless it is https on a Steam CDN host.
+
+    Every legitimate value here is a steamstatic.com URL. These strings are
+    fetched by the frontend (the DASH manifest is fetched and its segment paths
+    are resolved relative to it) and a movie with no progressive sources
+    AUTO-PLAYS on page open — so an appdetails response that names an arbitrary
+    host gets a request series with no user interaction.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(u or "").strip())
+    except Exception:
+        return ""
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https":
+        return ""
+    return u if host == "steamstatic.com" or host.endswith(".steamstatic.com") else ""
+
+
+def _safe_ext_url(u) -> str:
+    """A URL fit to hand to the Steam client's external browser.
+
+    Stricter than _safe_url on purpose: that one deliberately permits
+    protocol-relative, root-relative, anchor and mailto: forms because it guards
+    hrefs INSIDE our own HTML. A navigation target must be an absolute http(s)
+    URL — `steam://` in particular is a live command channel to the Steam client.
+    """
+    try:
+        parts = urllib.parse.urlsplit(_safe_url(u))
+    except Exception:
+        return ""
+    return parts.geturl() if parts.scheme in ("http", "https") and parts.netloc else ""
 
 
 # Allowlist HTML sanitizer — replaces the previous regex denylist, which had
@@ -737,9 +800,18 @@ _TOKEN_RE = re.compile(
     r"|<!\[CDATA\[.*?\]\]>"                              # cdata
     r"|<![^>]*>"                                         # doctype/declaration
     r"|<\s*/\s*([a-zA-Z][a-zA-Z0-9]*)\s*>"              # end tag        -> grp1
-    r"|<\s*([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^<>]*?)?)\s*(/?)\s*>",  # start -> grp2/3/4
+    r"|<\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>",             # start tag     -> grp2/3
     re.S,
 )
+# The start-tag branch used to read `((?:\s+[^<>]*?)?)\s*(/?)\s*>`: three
+# quantifiers that all match whitespace, overlapping on the same run. On a
+# `<`+letter followed by spaces that never reach `>`, the engine tries every
+# partition of that run before failing — `"<a" + " "*800` measured at 48.8s on a
+# developer machine, and this is the sanitizer that actually runs on the
+# handheld (SteamOS's Python has no html.parser). It is fed Steam's
+# about_the_game and Hasheous descriptions, on the event loop, so one hostile
+# field froze every RPC. One greedy non-overlapping class matches linearly; the
+# self-closing slash is now read off the end of the attribute span instead.
 _ATTR_RE = re.compile(
     r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)"                     # name
     r"(?:\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s\"'>]+))?"      # optional value
@@ -795,8 +867,12 @@ def _sanitize_html_regex(raw: str) -> str:
             tag = start_name.lower()
             if tag not in _ALLOWED_TAGS:
                 continue  # drop tag; inner text still flows through as text
-            out.append(f"<{tag}{_filter_attrs(_parse_attrs(m.group(3)))}>")
-            if tag not in _VOID_TAGS and m.group(4) != "/":
+            attrs = m.group(3) or ""
+            self_closing = attrs.rstrip().endswith("/")
+            if self_closing:
+                attrs = attrs.rstrip()[:-1]
+            out.append(f"<{tag}{_filter_attrs(_parse_attrs(attrs))}>")
+            if tag not in _VOID_TAGS and not self_closing:
                 open_stack.append(tag)
         # comments / cdata / doctype -> dropped entirely
     if pos < len(raw):
@@ -845,6 +921,10 @@ def _sanitize_html(raw) -> str:
     global SANITIZER_ENGINE
     if not raw or not isinstance(raw, str):
         return ""
+    if len(raw) > MAX_SANITIZE_BYTES:
+        # Real store descriptions are a few KB. Truncate rather than hand an
+        # unbounded field to the tokenizer.
+        raw = raw[:MAX_SANITIZE_BYTES]
     if _HAVE_HTMLPARSER:
         try:
             p = _Sanitizer()
@@ -877,7 +957,9 @@ def _bbcode_to_html(text) -> str:
     HTML subset. Unknown tags are dropped rather than shown raw."""
     if not text or not isinstance(text, str):
         return ""
-    t = _expand_clan_images(text)
+    # A literal NUL from upstream would forge one of our own placeholder tokens
+    # after the escape pass, so it never gets to exist.
+    t = _expand_clan_images(text.replace("\x00", ""))
 
     # Images first (before we escape), capture the URL.
     t = re.sub(r"\[img\](.*?)\[/img\]",
@@ -895,11 +977,18 @@ def _bbcode_to_html(text) -> str:
     t = html.escape(t)
 
     # Restore the tokens we set aside, as real (safe) HTML.
+    # html.escape(..., quote=True) is NOT optional here. The URL was stashed as a
+    # token BEFORE the escape pass above, so it never went through it, and
+    # _safe_url only filters the scheme — it happily returns a value containing a
+    # double quote. Without this, [img]https://x/p.png" onerror="…[/img] breaks
+    # straight out of the attribute and runs in the Steam UI.
     t = t.replace("\x00/A\x00", "</a>")
     t = re.sub(r"\x00A\x00(.*?)\x00",
-               lambda m: f'<a href="{_safe_url(m.group(1))}" target="_blank" rel="noreferrer">', t)
+               lambda m: '<a href="%s" target="_blank" rel="noreferrer">'
+                         % html.escape(_safe_url(m.group(1)), quote=True), t)
     t = re.sub(r"\x00IMG\x00(.*?)\x00",
-               lambda m: f'<img src="{_safe_url(m.group(1))}" style="max-width:100%;border-radius:4px;" />', t)
+               lambda m: '<img src="%s" style="max-width:100%%;border-radius:4px;" />'
+                         % html.escape(_safe_url(m.group(1)), quote=True), t)
 
     # Block/inline formatting tags -> HTML.
     replacements = [
@@ -970,10 +1059,10 @@ def _derive_movie_sources(movie: dict) -> dict:
     return {
         "id": movie.get("id"),
         "name": movie.get("name", ""),
-        "thumb": thumb,
-        "sources": candidates,
-        "hls": movie.get("hls_h264"),
-        "dash": movie.get("dash_av1") or movie.get("dash_h264"),
+        "thumb": _steam_media_url(thumb),
+        "sources": [c for c in (_steam_media_url(c) for c in candidates) if c],
+        "hls": _steam_media_url(movie.get("hls_h264")),
+        "dash": _steam_media_url(movie.get("dash_av1") or movie.get("dash_h264")),
     }
 
 
@@ -1001,7 +1090,7 @@ def _normalize_appdetails(data: dict) -> dict:
     meta = data.get("metacritic")
     metacritic = None
     if isinstance(meta, dict) and meta.get("score") is not None:
-        metacritic = {"score": meta.get("score"), "url": meta.get("url", "")}
+        metacritic = {"score": meta.get("score"), "url": _safe_ext_url(meta.get("url", ""))}
 
     rd = data.get("release_date") or {}
 
@@ -1078,9 +1167,9 @@ def _normalize_news(data: dict) -> dict:
         items.append({
             "gid": n.get("gid"),
             "title": n.get("title", ""),
-            "html": _bbcode_to_html(n.get("contents", "")),
+            "html": _sanitize_html(_bbcode_to_html(n.get("contents", ""))),
             "date": n.get("date"),
-            "url": n.get("url", ""),
+            "url": _safe_ext_url(n.get("url", "")),
             "external": bool(n.get("is_external_url")),
             "feedlabel": n.get("feedlabel", ""),
             "author": n.get("author", ""),
@@ -1716,12 +1805,24 @@ class Plugin:
             return {"ok": False, "error": "no hasheous match"}
         nt = _norm_title(title)
         ranked = [g for g in games if _norm_title(g.get("name")) == nt] or games
-        for g in ranked:
-            for rom in (g.get("roms") or []):
+        # The response is upstream-controlled, and every (rom, algorithm) pair
+        # becomes its own sequential 15s-timeout request. Unclamped, a hostile or
+        # broken search result (8 games x thousands of roms x 3 algorithms) turns
+        # one panel open into tens of thousands of requests at a third party,
+        # holding an executor thread the whole time. Bound the whole walk.
+        attempts = 0
+        for g in ranked[:HASHEOUS_MAX_GAMES]:
+            for rom in (g.get("roms") or [])[:HASHEOUS_MAX_ROMS]:
                 for alg in ("sha1", "md5", "crc"):
                     hv = rom.get(alg)
                     if not hv:
                         continue
+                    if attempts >= HASHEOUS_MAX_LOOKUPS:
+                        decky.logger.warning(
+                            "hasheous: lookup budget spent (%d); giving up on %r",
+                            HASHEOUS_MAX_LOOKUPS, title)
+                        return {"ok": False, "error": "no resolvable rom hash"}
+                    attempts += 1
                     try:
                         res = await self._hasheous_lookup_hash(alg, hv)
                     except Exception:

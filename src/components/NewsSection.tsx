@@ -3,9 +3,9 @@ import {
   DialogButton,
   showModal,
   ModalRoot,
-  Navigation,
 } from "@decky/ui";
 import type { News, NewsItem } from "../types";
+import { openExternal } from "../nav";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
 
 function fmtDate(unix: number): string {
@@ -53,7 +53,7 @@ function NewsModal({
         />
         {item.url && (
           <DialogButton
-            onClick={() => Navigation.NavigateToExternalWeb(item.url)}
+            onClick={() => openExternal(item.url)}
           >
             View on Steam
           </DialogButton>

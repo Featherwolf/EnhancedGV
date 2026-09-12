@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openExternal } from "../nav";
 import {
   PanelSection,
   PanelSectionRow,
@@ -6,7 +7,6 @@ import {
   ButtonItem,
   TextField,
   showModal,
-  Navigation,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
 import { getCurrentAppid } from "../patchLibraryApp";
@@ -656,7 +656,7 @@ export function QuickAccessSettings() {
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
-                  onClick={() => update.url && Navigation.NavigateToExternalWeb(update.url)}
+                  onClick={() => openExternal(update.url)}
                 >
                   Open the release page
                 </ButtonItem>

@@ -23,6 +23,23 @@ Six issues were confirmed and fixed in this build:
   could otherwise choose where the "download the update" link sent you.
 - **The trailer diagnostic only speaks https**, so an upstream response cannot
   point it at local files or the local network.
+- **Steam news can no longer inject script into the panel.** A link or image URL
+  in an announcement could break out of the HTML attribute it was placed in. News
+  content now also goes through the same allowlist filter everything else uses.
+- **The URL filter no longer has an encoding blind spot.** A single HTML entity
+  could hide a `javascript:` scheme from it.
+- **A game description can no longer freeze the plugin.** A pathological run of
+  whitespace made the on-device HTML parser take tens of seconds; it is now
+  linear, and oversized fields are truncated.
+- **Plain-text descriptions are rendered as text**, not as HTML.
+- **Links open only if they are ordinary web links.** `steam://` and `file://`
+  targets from a store or news response are ignored rather than handed to the
+  Steam client.
+- **Trailer URLs must be Steam's own CDN**, so a tampered store response cannot
+  point the player at another host, and a malformed manifest can no longer
+  exhaust memory.
+- **Matching a non-Steam game is bounded**, so one page open cannot turn into
+  thousands of lookups.
 
 
 > **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel

@@ -19,14 +19,20 @@ const HTML_STYLE = `
 // scrolls through it in place (the page follows focus) without needing the QAM
 // modal or right-stick scrolling.
 export function DescriptionSection({ aboutHtml, short }: Props) {
-  const html = aboutHtml || short;
-  if (!html) {
-    return <div style={{ opacity: 0.6, fontSize: 13 }}>No description available.</div>;
+  // `aboutHtml` has been through the backend's allowlist sanitizer. `short` has
+  // NOT — it is a plain-text field, passed through verbatim — so it must never
+  // reach FocusableBlocks, whose only sink is dangerouslySetInnerHTML. Using it
+  // as an HTML fallback turned an unsanitized string into markup.
+  if (aboutHtml) {
+    return (
+      <div>
+        <style>{HTML_STYLE}</style>
+        <FocusableBlocks html={aboutHtml} blockClass="ssp-desc" />
+      </div>
+    );
   }
-  return (
-    <div>
-      <style>{HTML_STYLE}</style>
-      <FocusableBlocks html={html} blockClass="ssp-desc" />
-    </div>
-  );
+  if (short) {
+    return <div style={{ fontSize: 13.5, lineHeight: 1.5 }}>{short}</div>;
+  }
+  return <div style={{ opacity: 0.6, fontSize: 13 }}>No description available.</div>;
 }

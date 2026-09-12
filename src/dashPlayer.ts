@@ -42,8 +42,14 @@ function parseDurationSec(v: string | null): number {
 }
 
 function repsFrom(doc: Document): { video: Rep[]; audio: Rep[]; durationSec: number } {
-  const durationSec = parseDurationSec(
-    doc.documentElement.getAttribute("mediaPresentationDuration")
+  // Clamped at the boundary: this value comes from the manifest, i.e. from the
+  // network, and a declared PT999999H would otherwise drive the segment loop
+  // effectively for ever. Nothing legitimate here runs longer than an hour.
+  const durationSec = Math.min(
+    Math.max(parseDurationSec(
+      doc.documentElement.getAttribute("mediaPresentationDuration")
+    ) || 0, 0),
+    3600,
   );
   const video: Rep[] = [];
   const audio: Rep[] = [];
@@ -79,9 +85,13 @@ function repsFrom(doc: Document): { video: Rep[]; audio: Rep[]; durationSec: num
 function fillTemplate(tpl: string, repId: string, num?: number): string {
   let out = tpl.replace(/\$RepresentationID\$/g, repId);
   if (num != null) {
-    out = out.replace(/\$Number(%0(\d+)d)?\$/g, (_m, _pad, width) =>
-      width ? String(num).padStart(parseInt(width), "0") : String(num)
-    );
+    out = out.replace(/\$Number(%0(\d+)d)?\$/g, (_m, _pad, width) => {
+      // The width comes from the manifest, i.e. from the network. padStart with
+      // an unbounded width allocates that many bytes PER SEGMENT — a declared
+      // width of 268435456 is a 256 MB string each time round the loop.
+      const w = Math.min(parseInt(width) || 0, 12);
+      return w > 0 ? String(num).padStart(w, "0") : String(num);
+    });
   }
   return out;
 }
@@ -149,8 +159,10 @@ export async function playDashInto(
 
   const base = mpdUrl.split("?")[0].replace(/[^/]*$/, "");
   const query = mpdUrl.includes("?") ? "?" + mpdUrl.split("?")[1] : "";
+  // Segment count is derived from a manifest-declared duration, so it is also
+  // attacker-controlled. Cap it: 4000 segments is far more than any trailer.
   const segCount = (r: Rep) =>
-    Math.max(1, Math.ceil((durationSec * r.timescale) / r.segDuration));
+    Math.min(4000, Math.max(1, Math.ceil((durationSec * r.timescale) / r.segDuration)));
 
   const ms = new MS();
   const objectUrl = win.URL.createObjectURL(ms);

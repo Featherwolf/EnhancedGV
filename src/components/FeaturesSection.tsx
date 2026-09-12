@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { Focusable, Navigation } from "@decky/ui";
+import { openExternal } from "../nav";
+import { Focusable } from "@decky/ui";
 import type { AppDetails } from "../types";
 import { FOCUS_SCROLL_MARGIN } from "../focus";
 
@@ -76,7 +77,7 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
                 <Focusable
                   onActivate={() =>
                     d.metacritic?.url &&
-                    Navigation.NavigateToExternalWeb(d.metacritic.url)
+                    openExternal(d.metacritic.url)
                   }
                   style={{
                     ...FOCUS_SCROLL_MARGIN,
