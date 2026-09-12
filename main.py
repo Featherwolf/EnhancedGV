@@ -180,11 +180,60 @@ def _build_ssl_context() -> ssl.SSLContext:
     try:
         return ssl.create_default_context()
     except Exception:
+        # Last resort so public, unauthenticated content still loads. Callers
+        # that send credentials must consult _ssl_verifies() and refuse.
         return ssl._create_unverified_context()
 
 
 _SSL_CTX = _build_ssl_context()
+# Kept ONLY for the trailer byte-probe diagnostic, which reads public CDN bytes
+# and carries nothing. Every content path verifies: an attacker who can make the
+# certificate check fail is exactly the attacker who then gets to choose the
+# HTML the sanitizer sees, the URLs the panel opens and the release JSON the
+# updater trusts. An automatic downgrade handed all of that away for free.
 _SSL_UNVERIFIED = ssl._create_unverified_context()
+
+# Ceiling on any JSON body we will buffer. The store and provider payloads are
+# tens of KB; anything near this is a hostile or broken upstream.
+MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Ceiling on one HTML field handed to the sanitizer.
+MAX_SANITIZE_BYTES = 512 * 1024
+# Caps on the Hasheous hash-lookup walk: one panel open must not become an
+# unbounded request series driven by whatever that search returned.
+HASHEOUS_MAX_GAMES = 8
+HASHEOUS_MAX_ROMS = 8
+HASHEOUS_MAX_LOOKUPS = 24
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects on credential-bearing requests.
+
+    urllib's default opener rebuilds a redirected request keeping every header
+    except Content-Length/Content-Type — so Authorization and Client-ID follow
+    the Location to ANY host, http:// included. A compromised api.igdb.com could
+    therefore turn one 302 into credential exfiltration in the clear.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_IGDB_OPENER = urllib.request.build_opener(
+    _NoRedirect, urllib.request.HTTPSHandler(context=_SSL_CTX))
+
+
+def _ssl_verifies(ctx: ssl.SSLContext = None) -> bool:
+    """Whether a context actually validates certificates.
+
+    _build_ssl_context can degrade to an unverified context, and both variants
+    are the same CLASS — so `type(ctx).__name__` (what the startup log used to
+    print) cannot tell them apart. verify_mode/check_hostname can.
+    """
+    ctx = _SSL_CTX if ctx is None else ctx
+    try:
+        return bool(ctx.verify_mode != ssl.CERT_NONE and ctx.check_hostname)
+    except Exception:
+        return False
 
 
 def _http_get_json(url: str, headers: dict = None) -> dict:
@@ -192,20 +241,10 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
     if headers:
         hdrs.update(headers)
     req = urllib.request.Request(url, headers=hdrs)
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        # Retry without verification if the failure is a certificate problem.
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
-            decky.logger.warning("SSL verify failed; retrying unverified (public data)")
-            with urllib.request.urlopen(
-                req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
-            ) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        else:
-            raise
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
     return json.loads(raw)
 
 
@@ -216,18 +255,10 @@ def _http_post_json(url: str, payload: dict) -> dict:
         headers={"User-Agent": USER_AGENT, "Content-Type": "application/json",
                  "Accept": "application/json"},
     )
-    try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-            raw = resp.read().decode("utf-8", "replace")
-    except urllib.error.URLError as exc:
-        reason = getattr(exc, "reason", exc)
-        if isinstance(reason, ssl.SSLError) or "CERTIFICATE_VERIFY_FAILED" in str(exc):
-            with urllib.request.urlopen(
-                req, timeout=REQUEST_TIMEOUT, context=_SSL_UNVERIFIED
-            ) as resp:
-                raw = resp.read().decode("utf-8", "replace")
-        else:
-            raise
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
     return json.loads(raw)
 
 
@@ -321,6 +352,9 @@ def _feature_non_steam() -> bool:
         return False
 
 
+SECRET_KEY = "igdbClientSecret"   # never returned by get_settings
+
+
 def _igdb_creds():
     """(client_id, client_secret) for IGDB, or ("", "") when not configured.
 
@@ -357,6 +391,11 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
     except Exception:
         pass
 
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send IGDB credentials: TLS certificate verification is "
+            "unavailable on this device (no usable CA bundle)")
+
     body = urllib.parse.urlencode({
         "client_id": client_id,
         "client_secret": client_secret,
@@ -367,8 +406,8 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
         headers={"User-Agent": USER_AGENT,
                  "Content-Type": "application/x-www-form-urlencoded",
                  "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-        got = json.loads(resp.read().decode("utf-8", "replace"))
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        got = json.loads(resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace"))
 
     token = str(got.get("access_token") or "")
     if not token:
@@ -395,13 +434,21 @@ def _igdb_forget_token() -> None:
 def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
     """One POST against IGDB v4. Returns the decoded list (IGDB always answers
     with an array). Apicalypse bodies are plain text, not JSON."""
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send IGDB credentials: TLS certificate verification is "
+            "unavailable on this device (no usable CA bundle)")
+
     req = urllib.request.Request(
         f"{IGDB_API}/{endpoint}", data=body.encode("utf-8"), method="POST",
         headers={"User-Agent": USER_AGENT, "Accept": "application/json",
                  "Content-Type": "text/plain",
                  "Client-ID": client_id, "Authorization": f"Bearer {token}"})
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
-        return json.loads(resp.read().decode("utf-8", "replace"))
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("IGDB response exceeds the size limit")
+    return json.loads(raw)
 
 
 def _igdb_img(image_hash: str, size: str) -> str:
@@ -496,21 +543,100 @@ def _parse_appid(s):
 # --------------------------------------------------------------------------- #
 # Text helpers: HTML sanitize + BBCODE -> HTML
 # --------------------------------------------------------------------------- #
+_GITHUB_HOSTS = frozenset((
+    "github.com", "api.github.com", "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com", "codeload.github.com",
+))
+
+
+def _github_url(u) -> str:
+    """A URL from the release API, or "" if it is not plainly GitHub over https.
+
+    check_update's result is handed to Navigation.NavigateToExternalWeb and shown
+    as the place to download a new build, so whoever controls that JSON chooses
+    where the user is sent. Pin it to https and to GitHub's own hosts rather than
+    trusting the field.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(u or "").strip())
+    except Exception:
+        return ""
+    if parts.scheme != "https" or parts.hostname is None:
+        return ""
+    return u if parts.hostname.lower() in _GITHUB_HOSTS else ""
+
+
+_SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
+
+
 def _safe_url(u) -> str:
     """Only allow http(s) (and protocol-relative / relative / anchor) URLs in
     HTML rendered via dangerouslySetInnerHTML; neutralize javascript:/data:/
-    vbscript:/etc. Decodes entities and strips control chars first so tricks
-    like `java&#09;script:` or leading whitespace can't smuggle a scheme."""
-    u = html.unescape(str(u or "")).strip()
+    vbscript:/etc.
+
+    DOES NOT ESCAPE QUOTES. Every caller that interpolates the result into an
+    attribute MUST wrap it in html.escape(..., quote=True) — see _filter_attrs
+    and _bbcode_to_html.
+
+    Two bugs this has had, both fixed here and covered by tests:
+      * ONE unescape pass let `&amp;#106;avascript:` survive as `&#106;...`,
+        which the browser then decodes back to `javascript:`. Now unescaped to a
+        fixed point.
+      * The scheme was derived by splitting on "#" FIRST. Every numeric
+        character reference starts with "#", so a single entity truncated the
+        string before the colon and the "no colon means relative" branch
+        returned a live javascript: URL verbatim. The scheme is now matched
+        directly, and any leftover "&" is treated as hostile.
+    """
+    u = str(u or "")
+    for _ in range(8):                      # collapse &amp;#106; -> &#106; -> j
+        nxt = html.unescape(u)
+        if nxt == u:
+            break
+        u = nxt
+    u = u.strip()
     u = "".join(ch for ch in u if ord(ch) >= 0x20)  # drop TAB/NEWLINE/etc.
     low = u.lower()
     if low.startswith(("http://", "https://", "//", "/", "#", "mailto:")):
         return u
-    # Relative path with no scheme (no colon before the first / ? #) is safe.
-    scheme = low.split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
-    if ":" not in scheme:
-        return u
-    return "#"
+    # Anything carrying a scheme, or an entity we could not resolve, is refused.
+    if _SCHEME_RE.match(low) or "&" in u:
+        return "#"
+    return u
+
+
+def _steam_media_url(u) -> str:
+    """A media URL, or "" unless it is https on a Steam CDN host.
+
+    Every legitimate value here is a steamstatic.com URL. These strings are
+    fetched by the frontend (the DASH manifest is fetched and its segment paths
+    are resolved relative to it) and a movie with no progressive sources
+    AUTO-PLAYS on page open — so an appdetails response that names an arbitrary
+    host gets a request series with no user interaction.
+    """
+    try:
+        parts = urllib.parse.urlsplit(str(u or "").strip())
+    except Exception:
+        return ""
+    host = (parts.hostname or "").lower()
+    if parts.scheme != "https":
+        return ""
+    return u if host == "steamstatic.com" or host.endswith(".steamstatic.com") else ""
+
+
+def _safe_ext_url(u) -> str:
+    """A URL fit to hand to the Steam client's external browser.
+
+    Stricter than _safe_url on purpose: that one deliberately permits
+    protocol-relative, root-relative, anchor and mailto: forms because it guards
+    hrefs INSIDE our own HTML. A navigation target must be an absolute http(s)
+    URL — `steam://` in particular is a live command channel to the Steam client.
+    """
+    try:
+        parts = urllib.parse.urlsplit(_safe_url(u))
+    except Exception:
+        return ""
+    return parts.geturl() if parts.scheme in ("http", "https") and parts.netloc else ""
 
 
 # Allowlist HTML sanitizer — replaces the previous regex denylist, which had
@@ -674,9 +800,18 @@ _TOKEN_RE = re.compile(
     r"|<!\[CDATA\[.*?\]\]>"                              # cdata
     r"|<![^>]*>"                                         # doctype/declaration
     r"|<\s*/\s*([a-zA-Z][a-zA-Z0-9]*)\s*>"              # end tag        -> grp1
-    r"|<\s*([a-zA-Z][a-zA-Z0-9]*)((?:\s+[^<>]*?)?)\s*(/?)\s*>",  # start -> grp2/3/4
+    r"|<\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>",             # start tag     -> grp2/3
     re.S,
 )
+# The start-tag branch used to read `((?:\s+[^<>]*?)?)\s*(/?)\s*>`: three
+# quantifiers that all match whitespace, overlapping on the same run. On a
+# `<`+letter followed by spaces that never reach `>`, the engine tries every
+# partition of that run before failing — `"<a" + " "*800` measured at 48.8s on a
+# developer machine, and this is the sanitizer that actually runs on the
+# handheld (SteamOS's Python has no html.parser). It is fed Steam's
+# about_the_game and Hasheous descriptions, on the event loop, so one hostile
+# field froze every RPC. One greedy non-overlapping class matches linearly; the
+# self-closing slash is now read off the end of the attribute span instead.
 _ATTR_RE = re.compile(
     r"([a-zA-Z_:][-a-zA-Z0-9_:.]*)"                     # name
     r"(?:\s*=\s*(\"[^\"]*\"|'[^']*'|[^\s\"'>]+))?"      # optional value
@@ -732,8 +867,12 @@ def _sanitize_html_regex(raw: str) -> str:
             tag = start_name.lower()
             if tag not in _ALLOWED_TAGS:
                 continue  # drop tag; inner text still flows through as text
-            out.append(f"<{tag}{_filter_attrs(_parse_attrs(m.group(3)))}>")
-            if tag not in _VOID_TAGS and m.group(4) != "/":
+            attrs = m.group(3) or ""
+            self_closing = attrs.rstrip().endswith("/")
+            if self_closing:
+                attrs = attrs.rstrip()[:-1]
+            out.append(f"<{tag}{_filter_attrs(_parse_attrs(attrs))}>")
+            if tag not in _VOID_TAGS and not self_closing:
                 open_stack.append(tag)
         # comments / cdata / doctype -> dropped entirely
     if pos < len(raw):
@@ -782,6 +921,10 @@ def _sanitize_html(raw) -> str:
     global SANITIZER_ENGINE
     if not raw or not isinstance(raw, str):
         return ""
+    if len(raw) > MAX_SANITIZE_BYTES:
+        # Real store descriptions are a few KB. Truncate rather than hand an
+        # unbounded field to the tokenizer.
+        raw = raw[:MAX_SANITIZE_BYTES]
     if _HAVE_HTMLPARSER:
         try:
             p = _Sanitizer()
@@ -814,7 +957,9 @@ def _bbcode_to_html(text) -> str:
     HTML subset. Unknown tags are dropped rather than shown raw."""
     if not text or not isinstance(text, str):
         return ""
-    t = _expand_clan_images(text)
+    # A literal NUL from upstream would forge one of our own placeholder tokens
+    # after the escape pass, so it never gets to exist.
+    t = _expand_clan_images(text.replace("\x00", ""))
 
     # Images first (before we escape), capture the URL.
     t = re.sub(r"\[img\](.*?)\[/img\]",
@@ -832,11 +977,18 @@ def _bbcode_to_html(text) -> str:
     t = html.escape(t)
 
     # Restore the tokens we set aside, as real (safe) HTML.
+    # html.escape(..., quote=True) is NOT optional here. The URL was stashed as a
+    # token BEFORE the escape pass above, so it never went through it, and
+    # _safe_url only filters the scheme — it happily returns a value containing a
+    # double quote. Without this, [img]https://x/p.png" onerror="…[/img] breaks
+    # straight out of the attribute and runs in the Steam UI.
     t = t.replace("\x00/A\x00", "</a>")
     t = re.sub(r"\x00A\x00(.*?)\x00",
-               lambda m: f'<a href="{_safe_url(m.group(1))}" target="_blank" rel="noreferrer">', t)
+               lambda m: '<a href="%s" target="_blank" rel="noreferrer">'
+                         % html.escape(_safe_url(m.group(1)), quote=True), t)
     t = re.sub(r"\x00IMG\x00(.*?)\x00",
-               lambda m: f'<img src="{_safe_url(m.group(1))}" style="max-width:100%;border-radius:4px;" />', t)
+               lambda m: '<img src="%s" style="max-width:100%%;border-radius:4px;" />'
+                         % html.escape(_safe_url(m.group(1)), quote=True), t)
 
     # Block/inline formatting tags -> HTML.
     replacements = [
@@ -907,10 +1059,10 @@ def _derive_movie_sources(movie: dict) -> dict:
     return {
         "id": movie.get("id"),
         "name": movie.get("name", ""),
-        "thumb": thumb,
-        "sources": candidates,
-        "hls": movie.get("hls_h264"),
-        "dash": movie.get("dash_av1") or movie.get("dash_h264"),
+        "thumb": _steam_media_url(thumb),
+        "sources": [c for c in (_steam_media_url(c) for c in candidates) if c],
+        "hls": _steam_media_url(movie.get("hls_h264")),
+        "dash": _steam_media_url(movie.get("dash_av1") or movie.get("dash_h264")),
     }
 
 
@@ -938,7 +1090,7 @@ def _normalize_appdetails(data: dict) -> dict:
     meta = data.get("metacritic")
     metacritic = None
     if isinstance(meta, dict) and meta.get("score") is not None:
-        metacritic = {"score": meta.get("score"), "url": meta.get("url", "")}
+        metacritic = {"score": meta.get("score"), "url": _safe_ext_url(meta.get("url", ""))}
 
     rd = data.get("release_date") or {}
 
@@ -1015,9 +1167,9 @@ def _normalize_news(data: dict) -> dict:
         items.append({
             "gid": n.get("gid"),
             "title": n.get("title", ""),
-            "html": _bbcode_to_html(n.get("contents", "")),
+            "html": _sanitize_html(_bbcode_to_html(n.get("contents", ""))),
             "date": n.get("date"),
-            "url": n.get("url", ""),
+            "url": _safe_ext_url(n.get("url", "")),
             "external": bool(n.get("is_external_url")),
             "feedlabel": n.get("feedlabel", ""),
             "author": n.get("author", ""),
@@ -1231,8 +1383,8 @@ class Plugin:
         self._inflight = {}
         os.makedirs(CACHE_DIR, exist_ok=True)
         self._purge_stale_cache()
-        decky.logger.info("EnhancedGV backend started (SSL ctx: %s)",
-                          type(_SSL_CTX).__name__)
+        decky.logger.info("EnhancedGV backend started (TLS verification: %s)",
+                          "on" if _ssl_verifies() else "OFF - no usable CA bundle")
 
     def _purge_stale_cache(self):
         """Drop the on-disk cache when CACHE_VERSION changes, so a fix ships with
@@ -1653,12 +1805,24 @@ class Plugin:
             return {"ok": False, "error": "no hasheous match"}
         nt = _norm_title(title)
         ranked = [g for g in games if _norm_title(g.get("name")) == nt] or games
-        for g in ranked:
-            for rom in (g.get("roms") or []):
+        # The response is upstream-controlled, and every (rom, algorithm) pair
+        # becomes its own sequential 15s-timeout request. Unclamped, a hostile or
+        # broken search result (8 games x thousands of roms x 3 algorithms) turns
+        # one panel open into tens of thousands of requests at a third party,
+        # holding an executor thread the whole time. Bound the whole walk.
+        attempts = 0
+        for g in ranked[:HASHEOUS_MAX_GAMES]:
+            for rom in (g.get("roms") or [])[:HASHEOUS_MAX_ROMS]:
                 for alg in ("sha1", "md5", "crc"):
                     hv = rom.get(alg)
                     if not hv:
                         continue
+                    if attempts >= HASHEOUS_MAX_LOOKUPS:
+                        decky.logger.warning(
+                            "hasheous: lookup budget spent (%d); giving up on %r",
+                            HASHEOUS_MAX_LOOKUPS, title)
+                        return {"ok": False, "error": "no resolvable rom hash"}
+                    attempts += 1
                     try:
                         res = await self._hasheous_lookup_hash(alg, hv)
                     except Exception:
@@ -1810,6 +1974,52 @@ class Plugin:
                 out["short_description"] = delta.get("summary_text", "")
         out["igdb_enriched"] = True
         return out
+
+    async def get_all_provider(self, provider, id, lang: str = "english",
+                               cc: str = "us"):
+        """Non-Steam metadata aggregate — same AppData shape as get_all, with
+        reviews/news/deck = {ok:False} (they hide cleanly in the panel).
+
+        This is the callable the frontend reaches for every non-Steam game
+        (src/api.ts -> "get_all_provider"), so without it the whole Hasheous
+        path answers "unknown method" and no non-Steam panel can render.
+        """
+        if provider != "hasheous":
+            return {"ok": False, "error": f"unknown provider: {provider}"}
+        try:
+            gid = int(id)
+        except Exception:
+            return {"ok": False, "error": "invalid provider id"}
+        url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
+
+        def norm(raw):
+            if not isinstance(raw, dict) or not raw.get("name"):
+                return {"ok": False, "error": "no hasheous data"}
+            return _normalize_hasheous(raw)
+
+        appdetails = await self._fetch("hasheous", str(gid), url, norm)
+
+        # IGDB artwork rides on top of the keyless baseline. Deliberately AFTER
+        # _fetch, never inside norm(): _fetch caches its callback's output, and
+        # a merged result cached against one baseline would later be served over
+        # a different one. _igdb_delta caches only the IGDB half, so a cached
+        # baseline still gets enriched here.
+        if isinstance(appdetails, dict) and appdetails.get("ok") is not False:
+            try:
+                igdb_id = int(appdetails.get("igdb_id") or 0)
+            except Exception:
+                igdb_id = 0
+            if igdb_id:
+                appdetails = await self._igdb_enrich(igdb_id, appdetails)
+
+        return {
+            "ok": True,
+            "appid": gid,
+            "appdetails": appdetails,
+            "reviews": {"ok": False, "error": "reviews are Steam-only"},
+            "news": {"ok": False, "error": "update history is Steam-only"},
+            "deck": {"ok": False, "error": "not a Steam app"},
+        }
 
     async def test_igdb(self, game_appid=0):
         """Per-step IGDB probe for the QAM, so a tester can see exactly where
@@ -2119,7 +2329,44 @@ class Plugin:
                         defaults[key].update(saved[key])
         except Exception:
             pass
+        # The client SECRET never leaves the backend. This method is a
+        # string-named RPC with no caller check, so ANY code in the Steam UI —
+        # including another Decky plugin — can invoke it; returning the secret
+        # made it readable by all of them. The UI only ever needs to know
+        # whether one is stored, and it never prefills the field.
+        defaults.pop(SECRET_KEY, None)
+        defaults["igdbClientSecretSet"] = bool(_igdb_creds()[1])
         return defaults
+
+    async def clear_igdb_credentials(self):
+        """Erase the stored IGDB credentials and any token minted from them.
+
+        set_settings deliberately treats an absent or empty secret as "leave it
+        alone", because get_settings redacts it and the frontend writes back what
+        it was given — without that rule, every unrelated settings save would
+        wipe the secret. Removal therefore needs its own explicit call.
+        """
+        try:
+            try:
+                with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
+                    saved = json.load(fh)
+            except Exception:
+                saved = {}
+            if not isinstance(saved, dict):
+                saved = {}
+            saved["igdbClientId"] = ""
+            saved[SECRET_KEY] = ""
+            os.makedirs(SETTINGS_DIR, exist_ok=True)
+            tmp = SETTINGS_FILE + ".tmp"
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(saved, fh, indent=2)
+            os.replace(tmp, SETTINGS_FILE)
+            _igdb_forget_token()
+            return {"ok": True}
+        except Exception as exc:
+            decky.logger.error(f"clear_igdb_credentials failed: {exc}")
+            return {"ok": False, "error": str(exc)}
 
     async def set_settings(self, settings: dict):
         try:
@@ -2127,16 +2374,36 @@ class Plugin:
             # either changed, the cached token is either wrong or about to be,
             # so drop it rather than let a stale token mask new credentials.
             prev_id, prev_secret = _igdb_creds()
+            new_secret = str(settings.get(SECRET_KEY, "") or "").strip()
             if (str(settings.get("igdbClientId", "") or "").strip() != prev_id
-                    or str(settings.get("igdbClientSecret", "") or "").strip() != prev_secret):
+                    or (new_secret and new_secret != prev_secret)):
                 _igdb_forget_token()
         except Exception:
             pass
         try:
             os.makedirs(SETTINGS_DIR, exist_ok=True)
+            try:
+                os.chmod(SETTINGS_DIR, 0o700)
+            except Exception:
+                pass
+            # get_settings redacts the secret, and the frontend writes back what
+            # it was given — so an incoming payload with no secret means "leave
+            # it alone", not "erase it". Only an explicit non-empty value sets a
+            # new one, and only clear_igdb_credentials removes it.
+            merged = dict(settings)
+            if not str(merged.get(SECRET_KEY, "") or "").strip():
+                kept = _igdb_creds()[1]
+                if kept:
+                    merged[SECRET_KEY] = kept
+            merged.pop("igdbClientSecretSet", None)  # a report, not a setting
             tmp = SETTINGS_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(settings, fh, indent=2)
+            # 0600 from the moment of creation. open(tmp, "w") would have used
+            # 0666 & ~umask = 0644, and os.replace carries that mode onto the
+            # real file — which is how a Twitch client secret ended up
+            # world-readable next to a 0600 token file.
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(merged, fh, indent=2)
             os.replace(tmp, SETTINGS_FILE)
             return {"ok": True}
         except Exception as exc:
@@ -2161,6 +2428,11 @@ class Plugin:
             return {"ok": False, "error": "no source candidates"}
 
         def probe(url: str) -> dict:
+            # Candidates come from appdetails, i.e. from the network. Without a
+            # scheme check this diagnostic reads file:// and probes the LAN on
+            # behalf of whoever controls that response.
+            if urllib.parse.urlsplit(url).scheme != "https":
+                return {"url": str(url)[:60], "status": 0, "error": "non-https source"}
             req = urllib.request.Request(
                 url, headers={"User-Agent": USER_AGENT, "Range": "bytes=0-65535"}
             )
@@ -2168,7 +2440,15 @@ class Plugin:
             try:
                 try:
                     resp = urllib.request.urlopen(req, timeout=12, context=_SSL_CTX)
-                except urllib.error.URLError:
+                except urllib.error.URLError as exc:
+                    # Only a CERTIFICATE failure justifies dropping verification,
+                    # and only here because this probe reads public CDN bytes and
+                    # carries no credentials. A refused connection or DNS failure
+                    # must surface as itself, not be retried unverified.
+                    reason = getattr(exc, "reason", exc)
+                    if not (isinstance(reason, ssl.SSLError)
+                            or "CERTIFICATE_VERIFY_FAILED" in str(exc)):
+                        raise
                     resp = urllib.request.urlopen(req, timeout=12, context=_SSL_UNVERIFIED)
                 with resp:
                     data = resp.read(65536)
@@ -2257,7 +2537,7 @@ class Plugin:
             zip_url = ""
             for a in raw.get("assets") or []:
                 if a.get("name") == "EnhancedGV.zip":
-                    zip_url = a.get("browser_download_url", "")
+                    zip_url = _github_url(a.get("browser_download_url", ""))
                     break
             return {
                 "ok": True,
@@ -2267,7 +2547,7 @@ class Plugin:
                 "has_update": bool(latest) and self._ver_tuple(latest) > self._ver_tuple(current),
                 "prerelease": bool(raw.get("prerelease")),
                 "channel": "beta" if beta else "stable",
-                "url": raw.get("html_url", ""),
+                "url": _github_url(raw.get("html_url", "")),
                 "zip_url": zip_url,
             }
         except Exception as exc:

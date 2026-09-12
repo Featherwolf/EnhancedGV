@@ -4,6 +4,51 @@
 
 ### Testing non-Steam / emulated game metadata
 
+### Security
+
+A multi-lens audit ran over the plugin once it started collecting credentials.
+Six issues were confirmed and fixed in this build:
+
+- **The IGDB client secret is no longer readable by other plugins.** `get_settings`
+  is an unauthenticated RPC that any code in the Steam UI can call, and it was
+  returning the secret in cleartext. It now reports only whether one is stored.
+- **The file holding it is no longer world-readable.** It was written `0644` in a
+  `0755` directory, next to a token file that was correctly `0600`.
+- **Credentials no longer follow redirects.** A redirect from IGDB would have
+  re-sent the bearer token and client id to any host, over plain HTTP.
+- **Certificate verification is no longer dropped automatically.** On a
+  certificate error the plugin used to silently retry unverified, which handed an
+  on-path attacker control of every Steam, Hasheous and GitHub response.
+- **Update links are pinned to GitHub over https.** A forged release response
+  could otherwise choose where the "download the update" link sent you.
+- **The trailer diagnostic only speaks https**, so an upstream response cannot
+  point it at local files or the local network.
+- **Steam news can no longer inject script into the panel.** A link or image URL
+  in an announcement could break out of the HTML attribute it was placed in. News
+  content now also goes through the same allowlist filter everything else uses.
+- **The URL filter no longer has an encoding blind spot.** A single HTML entity
+  could hide a `javascript:` scheme from it.
+- **A game description can no longer freeze the plugin.** A pathological run of
+  whitespace made the on-device HTML parser take tens of seconds; it is now
+  linear, and oversized fields are truncated.
+- **Plain-text descriptions are rendered as text**, not as HTML.
+- **Links open only if they are ordinary web links.** `steam://` and `file://`
+  targets from a store or news response are ignored rather than handed to the
+  Steam client.
+- **Trailer URLs must be Steam's own CDN**, so a tampered store response cannot
+  point the player at another host, and a malformed manifest can no longer
+  exhaust memory.
+- **Matching a non-Steam game is bounded**, so one page open cannot turn into
+  thousands of lookups.
+
+
+> **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
+> calls a backend method that an earlier commit had deleted, so every non-Steam
+> game failed before any provider was contacted. If you tried beta.1, beta.2 or
+> beta.3 and saw nothing happen for a ROM, that is why — this build is the first
+> where the feature actually runs.
+
+
 Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
 ROM that was added to your library as its own shortcut. You should get a title,
 description, genres, developer/publisher, platform and a logo, sourced from

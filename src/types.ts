@@ -204,6 +204,8 @@ export interface PluginSettings {
   // set = IGDB artwork/details for non-Steam games. Stored locally only.
   igdbClientId?: string;
   igdbClientSecret?: string;
+  /** Backend-reported: a secret is stored. The secret itself is never sent. */
+  igdbClientSecretSet?: boolean;
   // Opt in to pulling metadata for non-Steam / emulated games from external
   // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
   // as before (Steam title-search only, then "unmatched").

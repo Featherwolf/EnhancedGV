@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openExternal } from "../nav";
 import {
   PanelSection,
   PanelSectionRow,
@@ -6,7 +7,6 @@ import {
   ButtonItem,
   TextField,
   showModal,
-  Navigation,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
 import { getCurrentAppid } from "../patchLibraryApp";
@@ -20,6 +20,7 @@ import {
   getBackendInfo,
   resolveGame,
   testIgdb,
+  clearIgdbCredentials,
   lookupStoreApp,
   setMatch,
   clearMatch,
@@ -249,7 +250,8 @@ function IgdbCredentialsRow() {
       .then((s) => {
         if (!alive) return;
         const st = s as PluginSettings;
-        setSaved(!!(st.igdbClientId && st.igdbClientSecret));
+        // The backend redacts the secret and reports only whether one exists.
+        setSaved(!!(st.igdbClientId && st.igdbClientSecretSet));
         setClientId(st.igdbClientId ?? "");
       })
       .catch(() => undefined);
@@ -263,13 +265,11 @@ function IgdbCredentialsRow() {
       const cur = await getSettings();
       const next = { ...(cur as PluginSettings), igdbClientId: id, igdbClientSecret: secret };
       await setSettings(next);
-      primeSettings(next);
+      // Never keep the secret in the object handed around the frontend.
+      primeSettings({ ...next, igdbClientSecret: "", igdbClientSecretSet: !!secret });
+      setClientSecret("");
       setSaved(!!(id && secret));
-      setNote(
-        id && secret
-          ? "Credentials saved."
-          : "Credentials cleared — back to the keyless baseline.",
-      );
+      setNote("Credentials saved.");
       // Cached non-Steam payloads were built without artwork; drop them so the
       // next visit refetches with IGDB in play.
       await clearCache().catch(() => undefined);
@@ -331,9 +331,21 @@ function IgdbCredentialsRow() {
           <ButtonItem
             layout="below"
             onClick={() => {
-              setClientId("");
-              setClientSecret("");
-              void save("", "");
+              void (async () => {
+                setClientId("");
+                setClientSecret("");
+                try {
+                  await clearIgdbCredentials();
+                  const cur = await getSettings();
+                  primeSettings(cur as PluginSettings);
+                  setSaved(false);
+                  setNote("Credentials cleared — back to the keyless baseline.");
+                  await clearCache().catch(() => undefined);
+                  clearFrontendCache();
+                } catch (e) {
+                  setNote(`Could not clear: ${String(e)}`);
+                }
+              })();
             }}
           >
             Remove credentials
@@ -644,7 +656,7 @@ export function QuickAccessSettings() {
               <PanelSectionRow>
                 <ButtonItem
                   layout="below"
-                  onClick={() => update.url && Navigation.NavigateToExternalWeb(update.url)}
+                  onClick={() => openExternal(update.url)}
                 >
                   Open the release page
                 </ButtonItem>
