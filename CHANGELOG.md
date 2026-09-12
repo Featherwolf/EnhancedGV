@@ -6,8 +6,12 @@
 
 ### Security
 
-A multi-lens audit ran over the plugin once it started collecting credentials.
-Six issues were confirmed and fixed in this build:
+A multi-lens audit ran over the plugin once it started collecting credentials:
+65 candidate issues, each reviewed by three independent verifiers. Seventeen were
+confirmed and all are fixed in this build.
+
+Three of them were **not** new — they also affect v0.18.0, the current stable
+release: the news injection, the URL filter blind spot, and the freeze.
 
 - **The IGDB client secret is no longer readable by other plugins.** `get_settings`
   is an unauthenticated RPC that any code in the Steam UI can call, and it was
