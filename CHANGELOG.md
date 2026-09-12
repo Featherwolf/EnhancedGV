@@ -4,6 +4,71 @@
 
 ### Testing non-Steam / emulated game metadata
 
+> **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
+> called a backend method an earlier commit had deleted, so every non-Steam game
+> failed before any provider was contacted. If you tried beta.1, beta.2 or beta.3
+> and nothing happened for a ROM, that is why. This is the first build where the
+> feature actually runs.
+
+**Step 1 — the keyless part, which is most of it.**
+
+Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
+ROM that was added to your library as its own shortcut. You should get a title,
+description, genres, developer/publisher, platform and a logo, from **Hasheous**.
+No account, no key, nothing to sign up for. Test this first.
+
+**Step 2 — cover art and screenshots, optional, free.**
+
+These come from **IGDB**, which the plugin queries directly. IGDB is owned by
+Twitch and uses Twitch developer accounts, so setup happens there:
+
+1. Create a **Twitch account** at <https://twitch.tv> if you don't have one.
+2. **Enable two-factor authentication** on it. The developer console refuses to
+   register an application without it, and this is the step people miss.
+3. Go to <https://dev.twitch.tv/console/apps> and press **Register Your
+   Application**. Name it anything.
+4. Set **OAuth Redirect URL** to `http://localhost`. IGDB never uses it, but the
+   form demands a value.
+5. Set **Client Type** to **Confidential**. This is the setting that allows a
+   secret to exist. Get it wrong and step 7 fails with "Twitch rejected the
+   client id/secret pair".
+6. Copy the **Client ID**.
+7. Press **New Secret** and copy the **Client Secret**. It is shown once.
+8. On the Deck, paste both into the same EnhancedGV panel and press **Save
+   credentials**.
+
+Free for non-commercial use, limited to 4 requests per second, far above anything
+this plugin does. Saving clears cached data so games you already opened refetch
+with artwork. **Remove credentials** goes back to step 1 at any time.
+
+Your secret is stored on the device, sent only to `id.twitch.tv` to mint a token,
+and never written to the log or shown by the diagnostic.
+
+**Step 3 — check it.**
+
+Open a retro game's page and press **Test artwork lookup**. It reports each stage
+separately, so a failure names itself rather than showing an empty gallery:
+
+| Stage | A ✖ here means |
+| --- | --- |
+| Non-Steam sources enabled | The toggle in step 1 is off. |
+| Credentials present | One of the two fields is empty. |
+| Access token from Twitch | Twitch rejected the pair — usually Client Type was not **Confidential**, or the secret was regenerated after you saved it. |
+| This game maps to IGDB | Hasheous has no IGDB link for *this* title. Not fatal: the credentials are then tested against a known game, so the rows below still tell you if they work. |
+| IGDB game fetched | `401`/`403` = token or client id rejected. `429` = over the rate limit. |
+| Screenshots listed | Credentials work; IGDB simply has no screenshots for that title. |
+| Image address resolved | Screenshots exist but carried no image id. Please report this one. |
+
+**Known limits.** Steam games are untouched. No trailers, because IGDB supplies
+YouTube ids rather than playable URLs. A single emulator or frontend shortcut
+covering your whole library has no per-game page to attach to.
+
+**Please report:** whether step 1 works on your ROMs, and if you do step 2,
+whether the token stage passes. That second one has never run against a live
+IGDB response — there are no credentials on the build machine — so you are the
+first to exercise it.
+
+
 ### Security
 
 A multi-lens audit ran over the plugin once it started collecting credentials:
@@ -46,33 +111,6 @@ release: the news injection, the URL filter blind spot, and the freeze.
   thousands of lookups.
 
 
-> **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
-> calls a backend method that an earlier commit had deleted, so every non-Steam
-> game failed before any provider was contacted. If you tried beta.1, beta.2 or
-> beta.3 and saw nothing happen for a ROM, that is why — this build is the first
-> where the feature actually runs.
-
-
-Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
-ROM that was added to your library as its own shortcut. You should get a title,
-description, genres, developer/publisher, platform and a logo, sourced from
-**Hasheous**. That is the whole feature for now, and it needs no account and no key.
-
-Cover art and screenshots come from **IGDB**, which the plugin now queries
-directly. That is optional and free to set up: a Twitch account with two-factor
-enabled, an application registered at dev.twitch.tv with Client Type
-*Confidential*, then paste its Client ID and Client Secret into the same panel.
-The README has the step-by-step.
-
-(Earlier betas tried to reach IGDB through Hasheous' proxy, which needs a client
-API key that only Hasheous admins can issue — so that field could never be
-filled. Going direct removes the gatekeeper.)
-
-**Test artwork lookup** (same panel) reports each stage separately if you want to see
-where things stop.
-
-
-- **Metadata for emulated / non-Steam games (experimental, off by default).** When
   a non-Steam game has no Steam store page, EnhancedGV can now pull a description,
   details and artwork from **Hasheous** — a free, keyless community game database.
   Turn it on in Quick Access → EnhancedGV → *Non-Steam games (experimental)*.
