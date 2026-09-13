@@ -44,10 +44,18 @@ with artwork. **Remove credentials** goes back to step 1 at any time.
 Your secret is stored on the device, sent only to `id.twitch.tv` to mint a token,
 and never written to the log or shown by the diagnostic.
 
-> **Fixed since beta.5:** opening a game could crash the Steam UI with
-> "Cannot read properties of undefined (reading 'length')". A game matched to
-> IGDB returned an incomplete record, and the panel expected a list that wasn't
-> there. Every source now returns the same complete shape.
+> **Fixed since beta.5:**
+> - Opening a game could crash the Steam UI with "Cannot read properties of
+>   undefined (reading 'length')". A game matched to IGDB returned an incomplete
+>   record and the panel expected a list that wasn't there. Every source now
+>   returns the same complete shape.
+> - IGDB matches showed no description and an empty **Features & details**. The
+>   text and the release date/platform were being written under the wrong field
+>   names, so the panel never saw them.
+> - A game your last build matched to the wrong thing is re-detected
+>   automatically. You should no longer have to press Re-detect game by game
+>   after an update. Anything you set by hand, or deliberately left blank, is
+>   left exactly as you set it.
 
 **If a game matches the wrong thing, or nothing at all.**
 

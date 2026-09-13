@@ -140,6 +140,8 @@ IGDB_MAX_SHOTS = 12
 # One expanded query covers everything the panel needs.
 IGDB_GAME_FIELDS = (
     "fields name,summary,url,"
+    "first_release_date,"          # -> release_date, for Features & details
+    "platforms.name,"              # -> categories chip, ditto
     "cover.image_id,"
     "screenshots.image_id,"
     "artworks.image_id,"
@@ -203,6 +205,13 @@ MAX_SANITIZE_BYTES = 512 * 1024
 HASHEOUS_MAX_GAMES = 8
 HASHEOUS_MAX_ROMS = 8
 HASHEOUS_MAX_LOOKUPS = 24
+
+# Bumped whenever automatic matching improves. An AUTO match stamped with an
+# older generation is re-detected on next open, so a tester who was matched to
+# the wrong thing by a previous build does not have to hunt down every game and
+# press Re-detect by hand. MANUAL and CLEARED records are never touched — those
+# are decisions, not guesses.
+MATCH_GENERATION = 2
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -482,6 +491,23 @@ def _igdb_pick(obj, *names):
             if cand in obj and obj[cand] not in (None, ""):
                 return obj[cand]
     return None
+
+
+def _match_is_stale(rec: dict) -> bool:
+    """True when a saved AUTO match predates the current resolver.
+
+    Only auto matches: a "manual" record is the user's explicit choice and a
+    "cleared" one is their explicit non-choice, and both must survive upgrades
+    untouched.
+    """
+    if not isinstance(rec, dict):
+        return False
+    if str(rec.get("source", "auto")) != "auto":
+        return False
+    try:
+        return int(rec.get("gen", 1)) < MATCH_GENERATION
+    except Exception:
+        return True
 
 
 def _rec_to_result(rec: dict) -> dict:
@@ -1320,6 +1346,28 @@ def _hasheous_tags(obj: dict) -> list:
     return out[:16]
 
 
+def _igdb_facts(game: dict) -> dict:
+    """The AppDetails fields "Features & details" reads, from an IGDB game.
+
+    Kept separate from _igdb_delta because that one is an enrichment overlay
+    applied on top of a Hasheous record, which already supplies these.
+    """
+    out = {}
+    ts = _igdb_pick(game, "first_release_date")
+    if ts:
+        try:
+            out["release_date"] = time.strftime("%d %b, %Y", time.gmtime(int(ts)))
+        except Exception:
+            pass
+    plats = [str(_igdb_pick(p, "name") or "")
+             for p in (_igdb_pick(game, "platforms") or []) if isinstance(p, dict)]
+    plats = [p for p in plats if p]
+    if plats:
+        out["categories"] = [{"id": f"platform{i}", "description": p}
+                             for i, p in enumerate(plats[:6])]
+    return out
+
+
 def _empty_appdetails(name: str = "") -> dict:
     """Every key the frontend reads, with a safe default for each.
 
@@ -2138,6 +2186,16 @@ class Plugin:
                     appdetails = _empty_appdetails(
                         str(_igdb_pick(game or {}, "name") or ""))
                     appdetails.update(delta)
+                    # _igdb_delta is an OVERLAY for Hasheous baselines, so it
+                    # names its prose summary_html/summary_text — keys the panel
+                    # never reads. Standing alone as a provider, it has to be
+                    # translated into the AppDetails contract or the description
+                    # and "Features & details" render empty.
+                    appdetails["about_html"] = delta.get("summary_html", "")
+                    appdetails["short_description"] = delta.get("summary_text", "")
+                    appdetails.pop("summary_html", None)
+                    appdetails.pop("summary_text", None)
+                    appdetails.update(_igdb_facts(game or {}))
                     appdetails["igdb_id"] = gid
                     appdetails["igdb_enriched"] = True
                 else:
@@ -2307,7 +2365,7 @@ class Plugin:
         except Exception:
             return {"ok": False, "error": "invalid appid"}
         rec = _read_matches().get(str(game_appid))
-        if rec is not None:
+        if rec is not None and not _match_is_stale(rec):
             return _rec_to_result(rec)
 
         if is_shortcut:
@@ -2351,11 +2409,11 @@ class Plugin:
                             "provider_id": int(h["id"]),
                             "platform": h.get("platform", ""), "name": h.get("name", ""),
                             "year": h.get("year", ""), "source": "auto",
-                            "ts": int(time.time())}
+                            "gen": MATCH_GENERATION, "ts": int(time.time())}
                         async with self._matches_lock():
                             cur = _read_matches()
                             existing = cur.get(str(game_appid))
-                            if existing is not None:
+                            if existing is not None and not _match_is_stale(existing):
                                 return _rec_to_result(existing)
                             cur[str(game_appid)] = prov_rec
                             _write_matches(cur)
@@ -2387,11 +2445,11 @@ class Plugin:
         async with self._matches_lock():
             cur = _read_matches()
             existing = cur.get(str(game_appid))
-            if existing is not None:
+            if existing is not None and not _match_is_stale(existing):
                 return _rec_to_result(existing)
             cur[str(game_appid)] = {
                 "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
-                "source": "auto", "ts": int(time.time())}
+                "source": "auto", "gen": MATCH_GENERATION, "ts": int(time.time())}
             _write_matches(cur)
         return {"ok": True, "store_appid": store_appid, "provider": "steam",
                 "provider_id": store_appid, "name": ny["name"], "year": ny["year"],
