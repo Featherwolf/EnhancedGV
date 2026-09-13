@@ -78,16 +78,29 @@ export interface LookupResult {
   appid?: number;
   name?: string;
   year?: string;
+  /** Which source the id belongs to. Absent means "steam", as before. */
+  provider?: DataProvider;
+  platform?: string;
   error?: string;
 }
-// Validate a typed Steam app ID or pasted store URL -> name + year.
+// Validate a typed source reference -> provider + id + name + year. A bare
+// number or Steam URL still means Steam; igdb:<id> / hasheous:<id> point
+// elsewhere.
 export const lookupStoreApp = callable<
   [id_or_url: string, lang: string, cc: string],
   LookupResult
 >("lookup_store_app");
 
 export const setMatch = callable<
-  [game_appid: number, store_appid: number, name: string, year: string, source: string],
+  [
+    game_appid: number,
+    store_appid: number,
+    name: string,
+    year: string,
+    source: string,
+    // "steam" (default, unchanged) | "igdb" | "hasheous"
+    provider?: string,
+  ],
   { ok: boolean }
 >("set_match");
 

@@ -44,6 +44,31 @@ with artwork. **Remove credentials** goes back to step 1 at any time.
 Your secret is stored on the device, sent only to `id.twitch.tv` to mint a token,
 and never written to the log or shown by the diagnostic.
 
+**If a game matches the wrong thing, or nothing at all.**
+
+Hasheous indexes ROM *dumps*, not releases. That works well for retro ROMs and
+badly for modern console games: Breath of the Wild appears only as a Wii U entry
+with no ROM attached, Animal Crossing not at all, and a search for Metroid Dread
+returns Game Boy Color and amiibo entries that outranked the real one. That is
+why some games showed a handheld listing for a Switch title, and why others found
+nothing.
+
+Two changes, and one you can drive by hand:
+
+- Wrong-platform entries no longer win. Candidates with no ROM are skipped (they
+  could never resolve anyway), rom hacks, bootlegs, soundtracks and amiibo
+  entries are ranked last, and the platform is preferred when known.
+- When Hasheous has nothing usable, **IGDB is asked next** — if you set up
+  credentials in step 2. That is what covers modern console games.
+- **You can point any game at any listing yourself**, using the field that was
+  already there: **Quick Access → EnhancedGV → Store data source**. A bare number
+  or Steam URL still means Steam, exactly as before. To use another source, type
+  `igdb:1103` or `hasheous:6292` and press **Save ID**. The choice sticks and is
+  never re-detected. **Clear (leave blank)** still hides the panel for a game,
+  and **Re-detect automatically** still starts over.
+
+  IGDB ids are on the game's igdb.com page; an `igdb.com/games/…` link works too.
+
 **Step 3 — check it.**
 
 Open a retro game's page and press **Test artwork lookup**. It reports each stage

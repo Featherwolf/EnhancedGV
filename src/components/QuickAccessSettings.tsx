@@ -162,9 +162,16 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
       setBusy(false);
       return;
     }
-    await setMatch(appid, look.appid, look.name ?? "", look.year ?? "", "manual").catch(() => {});
+    const provider = look.provider ?? "steam";
+    await setMatch(appid, look.appid, look.name ?? "", look.year ?? "", "manual", provider).catch(
+      () => {},
+    );
     emitMatchChanged(appid); // re-resolve the open game page + reload this section
-    setMsg(`Set to ${look.name} (${look.year || "—"})`);
+    setMsg(
+      provider === "steam"
+        ? `Set to ${look.name} (${look.year || "—"})`
+        : `Set to ${look.name} (${look.year || "—"}) · via ${providerLabel(provider)}`,
+    );
     setBusy(false);
   };
 
@@ -200,7 +207,8 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
       </PanelSectionRow>
       <PanelSectionRow>
         <TextField
-          label="Steam App ID or store URL"
+          label="Source ID or URL"
+          description="A Steam app ID or store URL, or igdb:12345 / hasheous:12345 to point at a non-Steam listing. Useful when a retro game matched the wrong platform, or a modern console game found nothing."
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />

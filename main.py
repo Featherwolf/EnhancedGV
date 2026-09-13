@@ -540,6 +540,41 @@ def _parse_appid(s):
     return int(m.group(1)) if m else None
 
 
+def _parse_ref(s):
+    """A user-typed source reference -> (provider, id), or (None, None).
+
+    Deliberately an extension of _parse_appid rather than a second input: the
+    QAM already has one field for "where does this panel get its content", and
+    a bare number keeps meaning a Steam appid exactly as before. The prefix is
+    only needed to say "not Steam".
+
+        730                      -> ("steam", 730)      (unchanged)
+        store.steampowered.com/app/730/  -> ("steam", 730)      (unchanged)
+        igdb:1103 / igdb 1103    -> ("igdb", 1103)
+        igdb.com/games/super-metroid     -> ("igdb", 0)  slug, caller resolves
+        hasheous:6292            -> ("hasheous", 6292)
+    """
+    s = str(s or "").strip()
+    if not s:
+        return (None, None)
+    m = re.match(r"(?i)^(igdb|hasheous|steam)\s*[:/#]?\s*(\d+)$", s)
+    if m:
+        return (m.group(1).lower(), int(m.group(2)))
+    if re.search(r"(?i)\bigdb\.com/games/", s):
+        return ("igdb", 0)          # a slug; resolved by search, not by id
+    if re.search(r"(?i)hasheous\.org", s):
+        m = re.search(r"/(\d+)", s)
+        return ("hasheous", int(m.group(1))) if m else (None, None)
+    appid = _parse_appid(s)
+    return ("steam", appid) if appid else (None, None)
+
+
+def _igdb_slug(s):
+    """The slug out of an igdb.com/games/<slug> URL, for a by-name lookup."""
+    m = re.search(r"(?i)igdb\.com/games/([A-Za-z0-9\-_]+)", str(s or ""))
+    return m.group(1).replace("-", " ") if m else ""
+
+
 # --------------------------------------------------------------------------- #
 # Text helpers: HTML sanitize + BBCODE -> HTML
 # --------------------------------------------------------------------------- #
@@ -1804,7 +1839,33 @@ class Plugin:
         if not games:
             return {"ok": False, "error": "no hasheous match"}
         nt = _norm_title(title)
-        ranked = [g for g in games if _norm_title(g.get("name")) == nt] or games
+
+        # Hasheous is a ROM-signature database, so a title search returns dumps,
+        # not releases: rom hacks, bootlegs, soundtracks and amiibo entries sit
+        # alongside the real thing and frequently outrank it. Measured live:
+        # "Kirby and the Forgotten Land" returns only Game Boy / Game Boy Color
+        # entries, "Metroid Dread" returns Game Boy Color and amiibo. Taking the
+        # first candidate that happens to carry a resolvable hash is how a Switch
+        # game ended up showing a Game Boy listing.
+        def _rank(g):
+            name = _norm_title(g.get("name"))
+            plat = ((g.get("platform") or {}).get("name") or "").lower()
+            score = 0
+            if name != nt:
+                score += 4                      # not the title we asked for
+            if any(w in plat for w in ("rom hack", "hack", "bootleg", "audio cd",
+                                       "amiibo", "demo", "prototype")):
+                score += 8                      # not a release of the game
+            if want_plat and want_plat in plat:
+                score -= 4                      # the platform we were told
+            return score
+
+        want_plat = str(platform or "").strip().lower()
+        # A candidate with no reference ROM can NEVER bridge to a game id, so it
+        # is not a candidate at all — spending lookups on it is what exhausted
+        # the budget before reaching a real match.
+        usable = [g for g in games if (g.get("roms") or [])]
+        ranked = sorted(usable, key=_rank)
         # The response is upstream-controlled, and every (rom, algorithm) pair
         # becomes its own sequential 15s-timeout request. Unclamped, a hostile or
         # broken search result (8 games x thousands of roms x 3 algorithms) turns
@@ -1855,6 +1916,41 @@ class Plugin:
         if isinstance(got, list) and got and isinstance(got[0], dict):
             return got[0]
         return None
+
+    async def _igdb_ready(self):
+        """(client_id, token) when IGDB is usable, else (None, None)."""
+        cid, secret = _igdb_creds()
+        if not (cid and secret):
+            return (None, None)
+        try:
+            return (cid, await self._igdb_token(cid, secret))
+        except Exception as exc:
+            decky.logger.warning(f"igdb: no token: {exc}")
+            return (None, None)
+
+    async def _igdb_search(self, title: str, limit: int = 8):
+        """Title -> IGDB game candidates. Hasheous indexes ROM DUMPS, so modern
+        console releases are absent from it (Breath of the Wild returns one Wii U
+        entry with no ROMs; Animal Crossing returns nothing) or present only as
+        rom hacks and bootlegs that outrank the real thing. IGDB indexes GAMES,
+        which is what those titles need."""
+        cid, token = await self._igdb_ready()
+        if not cid:
+            return []
+        safe = str(title or "").replace('"', " ").strip()[:120]
+        if not safe:
+            return []
+        body = (f'search "{safe}"; '
+                'fields name,first_release_date,platforms.name,category; '
+                f'limit {int(limit)};')
+        loop = asyncio.get_running_loop()
+        try:
+            got = await loop.run_in_executor(
+                None, functools.partial(_igdb_post_sync, "games", body, cid, token))
+        except Exception as exc:
+            decky.logger.warning(f"igdb search failed: {exc}")
+            return []
+        return got if isinstance(got, list) else []
 
     async def _igdb_delta(self, igdb_id: int, client_id: str, token: str) -> dict:
         """Fetch the IGDB-derived fields for a game. CACHED ON ITS OWN — never
@@ -1984,12 +2080,39 @@ class Plugin:
         (src/api.ts -> "get_all_provider"), so without it the whole Hasheous
         path answers "unknown method" and no non-Steam panel can render.
         """
-        if provider != "hasheous":
+        if provider not in ("hasheous", "igdb"):
             return {"ok": False, "error": f"unknown provider: {provider}"}
         try:
             gid = int(id)
         except Exception:
             return {"ok": False, "error": "invalid provider id"}
+
+        if provider == "igdb":
+            # Reuses _igdb_delta wholesale — it already produces cover,
+            # screenshots, genres, developers, publishers and summary in
+            # AppDetails shape. Only the name has to be added on top.
+            cid, token = await self._igdb_ready()
+            if not cid:
+                appdetails = {"ok": False, "error": "IGDB credentials not set"}
+            else:
+                delta = await self._igdb_delta(gid, cid, token)
+                if delta:
+                    try:
+                        game = await self._igdb_game(gid, cid, token)
+                    except Exception:
+                        game = None
+                    appdetails = dict(delta)
+                    appdetails["ok"] = True
+                    appdetails["name"] = _igdb_pick(game or {}, "name") or ""
+                    appdetails["igdb_enriched"] = True
+                else:
+                    appdetails = {"ok": False, "error": "no IGDB data for that id"}
+            return {
+                "ok": True, "appid": gid, "appdetails": appdetails,
+                "reviews": {"ok": False, "error": "reviews are Steam-only"},
+                "news": {"ok": False, "error": "update history is Steam-only"},
+                "deck": {"ok": False, "error": "not a Steam app"},
+            }
         url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
 
         def norm(raw):
@@ -2106,6 +2229,34 @@ class Plugin:
         return {"ok": True, "steps": steps, "igdb_id": igdb_id,
                 "name": label, "sample_image": sample}
 
+    async def _igdb_resolve(self, title: str):
+        """Title -> IGDB game id, same result shape as _hasheous_resolve."""
+        nt = _norm_title(title)
+        try:
+            games = await self._igdb_search(title)
+        except Exception as exc:
+            return {"ok": False, "error": f"igdb search: {exc}"}
+        if not games:
+            return {"ok": False, "error": "no igdb match"}
+        # IGDB's own search already orders by relevance; only pull an exact
+        # title match forward, and prefer a main game over a DLC/bundle entry.
+        def _rank(g):
+            return (0 if _norm_title(_igdb_pick(g, "name")) == nt else 1,
+                    0 if int(_igdb_pick(g, "category") or 0) == 0 else 1)
+        best = sorted(games, key=_rank)[0]
+        ts = _igdb_pick(best, "first_release_date")
+        year = ""
+        if ts:
+            try:
+                year = time.strftime("%Y", time.gmtime(int(ts)))
+            except Exception:
+                year = ""
+        plats = [str(_igdb_pick(p, "name") or "")
+                 for p in (_igdb_pick(best, "platforms") or []) if isinstance(p, dict)]
+        return {"ok": True, "provider": "igdb", "id": int(_igdb_pick(best, "id") or 0),
+                "name": str(_igdb_pick(best, "name") or title), "year": year,
+                "platform": plats[0] if plats else ""}
+
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
                            title: str = "", lang: str = "english", cc: str = "us",
                            platform: str = ""):
@@ -2142,9 +2293,15 @@ class Plugin:
                 # best guess, else unmatched).
                 if _feature_non_steam():
                     h = await self._hasheous_resolve(title or "", platform)
+                    if not h.get("ok"):
+                        # Hasheous indexes ROM dumps, so a modern console release
+                        # is often simply not in it. IGDB indexes games; when the
+                        # user has credentials, ask it before giving up.
+                        h = await self._igdb_resolve(title or "")
                     if h.get("ok"):
                         prov_rec = {
-                            "provider": "hasheous", "provider_id": int(h["id"]),
+                            "provider": h.get("provider", "hasheous"),
+                            "provider_id": int(h["id"]),
                             "platform": h.get("platform", ""), "name": h.get("name", ""),
                             "year": h.get("year", ""), "source": "auto",
                             "ts": int(time.time())}
@@ -2194,28 +2351,87 @@ class Plugin:
                 "source": "auto", "matched": True, "from_cache": False}
 
     async def lookup_store_app(self, id_or_url, lang: str = "english", cc: str = "us"):
-        """Validate a user-entered Steam app ID or store URL -> name + year."""
-        appid = _parse_appid(id_or_url)
-        if not appid:
-            return {"ok": False, "error": "Enter a numeric Steam app ID or a store URL."}
-        ny = await self._name_year(appid, lang, cc)
-        if not ny.get("ok"):
-            return {"ok": False, "appid": appid,
-                    "error": ny.get("error") or "No store data for that ID."}
-        return {"ok": True, "appid": appid, "name": ny["name"], "year": ny["year"]}
+        """Validate a user-entered source reference -> name + year.
+
+        Same field as before: a bare number or a Steam URL still means Steam. A
+        `igdb:<id>` / `hasheous:<id>` prefix (or an igdb.com link) points the
+        panel at a non-Steam listing instead, which is how a game Hasheous
+        mis-identifies, or hasn't got at all, gets corrected by hand.
+        """
+        provider, ref = _parse_ref(id_or_url)
+        if provider is None:
+            return {"ok": False,
+                    "error": "Enter a Steam app ID or URL, or igdb:<id> / hasheous:<id>."}
+
+        if provider == "steam":
+            ny = await self._name_year(ref, lang, cc)
+            if not ny.get("ok"):
+                return {"ok": False, "appid": ref,
+                        "error": ny.get("error") or "No store data for that ID."}
+            return {"ok": True, "provider": "steam", "appid": ref,
+                    "name": ny["name"], "year": ny["year"]}
+
+        if not _feature_non_steam():
+            return {"ok": False, "error": "Turn on Non-Steam games first."}
+
+        if provider == "igdb":
+            if not ref:                       # an igdb.com/games/<slug> link
+                found = await self._igdb_resolve(_igdb_slug(id_or_url))
+                if not found.get("ok"):
+                    return {"ok": False, "error": "No IGDB game for that link."}
+                return {"ok": True, "provider": "igdb", "appid": found["id"],
+                        "name": found.get("name", ""), "year": found.get("year", ""),
+                        "platform": found.get("platform", "")}
+            cid, token = await self._igdb_ready()
+            if not cid:
+                return {"ok": False, "error": "IGDB credentials not set."}
+            try:
+                game = await self._igdb_game(int(ref), cid, token)
+            except Exception as exc:
+                return {"ok": False, "error": f"IGDB lookup failed: {exc}"}
+            name = _igdb_pick(game or {}, "name")
+            if not name:
+                return {"ok": False, "error": "No IGDB game with that id."}
+            return {"ok": True, "provider": "igdb", "appid": int(ref),
+                    "name": str(name), "year": ""}
+
+        # hasheous
+        raw = await self._fetch(
+            "hasheous", str(int(ref)),
+            f"{HASHEOUS_BASE}/DataObjects/Game/{int(ref)}",
+            lambda r: _normalize_hasheous(r) if isinstance(r, dict) and r.get("name")
+            else {"ok": False, "error": "no hasheous data"})
+        if not isinstance(raw, dict) or not raw.get("name"):
+            return {"ok": False, "error": "No Hasheous game with that id."}
+        return {"ok": True, "provider": "hasheous", "appid": int(ref),
+                "name": raw.get("name", ""), "year": raw.get("year", "")}
 
     async def set_match(self, game_appid, store_appid, name: str = "",
-                        year: str = "", source: str = "manual"):
+                        year: str = "", source: str = "manual", provider: str = "steam"):
+        """Persist the source this game pulls from.
+
+        `provider` defaults to "steam" so every existing caller is unchanged;
+        "igdb"/"hasheous" write the provider record shape that _rec_to_result
+        and get_all_provider already understand. The choice is sticky either way
+        — resolve_game returns a saved record before doing any detection.
+        """
         try:
             game_appid = int(game_appid)
             store_appid = int(store_appid)
         except Exception:
             return {"ok": False, "error": "invalid appid"}
+        provider = str(provider or "steam").lower()
+        if provider not in ("steam", "igdb", "hasheous"):
+            return {"ok": False, "error": f"unknown provider: {provider}"}
         async with self._matches_lock():
             matches = _read_matches()
-            matches[str(game_appid)] = {
-                "store_appid": store_appid, "name": name or "", "year": year or "",
-                "source": source or "manual", "ts": int(time.time())}
+            if provider == "steam":
+                rec = {"store_appid": store_appid}
+            else:
+                rec = {"provider": provider, "provider_id": store_appid}
+            rec.update({"name": name or "", "year": year or "",
+                        "source": source or "manual", "ts": int(time.time())})
+            matches[str(game_appid)] = rec
             _write_matches(matches)
         return {"ok": True}
 

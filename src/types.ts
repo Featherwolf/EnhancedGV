@@ -5,7 +5,7 @@
 // emulated games that have no Steam page. Everything below the resolver is keyed
 // on this tagged ref instead of a bare Steam appid, so a new source plugs in
 // without touching any section component.
-export type DataProvider = "steam" | "hasheous";
+export type DataProvider = "steam" | "hasheous" | "igdb";
 export interface DataRef {
   provider: DataProvider;
   id: number | string;

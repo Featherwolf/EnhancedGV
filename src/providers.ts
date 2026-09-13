@@ -37,6 +37,8 @@ export function providerLabel(provider: DataProvider): string {
   switch (provider) {
     case "hasheous":
       return "Hasheous";
+    case "igdb":
+      return "IGDB";
     case "steam":
     default:
       return "Steam";
