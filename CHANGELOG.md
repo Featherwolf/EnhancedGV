@@ -58,8 +58,12 @@ Two changes, and one you can drive by hand:
 - Wrong-platform entries no longer win. Candidates with no ROM are skipped (they
   could never resolve anyway), rom hacks, bootlegs, soundtracks and amiibo
   entries are ranked last, and the platform is preferred when known.
-- When Hasheous has nothing usable, **IGDB is asked next** — if you set up
-  credentials in step 2. That is what covers modern console games.
+- **With IGDB credentials set, IGDB is asked first** (after Steam), and Hasheous
+  only as a backstop. IGDB indexes games, so it answers with the actual release;
+  Hasheous indexes ROM dumps, so asking it first meant sometimes accepting a
+  plausible-looking wrong answer when a right one was available. Without
+  credentials IGDB cannot answer at all, so Hasheous is used alone, exactly as
+  before.
 - **You can point any game at any listing yourself**, using the field that was
   already there: **Quick Access → EnhancedGV → Store data source**. A bare number
   or Steam URL still means Steam, exactly as before. To use another source, type

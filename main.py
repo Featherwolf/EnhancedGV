@@ -371,6 +371,13 @@ def _igdb_creds():
         return ("", "")
 
 
+def _igdb_configured() -> bool:
+    """Both IGDB credentials are present. Cheap: reads the settings file only,
+    mints no token — used to choose the resolver order, not to make a request."""
+    cid, secret = _igdb_creds()
+    return bool(cid and secret)
+
+
 def _igdb_token_sync(client_id: str, client_secret: str) -> str:
     """An IGDB app access token, from cache when still valid.
 
@@ -2292,12 +2299,24 @@ class Plugin:
                 # feature OFF this is byte-identical to the old behavior (Steam's
                 # best guess, else unmatched).
                 if _feature_non_steam():
-                    h = await self._hasheous_resolve(title or "", platform)
-                    if not h.get("ok"):
-                        # Hasheous indexes ROM dumps, so a modern console release
-                        # is often simply not in it. IGDB indexes games; when the
-                        # user has credentials, ask it before giving up.
+                    # Order depends on whether IGDB is configured.
+                    #
+                    # WITH credentials, IGDB goes first. It indexes GAMES, so it
+                    # answers with the actual release. Hasheous indexes ROM
+                    # DUMPS, and its title search surfaces rom hacks, bootlegs,
+                    # soundtracks and wrong-platform entries that look plausible
+                    # and are not — so asking it first means sometimes accepting
+                    # a worse answer when a better one was available.
+                    #
+                    # WITHOUT credentials, IGDB cannot answer at all, so Hasheous
+                    # is the only option and this is the previous behaviour
+                    # unchanged.
+                    if _igdb_configured():
                         h = await self._igdb_resolve(title or "")
+                        if not h.get("ok"):
+                            h = await self._hasheous_resolve(title or "", platform)
+                    else:
+                        h = await self._hasheous_resolve(title or "", platform)
                     if h.get("ok"):
                         prov_rec = {
                             "provider": h.get("provider", "hasheous"),
