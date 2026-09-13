@@ -44,6 +44,11 @@ with artwork. **Remove credentials** goes back to step 1 at any time.
 Your secret is stored on the device, sent only to `id.twitch.tv` to mint a token,
 and never written to the log or shown by the diagnostic.
 
+> **Fixed since beta.5:** opening a game could crash the Steam UI with
+> "Cannot read properties of undefined (reading 'length')". A game matched to
+> IGDB returned an incomplete record, and the panel expected a list that wasn't
+> there. Every source now returns the same complete shape.
+
 **If a game matches the wrong thing, or nothing at all.**
 
 Hasheous indexes ROM *dumps*, not releases. That works well for retro ROMs and

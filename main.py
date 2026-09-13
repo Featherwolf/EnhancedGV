@@ -1320,6 +1320,46 @@ def _hasheous_tags(obj: dict) -> list:
     return out[:16]
 
 
+def _empty_appdetails(name: str = "") -> dict:
+    """Every key the frontend reads, with a safe default for each.
+
+    The panel does `d.movies.length > 0 || d.screenshots.length > 0`, so a
+    provider that omits a list crashes the whole Steam UI rather than rendering
+    an empty section. Building every provider payload on top of this makes that
+    impossible: a provider fills in what it knows and inherits the rest.
+    """
+    return {
+        "ok": True,
+        "name": name,
+        "type": "game",
+        "short_description": "",
+        "about_html": "",
+        "detailed_html": "",
+        "header_image": "",
+        "background": "",
+        "developers": [],
+        "publishers": [],
+        "release_date": "",
+        "coming_soon": False,
+        "website": "",
+        "controller_support": None,
+        "platforms": {},
+        "genres": [],
+        "categories": [],
+        "screenshots": [],
+        "movies": [],
+        "metacritic": None,
+        "price": None,
+        "recommendations_total": None,
+        "achievements_total": None,
+        "supported_languages_html": "",
+        "pc_requirements": None,
+        "content_descriptor_notes": None,
+        # Handle for the opt-in IGDB enrichment pass (0 = unmapped).
+        "igdb_id": 0,
+    }
+
+
 def _normalize_hasheous(obj: dict) -> dict:
     """Map a Hasheous DataObjects/Game object onto the AppDetails contract.
     reviews/news/deck are supplied as {ok:False} by the caller and hide cleanly."""
@@ -1384,36 +1424,20 @@ def _normalize_hasheous(obj: dict) -> dict:
     genres = [{"id": t, "description": t[:1].upper() + t[1:]} for t in _hasheous_tags(obj)]
     categories = ([{"id": "platform", "description": platform_name}] if platform_name else [])
 
-    return {
-        "ok": True,
-        "name": name,
-        "type": "game",
+    out = _empty_appdetails(name)
+    out.update({
         "short_description": short,
         "about_html": about_html,
-        "detailed_html": "",
         "header_image": header,
-        "background": "",
-        "developers": [],
         "publishers": publishers,
         "release_date": year,
-        "coming_soon": False,
         "website": website,
-        "controller_support": None,
-        "platforms": {},
         "genres": genres,
         "categories": categories,
-        "screenshots": [],
-        "movies": [],
-        "metacritic": None,
-        "price": None,
-        "recommendations_total": None,
-        "achievements_total": None,
         "supported_languages_html": langs,
-        "pc_requirements": None,
-        "content_descriptor_notes": None,
-        # Handle for the opt-in IGDB enrichment pass (0 = unmapped).
         "igdb_id": igdb_id,
-    }
+    })
+    return out
 
 
 # --------------------------------------------------------------------------- #
@@ -2108,9 +2132,13 @@ class Plugin:
                         game = await self._igdb_game(gid, cid, token)
                     except Exception:
                         game = None
-                    appdetails = dict(delta)
-                    appdetails["ok"] = True
-                    appdetails["name"] = _igdb_pick(game or {}, "name") or ""
+                    # On the full contract, never a bare delta: the delta only
+                    # carries the fields IGDB happened to have, and a missing
+                    # `movies` list crashed the panel.
+                    appdetails = _empty_appdetails(
+                        str(_igdb_pick(game or {}, "name") or ""))
+                    appdetails.update(delta)
+                    appdetails["igdb_id"] = gid
                     appdetails["igdb_enriched"] = True
                 else:
                     appdetails = {"ok": False, "error": "no IGDB data for that id"}

@@ -407,7 +407,10 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     <ShortDescCard text={d.short_description} />
   ) : null;
 
-  const hasMedia = d.movies.length > 0 || d.screenshots.length > 0;
+  // Defensive on purpose: this is injected into Steam's own UI, so a
+  // provider payload missing a list must render an empty section, not take
+  // the whole client down with it.
+  const hasMedia = (d.movies?.length ?? 0) > 0 || (d.screenshots?.length ?? 0) > 0;
 
   return (
     <Focusable ref={rootRef} style={CONTAINER_STYLE}>
