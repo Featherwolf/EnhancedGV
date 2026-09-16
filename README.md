@@ -7,7 +7,11 @@ the content normally shown on a game's **store page** — trailers, screenshots,
 description, features, reviews, Steam Deck compatibility and update history —
 onto the game's **library details page**, rendered *below* the header so it never
 covers or blocks the **Play** button. It works on **non-Steam games** too, by
-matching them to a Steam store page automatically.
+matching them to a Steam store page automatically — and for emulated titles that
+have no Steam page at all, it can pull metadata from
+[Hasheous](#metadata-and-artwork-for-emulated--non-steam-games) with no account
+needed, plus cover art and screenshots once you add free
+[IGDB credentials](#igdb-credentials-for-cover-art-and-screenshots).
 
 ![EnhancedGV on the library game-detail page](screenshots/01-game-detail-summary.jpg)
 
@@ -138,7 +142,7 @@ as-is. (CI builds and attaches `EnhancedGV.zip` to every tagged release.)
 Everything is controlled from the **Quick Access menu → EnhancedGV** panel. Open a
 game first so the game-specific options appear.
 
-**After installing**
+### After installing
 
 - **Sections shown on the game page** — turn Media, About, Features & details,
   Steam Deck, Reviews, and Update history on or off.
@@ -151,7 +155,7 @@ game first so the game-specific options appear.
   excluded from the stable update check, and retired when the `vX.Y.Z` release
   ships.
 
-**Matching non-Steam games**
+### Matching non-Steam games
 
 Non-Steam games (emulator shortcuts, Epic/GOG titles added to Steam, etc.) have no
 Steam store page of their own, so EnhancedGV finds one for you. The first time you
@@ -175,7 +179,7 @@ This works for regular Steam games too — you'll rarely need it, but you can po
 any game at a different store page the same way.
 
 
-**Metadata & artwork for emulated / non-Steam games**
+### Metadata and artwork for emulated / non-Steam games
 
 Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individual
 shortcuts) fall back to **Hasheous**, a free community game database. Turn on
@@ -193,10 +197,14 @@ genres and developers** from IGDB, add free IGDB credentials.
 > IGDB directly instead, which anyone can sign up for. Hasheous is still what
 > matches your ROM to a game, and that half needs no key at all.
 
-*Getting IGDB credentials (free, self-serve, about five minutes):*
+### IGDB credentials for cover art and screenshots
 
-1. **Create a Twitch account** at <https://twitch.tv> if you don't have one. IGDB
-   is owned by Twitch and uses its developer accounts.
+Optional, free and self-serve; about five minutes. IGDB is owned by Twitch and
+uses Twitch developer accounts, so the signup happens there.
+
+*On a computer:*
+
+1. **Create a Twitch account** at <https://twitch.tv> if you don't have one.
 2. **Enable two-factor authentication** on it. The developer console refuses to
    register an application without it.
 3. **Register an application** at <https://dev.twitch.tv/console/apps> → *Register
