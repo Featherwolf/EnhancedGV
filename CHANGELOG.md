@@ -52,6 +52,10 @@ and never written to the log or shown by the diagnostic.
 > - IGDB matches showed no description and an empty **Features & details**. The
 >   text and the release date/platform were being written under the wrong field
 >   names, so the panel never saw them.
+> - "What's this game about?" no longer stops mid-word or mid-sentence. It was
+>   cut at exactly 320 characters regardless of where that landed; it now ends on
+>   the last complete sentence, or on a whole word when a description has no
+>   sentence breaks at all. Still a short paragraph, just not a severed one.
 > - A game your last build matched to the wrong thing is re-detected
 >   automatically. You should no longer have to press Re-detect game by game
 >   after an update. Anything you set by hand, or deliberately left blank, is

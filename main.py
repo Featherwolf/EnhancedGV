@@ -1368,6 +1368,39 @@ def _igdb_facts(game: dict) -> dict:
     return out
 
 
+def _summarize(text, limit: int = 320, overshoot: int = 80) -> str:
+    """A short blurb that never ends mid-word or mid-sentence.
+
+    Both providers used to do `re.sub(...).strip()[:320]`, a blind character
+    slice, which is why "What's this game about?" could stop partway through a
+    word. The length target is unchanged — this is meant to stay a short
+    paragraph — but where it lands is now chosen:
+
+      1. Under the limit: returned whole.
+      2. Otherwise end on the last sentence at or before the limit. The search
+         runs a little PAST it so a sentence finishing just beyond is kept whole
+         rather than discarded, which reads better than losing it.
+      3. No usable sentence end (some descriptions have none): cut at the last
+         word boundary and mark the elision with a single ellipsis.
+    """
+    t = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(t) <= limit:
+        return t
+
+    window = t[:limit + overshoot]
+    # A terminator, optionally closed by a quote or bracket, followed by a space
+    # or the end — so "e.g." or a decimal inside a sentence is not an ending.
+    ends = [m.end() for m in re.finditer(r"""[.!?]["')\]]?(?=\s|$)""", window)]
+    # Ignore an ending so early that the blurb would say almost nothing.
+    ends = [e for e in ends if e >= limit * 0.45]
+    if ends:
+        within = [e for e in ends if e <= limit]
+        return window[:max(within) if within else min(ends)].strip()
+
+    cut = t[:limit].rsplit(" ", 1)[0].rstrip(" ,;:-\u2014")
+    return (cut + "\u2026") if cut else t[:limit]
+
+
 def _empty_appdetails(name: str = "") -> dict:
     """Every key the frontend reads, with a safe default for each.
 
@@ -1420,7 +1453,7 @@ def _normalize_hasheous(obj: dict) -> dict:
     about_html = _sanitize_html(_md_to_html(desc_md))
     # Plain-text lead-in for the "what's this game about" card (strip md syntax).
     short = re.sub(r"[#*_`>]", "", str(desc_md))
-    short = re.sub(r"\s+", " ", short).strip()[:320]
+    short = _summarize(short)
 
     header = ""
     for a in _hasheous_attrs(obj, "Logo"):
@@ -2103,7 +2136,7 @@ class Plugin:
         if summary:
             delta["summary_html"] = _sanitize_html(
                 "<p>" + html.escape(str(summary), quote=False).replace("\n", "<br>") + "</p>")
-            delta["summary_text"] = re.sub(r"\s+", " ", str(summary)).strip()[:320]
+            delta["summary_text"] = _summarize(summary)
 
         url_ = _igdb_pick(game, "url")
         if url_:
