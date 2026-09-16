@@ -240,14 +240,20 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
   );
 }
 
-// Artwork upgrade for non-Steam games: paste a Hasheous CLIENT API key and the
-// backend layers IGDB covers/screenshots/genres/developers over the keyless
-// baseline. The key lives in the plugin's local settings file and is sent only
-// to hasheous.org — the test below never echoes it back.
+// Artwork upgrade for non-Steam games: paste a Twitch application's Client ID
+// and Secret and the backend layers IGDB covers/screenshots/genres/developers
+// over the keyless baseline. The pair lives in the plugin's local settings file
+// and the secret goes only to id.twitch.tv — the test below never echoes it
+// back, and the backend never returns it over RPC.
 function IgdbCredentialsRow() {
   const [clientId, setClientId] = useState<string>("");
   const [clientSecret, setClientSecret] = useState<string>("");
   const [saved, setSaved] = useState<boolean>(false);
+  // Whether ANYTHING is stored, which is not the same as being set up. A build
+  // before 0.19.1 could blank the client id and leave the secret behind, and a
+  // Remove button gated on `saved` was then hidden from exactly the people who
+  // had a secret on disk to remove.
+  const [stored, setStored] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<IgdbStep[] | null>(null);
   const [note, setNote] = useState<string>("");
@@ -260,6 +266,7 @@ function IgdbCredentialsRow() {
         const st = s as PluginSettings;
         // The backend redacts the secret and reports only whether one exists.
         setSaved(!!(st.igdbClientId && st.igdbClientSecretSet));
+        setStored(!!(st.igdbClientId || st.igdbClientSecretSet));
         setClientId(st.igdbClientId ?? "");
       })
       .catch(() => undefined);
@@ -277,6 +284,7 @@ function IgdbCredentialsRow() {
       primeSettings({ ...next, igdbClientSecret: "", igdbClientSecretSet: !!secret });
       setClientSecret("");
       setSaved(!!(id && secret));
+      setStored(!!(id || secret));
       setNote("Credentials saved.");
       // Cached non-Steam payloads were built without artwork; drop them so the
       // next visit refetches with IGDB in play.
@@ -334,7 +342,7 @@ function IgdbCredentialsRow() {
           Save credentials
         </ButtonItem>
       </PanelSectionRow>
-      {saved && (
+      {stored && (
         <PanelSectionRow>
           <ButtonItem
             layout="below"
@@ -347,7 +355,10 @@ function IgdbCredentialsRow() {
                   const cur = await getSettings();
                   primeSettings(cur as PluginSettings);
                   setSaved(false);
-                  setNote("Credentials cleared — back to the keyless baseline.");
+                  setStored(false);
+                  setNote(
+                    "Credentials erased — the id, the secret and the cached access token are gone from this device. Regenerate the secret at dev.twitch.tv to revoke it everywhere."
+                  );
                   await clearCache().catch(() => undefined);
                   clearFrontendCache();
                 } catch (e) {

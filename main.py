@@ -453,12 +453,44 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
     return token
 
 
+def _secure_delete(path: str) -> bool:
+    """Overwrite a file's bytes, then unlink it. True if a file was there.
+
+    Used for the two files that carry IGDB credential material. Plain os.remove
+    drops the directory entry and leaves the contents in free space, so a secret
+    stays readable to anything that can read the raw device until those blocks
+    are reused.
+
+    Best effort, and deliberately not described as more: on a copy-on-write or
+    journalling filesystem the overwrite can land on fresh blocks, and an SSD
+    doing wear levelling may never touch the originals at all. It removes every
+    copy this plugin can reach. Regenerating the secret in the Twitch developer
+    console is the only revocation that does not depend on the storage layer.
+    """
+    try:
+        size = os.path.getsize(path)
+    except Exception:
+        size = 0
+    if size:
+        try:
+            fd = os.open(path, os.O_WRONLY)
+            try:
+                os.write(fd, b"\0" * size)
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        except Exception:
+            pass
+    try:
+        os.remove(path)
+        return True
+    except Exception:
+        return False
+
+
 def _igdb_forget_token() -> None:
     """Drop the cached token — called when the credentials change."""
-    try:
-        os.remove(IGDB_TOKEN_FILE)
-    except Exception:
-        pass
+    _secure_delete(IGDB_TOKEN_FILE)
 
 
 def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
@@ -2712,12 +2744,30 @@ class Plugin:
         return defaults
 
     async def clear_igdb_credentials(self):
-        """Erase the stored IGDB credentials and any token minted from them.
+        """Erase the stored IGDB credentials and every record of them.
 
-        set_settings deliberately treats an absent or empty secret as "leave it
-        alone", because get_settings redacts it and the frontend writes back what
-        it was given — without that rule, every unrelated settings save would
-        wipe the secret. Removal therefore needs its own explicit call.
+        set_settings deliberately treats an absent or empty secret (and, since
+        the panel sends a stale copy of its settings, an absent or empty client
+        id) as "leave it alone". Removal therefore needs its own explicit call —
+        this one. It is the only path that erases, and it erases everything:
+
+          * both keys are REMOVED from settings.json, not blanked. Leaving
+            "igdbClientSecret": "" behind is still a record that a secret was
+            once configured here.
+          * the old settings.json contents are overwritten before the file is
+            replaced, so the secret is not left sitting in free space. The
+            overwrite goes through a handle opened before the swap, so there is
+            never a moment where settings.json is a file full of zeroes.
+          * the cached access token — itself a live ~60-day credential minted
+            from the pair — is overwritten and deleted.
+          * a half-written .tmp from an interrupted save is removed; it can hold
+            a full copy of both values.
+          * store data cached while IGDB was in use is dropped, so nothing
+            fetched with those credentials outlives them.
+
+        Nothing else holds them: they are read from the file on demand rather
+        than cached in memory, and no code path logs or reports either value.
+        See _secure_delete for the honest limit of the overwrite.
         """
         try:
             try:
@@ -2727,16 +2777,61 @@ class Plugin:
                 saved = {}
             if not isinstance(saved, dict):
                 saved = {}
-            saved["igdbClientId"] = ""
-            saved[SECRET_KEY] = ""
+            had = bool(str(saved.get("igdbClientId", "") or "").strip()
+                       or str(saved.get(SECRET_KEY, "") or "").strip())
+            saved.pop("igdbClientId", None)
+            saved.pop(SECRET_KEY, None)
+
             os.makedirs(SETTINGS_DIR, exist_ok=True)
             tmp = SETTINGS_FILE + ".tmp"
+            # Before reusing the path: an interrupted save can have left a full
+            # copy of both values here. Shred it now — opening with O_TRUNC
+            # would free those blocks without overwriting them, and by the time
+            # this write has been os.replace'd into place the path is gone.
+            stale_removed = _secure_delete(tmp)
+
             fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 json.dump(saved, fh, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+
+            # Opened BEFORE the swap so it still refers to the outgoing file
+            # after os.replace unlinks it; the zeroes then land on the blocks
+            # that hold the secret, and closing the handle frees them. Doing it
+            # this way round means a crash mid-wipe loses nothing.
+            old = None
+            try:
+                old = os.open(SETTINGS_FILE, os.O_WRONLY)
+                old_size = os.fstat(old).st_size
+            except Exception:
+                old, old_size = None, 0
             os.replace(tmp, SETTINGS_FILE)
-            _igdb_forget_token()
-            return {"ok": True}
+            if old is not None:
+                try:
+                    if old_size:
+                        os.write(old, b"\0" * old_size)
+                        os.fsync(old)
+                finally:
+                    try:
+                        os.close(old)
+                    except Exception:
+                        pass
+
+            token_removed = _secure_delete(IGDB_TOKEN_FILE)
+
+            # Artwork and descriptions fetched with those credentials.
+            cached = 0
+            try:
+                for name in os.listdir(CACHE_DIR):
+                    if name.endswith(".json"):
+                        os.remove(os.path.join(CACHE_DIR, name))
+                        cached += 1
+            except Exception as exc:
+                decky.logger.warning(f"clear_igdb_credentials: cache purge: {exc}")
+
+            return {"ok": True, "hadCredentials": had, "tokenRemoved": token_removed,
+                    "staleTempRemoved": stale_removed, "cachedFilesRemoved": cached}
         except Exception as exc:
             decky.logger.error(f"clear_igdb_credentials failed: {exc}")
             return {"ok": False, "error": str(exc)}

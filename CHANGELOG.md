@@ -2,13 +2,34 @@
 
 ## v0.19.1
 
+> **Hotfix.** If you set up IGDB credentials on 0.19.0, flipping any switch in
+> the Quick Access panel afterwards silently forgot your Client ID. Update, then
+> paste the Client ID in once more — the Secret field can stay empty, the stored
+> one is kept. It sticks from then on.
+
 - **Saving any other setting no longer forgets your IGDB Client ID.** Right after
-  saving credentials, flipping any switch in the same Quick Access panel wrote
-  back the empty Client ID the panel had loaded with. The secret stayed on disk,
-  but IGDB quietly dropped to the keyless baseline and the **Remove credentials**
-  button disappeared, so the only way back was to paste the id again. An empty
-  id now means "leave it alone", exactly as an empty secret already did; only
-  **Remove credentials** erases them.
+  saving credentials, flipping any switch in the same panel wrote back the empty
+  Client ID the panel had loaded with. The secret stayed on disk, but IGDB quietly
+  dropped to the keyless baseline and the **Remove credentials** button
+  disappeared, so the only way back was to paste the id in again. An empty id now
+  means "leave it alone", exactly as an empty secret already did; the panel no
+  longer sends either half back at all.
+- **Remove credentials now erases everything, not just the values.** It deletes
+  both fields outright rather than blanking them, overwrites the old contents of
+  the settings file before replacing it, deletes the cached access token (itself a
+  live ~60-day credential) the same way, clears out any half-written save, and
+  drops store data cached while IGDB was in use. Nothing else holds them: they are
+  read from disk when needed rather than kept in memory, and neither value is ever
+  logged or reported by **Test artwork lookup**.
+  - The overwrite is best effort and worth being precise about: on a
+    copy-on-write filesystem or an SSD doing wear levelling, the old blocks may
+    survive it. Regenerating the secret at dev.twitch.tv is the only revocation
+    that does not depend on the storage layer, and the panel now says so after a
+    wipe.
+- **The Remove credentials button now appears whenever anything is stored**, not
+  only when both halves are. A build affected by the bug above could leave a
+  secret on disk with no Client ID beside it — which hid the one button that
+  could remove it.
 - **Credentials survive updates, reinstalls and uninstalling the plugin**, and
   the README and the panel now say so. They live in Decky's settings folder,
   which a plugin update never touches — so updating doesn't log you out of IGDB.

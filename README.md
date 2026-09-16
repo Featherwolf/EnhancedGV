@@ -216,10 +216,14 @@ anything this plugin does.
 2. Paste the **Client ID** and **Client Secret**, then press **Save credentials**.
    The secret field is masked, and saving clears cached store data so games you've
    already opened refetch with artwork.
-3. **Remove credentials** reverts to the keyless baseline at any time. Do this
-   *before* uninstalling if you want the secret off the device: Decky removes a
-   plugin's own folder but keeps every plugin's settings folder, so the
-   credentials outlive an uninstall (which is also why they survive updates).
+3. **Remove credentials** reverts to the keyless baseline at any time, and
+   erases rather than merely forgets: both fields are deleted outright, the
+   file's previous contents are overwritten before it is rewritten, the cached
+   access token is overwritten and deleted, and store data cached while IGDB was
+   in use is dropped. Do this *before* uninstalling if you want the secret off
+   the device: Decky removes a plugin's own folder but keeps every plugin's
+   settings folder, so the credentials outlive an uninstall (which is also why
+   they survive updates).
 
 The plugin exchanges the pair for an access token that lasts about 60 days,
 caches it beside its settings, and refreshes it automatically. The secret is sent
@@ -259,9 +263,12 @@ which part broke:
   folder. That is deliberate: updating shouldn't log you out of IGDB. The flip
   side is that uninstalling does not erase them either, so **Remove credentials**
   (or deleting that folder) is the erase step. They are stored per device and
-  shared by every Steam account on it. If the Deck changes hands, regenerate the
-  secret in the Twitch developer console — that is the only revocation that does
-  not depend on the device.
+  shared by every Steam account on it. **Remove credentials** erases every copy
+  the plugin can reach, but the overwrite it does on the way out is best effort:
+  on a copy-on-write filesystem, or an SSD doing wear levelling, previously
+  written blocks may survive it. Regenerating the secret in the Twitch developer
+  console is the only revocation that does not depend on the storage layer — do
+  that if the Deck changes hands.
 
 ## Notes & limits
 

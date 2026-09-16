@@ -111,6 +111,13 @@ jobs:
         run: |
           # Release notes = the CHANGELOG section for this tag; a beta tag like
           # v0.17.0-beta falls back to its base version's section (## v0.17.0).
+          #
+          # The same section also decides the release TITLE. A section whose
+          # first line marks it a hotfix is published as one, so an urgent fix
+          # is identifiable from the releases list without opening it. The
+          # marker lives in the CHANGELOG rather than being guessed from the
+          # version number: not every patch release is urgent, and only the
+          # person writing the notes knows which is which.
           python3 - <<'EOF'
           import os, re
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
@@ -123,7 +130,13 @@ jobs:
               raise SystemExit(
                   f"No CHANGELOG.md section for v{tag} (or v{base}). Refusing to "
                   f"publish a release with placeholder notes.")
-          open("release_notes.md", "w", encoding="utf-8").write(m.group(1).strip() + foot)
+          body = m.group(1).strip()
+          open("release_notes.md", "w", encoding="utf-8").write(body + foot)
+          title = f"EnhancedGV {os.environ['GITHUB_REF_NAME']}"
+          if re.match(r"^>?\s*\*\*Hotfix", body):
+              title += " — hotfix"
+          open("release_title.txt", "w", encoding="utf-8").write(title)
+          print(f"Release title: {title}")
           EOF
           # Two release shapes, chosen by tag form:
           #   vX.Y.Z-beta.N -> a GitHub PRE-RELEASE. Excluded from /releases/latest,
@@ -180,7 +193,7 @@ jobs:
           esac
           gh release create "$TAG" EnhancedGV.zip $EXTRA \
             --target "${GITHUB_SHA}" \
-            --title "EnhancedGV ${TAG}" \
+            --title "$(cat release_title.txt)" \
             --notes-file release_notes.md
 
           # Publishing half-way is worse than failing: the in-plugin updater

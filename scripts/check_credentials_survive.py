@@ -108,11 +108,62 @@ print("== but an explicit change, or Remove credentials, still works ==")
 run(P.set_settings({"igdbClientId": "other-id", "igdbClientSecret": "other-secret"}))
 check("a non-empty pair replaces the old one",
       main._igdb_creds() == ("other-id", "other-secret"), main._igdb_creds())
-run(P.set_settings({"igdbClientId": CID, "igdbClientSecret": SECRET}))
+
+print("== and Remove credentials erases every record of them ==")
+# Set the scene the way a real device would have it: a saved pair, a minted
+# token, cached artwork fetched with them, and a half-written save.
+run(P.set_settings({"igdbClientId": CID, "igdbClientSecret": SECRET, "nonSteamSources": True}))
+with open(main.IGDB_TOKEN_FILE, "w", encoding="utf-8") as fh:
+    json.dump({"client_id": CID, "access_token": "tok-abc", "expires_at": 9e9}, fh)
+os.makedirs(main.CACHE_DIR, exist_ok=True)
+with open(os.path.join(main.CACHE_DIR, "igdb-1103.json"), "w", encoding="utf-8") as fh:
+    json.dump({"fetched": "with those credentials"}, fh)
+with open(main.SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as fh:
+    json.dump({"igdbClientId": CID, "igdbClientSecret": SECRET}, fh)
+
 res = run(P.clear_igdb_credentials())
 check("clear_igdb_credentials reports ok", res.get("ok") is True, res)
-check("clear_igdb_credentials blanks BOTH halves", main._igdb_creds() == ("", ""), main._igdb_creds())
-check("clear_igdb_credentials drops the token", not os.path.exists(main.IGDB_TOKEN_FILE))
+check("it reports that there was something to erase", res.get("hadCredentials") is True, res)
+check("both halves are gone", main._igdb_creds() == ("", ""), main._igdb_creds())
+check("IGDB reports unconfigured", main._igdb_configured() is False)
+check("the token is gone", not os.path.exists(main.IGDB_TOKEN_FILE))
+check("a half-written save is gone", not os.path.exists(main.SETTINGS_FILE + ".tmp"))
+check("data cached with them is gone", res.get("cachedFilesRemoved", 0) >= 1, res)
+
+# Blanking is not erasing: a leftover "igdbClientSecret": "" is still a record
+# that a secret was configured here.
+on_disk = json.load(open(main.SETTINGS_FILE, encoding="utf-8"))
+check("the client id KEY is removed, not blanked", "igdbClientId" not in on_disk, list(on_disk))
+check("the secret KEY is removed, not blanked", "igdbClientSecret" not in on_disk, list(on_disk))
+check("unrelated settings are untouched", on_disk.get("nonSteamSources") is True, on_disk)
+
+# Nothing anywhere under the plugin's own directories may still hold either
+# value — not the settings file, not the cache, not a stray temp file.
+leaks = []
+for root in (main.SETTINGS_DIR, main.CACHE_DIR):
+    for dirpath, _dirs, files in os.walk(root):
+        for name in files:
+            full = os.path.join(dirpath, name)
+            try:
+                body = open(full, "rb").read()
+            except Exception:
+                continue
+            for mark, label in ((CID, "client id"), (SECRET, "secret"), (b"tok-abc", "token")):
+                needle = mark if isinstance(mark, bytes) else mark.encode()
+                if needle in body:
+                    leaks.append(f"{label} in {os.path.basename(full)}")
+check("no file under the plugin's directories still holds either value",
+      not leaks, "; ".join(leaks))
+
+# get_settings must not advertise one either.
+after = run(P.get_settings())
+check("get_settings reports no secret stored", after.get("igdbClientSecretSet") is False, after)
+check("get_settings reports an empty id", not after.get("igdbClientId"), after)
+
+# And the wipe is safe to repeat / run when nothing is stored.
+again = run(P.clear_igdb_credentials())
+check("a second wipe still succeeds", again.get("ok") is True, again)
+check("and reports there was nothing to erase", again.get("hadCredentials") is False, again)
 
 if os.name == "posix":
     print("== and the file the secret sits in stays owner-only ==")
