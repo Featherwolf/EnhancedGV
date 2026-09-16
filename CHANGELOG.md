@@ -2,25 +2,94 @@
 
 ## v0.19.0
 
-### Testing non-Steam / emulated game metadata
+- **Metadata for emulated / non-Steam games (experimental, off by default).** When
+  a non-Steam game has no Steam store page, EnhancedGV can now pull a description,
+  details and artwork from **Hasheous** — a free, keyless community game database.
+  Turn it on in Quick Access → EnhancedGV → *Non-Steam games (experimental)*.
+  - It only kicks in for games that have their own entry in your Steam library
+    (e.g. ROMs added as individual shortcuts via Steam ROM Manager). A single
+    emulator/frontend shortcut (one ES-DE/RetroDeck entry for your whole library)
+    has no per-game page to attach to.
+  - Steam always wins when a game genuinely exists on Steam (you get the full store
+    page); Hasheous is only used as a fallback for titles Steam doesn't have.
+  - Reviews, Steam Deck compatibility and update history are Steam-only, so those
+    sections simply don't appear for a non-Steam game.
+  - This is the keyless baseline (title, description, genres, developer/publisher,
+    platform, logo). No account, no key, nothing to sign up for.
+- **Optional artwork upgrade for those games (free IGDB credentials).** Add IGDB
+  credentials in the same panel and those games also get proper **cover art,
+  screenshots, genres and developers** — so the media gallery works for a SNES ROM
+  the same way it does for a Steam game. Setup is below; it takes a few minutes and
+  costs nothing.
+  - Entirely optional; with no credentials you get the keyless baseline unchanged.
+  - **IGDB is queried directly** rather than through Hasheous' metadata proxy. That
+    proxy needs a client API key issued per registered application, and only
+    Hasheous admins can create one — three exist service-wide. IGDB's own API is
+    free and self-serve, so anyone can turn this on.
+  - One expanded request per game returns the cover, screenshots, genres and
+    companies together.
+  - The access token is minted from your credentials, cached for its ~60-day life
+    and refreshed automatically. The secret travels in a form body, never a URL,
+    is stored on the device only, and is never logged or shown by the diagnostic.
+  - Images load in display sizes rather than originals (a cover is ~21 KB instead
+    of ~2.7 MB), so the gallery doesn't stall on a handheld connection.
+  - The panel header notes where non-Steam content came from ("via Hasheous + IGDB").
+- **Better matching, and a manual override for when it still gets it wrong.**
+  Hasheous indexes ROM *dumps* rather than releases, which works well for retro
+  ROMs and badly for modern console games — Breath of the Wild appears only as a
+  Wii U entry with no ROM attached, and a search for Metroid Dread returned Game
+  Boy Color and amiibo entries that outranked the real game. Three changes:
+  - Wrong-platform entries no longer win. Candidates with no ROM are skipped (they
+    could never resolve anyway), rom hacks, bootlegs, soundtracks and amiibo
+    entries rank last, and the game's own platform is preferred when known.
+  - **With IGDB credentials set, IGDB is asked first** (after Steam), and Hasheous
+    only as a backstop. IGDB indexes games, so it answers with the actual release.
+    Without credentials IGDB cannot answer at all, so Hasheous is used alone.
+  - **You can point any game at any listing yourself**, using the field that was
+    already there: Quick Access → EnhancedGV → *Store data source*. A bare number
+    or Steam URL still means Steam, exactly as before; type `igdb:1103` or
+    `hasheous:6292` to use another source and press **Save ID**. IGDB ids are on
+    the game's igdb.com page, and an `igdb.com/games/…` link works too. The choice
+    sticks and is never re-detected. **Clear (leave blank)** still hides the panel
+    for a game, and **Re-detect automatically** still starts over.
+- **Beta channel is back.** Quick Access → EnhancedGV → Updates → *Beta channel
+  (test builds)*. Betas are published as GitHub pre-releases instead of private
+  drafts, so the toggle can actually see them; stable users are never offered one.
+  Each beta cut is numbered (`0.19.0-beta.1`, `.2`, …) and installs under that
+  version, so you're offered the next cut and, when it ships, the finished release
+  — previously the updater treated a beta and its release as the same version and
+  left beta testers stranded.
+- **Store content survives a flaky connection.** If a background refresh of cached
+  store data fails (offline, rate-limited), the last good copy is kept instead of
+  being replaced by the error.
+- **The panel appears far sooner on a game page.** It used to wait for a
+  once-every-2-seconds re-sync to notice the page had finished laying out, so on
+  most page loads it arrived a beat or two after everything else. It now retries
+  in a tight burst as soon as Steam renders the page and stops the moment it has
+  landed.
+- **Store content is fetched the instant the page opens**, in parallel with the
+  page transition and the panel's own setup, instead of only after the panel has
+  mounted. Plugin settings are read once at startup so they are never on that
+  path either.
+- **Content appears in two stages instead of all at once.** The description,
+  trailers, screenshots and details now paint as soon as they arrive rather than
+  waiting for reviews, update history and the Deck report; those sections show a
+  small shimmer and fill in a moment later.
+- **Revisiting a game is instant.** Cached store data past its refresh window is
+  now shown immediately and refreshed in the background, so a game you've opened
+  before never sends you back to the loading placeholder.
+- **Pressing down before the panel appears no longer skips it.** The placeholder
+  is a real selection stop, so the D-pad/stick scrolls into the section instead
+  of jumping straight to the tab strip — and if the press lands in the split
+  second before the panel is in place, it is replayed into the panel once it is,
+  so you end up where the press would have taken you.
+- **Focus is no longer lost when content replaces the placeholder** you were
+  sitting on — the selection moves to the panel's first item instead of dropping
+  out of the panel and scrolling the page back to the top.
 
-> **Fixed since beta.3:** the non-Steam path was not reachable at all. The panel
-> called a backend method an earlier commit had deleted, so every non-Steam game
-> failed before any provider was contacted. If you tried beta.1, beta.2 or beta.3
-> and nothing happened for a ROM, that is why. This is the first build where the
-> feature actually runs.
+### Setting up IGDB artwork (optional, free)
 
-**Step 1 — the keyless part, which is most of it.**
-
-Turn on **Quick Access → EnhancedGV → Non-Steam games (experimental)**, then open a
-ROM that was added to your library as its own shortcut. You should get a title,
-description, genres, developer/publisher, platform and a logo, from **Hasheous**.
-No account, no key, nothing to sign up for. Test this first.
-
-**Step 2 — cover art and screenshots, optional, free.**
-
-These come from **IGDB**, which the plugin queries directly. IGDB is owned by
-Twitch and uses Twitch developer accounts, so setup happens there:
+IGDB is owned by Twitch and uses Twitch developer accounts, so setup happens there:
 
 1. Create a **Twitch account** at <https://twitch.tv> if you don't have one.
 2. **Enable two-factor authentication** on it. The developer console refuses to
@@ -34,95 +103,39 @@ Twitch and uses Twitch developer accounts, so setup happens there:
    client id/secret pair".
 6. Copy the **Client ID**.
 7. Press **New Secret** and copy the **Client Secret**. It is shown once.
-8. On the Deck, paste both into the same EnhancedGV panel and press **Save
-   credentials**.
+8. On the Deck, paste both into the EnhancedGV panel and press **Save credentials**.
 
-Free for non-commercial use, limited to 4 requests per second, far above anything
+Free for non-commercial use, limited to 4 requests per second — far above anything
 this plugin does. Saving clears cached data so games you already opened refetch
-with artwork. **Remove credentials** goes back to step 1 at any time.
+with artwork. **Remove credentials** goes back to the keyless baseline at any time.
 
-Your secret is stored on the device, sent only to `id.twitch.tv` to mint a token,
-and never written to the log or shown by the diagnostic.
-
-> **Fixed since beta.5:**
-> - Opening a game could crash the Steam UI with "Cannot read properties of
->   undefined (reading 'length')". A game matched to IGDB returned an incomplete
->   record and the panel expected a list that wasn't there. Every source now
->   returns the same complete shape.
-> - IGDB matches showed no description and an empty **Features & details**. The
->   text and the release date/platform were being written under the wrong field
->   names, so the panel never saw them.
-> - "What's this game about?" no longer stops mid-word or mid-sentence. It was
->   cut at exactly 320 characters regardless of where that landed; it now ends on
->   the last complete sentence, or on a whole word when a description has no
->   sentence breaks at all. Still a short paragraph, just not a severed one.
-> - A game your last build matched to the wrong thing is re-detected
->   automatically. You should no longer have to press Re-detect game by game
->   after an update. Anything you set by hand, or deliberately left blank, is
->   left exactly as you set it.
-
-**If a game matches the wrong thing, or nothing at all.**
-
-Hasheous indexes ROM *dumps*, not releases. That works well for retro ROMs and
-badly for modern console games: Breath of the Wild appears only as a Wii U entry
-with no ROM attached, Animal Crossing not at all, and a search for Metroid Dread
-returns Game Boy Color and amiibo entries that outranked the real one. That is
-why some games showed a handheld listing for a Switch title, and why others found
-nothing.
-
-Two changes, and one you can drive by hand:
-
-- Wrong-platform entries no longer win. Candidates with no ROM are skipped (they
-  could never resolve anyway), rom hacks, bootlegs, soundtracks and amiibo
-  entries are ranked last, and the platform is preferred when known.
-- **With IGDB credentials set, IGDB is asked first** (after Steam), and Hasheous
-  only as a backstop. IGDB indexes games, so it answers with the actual release;
-  Hasheous indexes ROM dumps, so asking it first meant sometimes accepting a
-  plausible-looking wrong answer when a right one was available. Without
-  credentials IGDB cannot answer at all, so Hasheous is used alone, exactly as
-  before.
-- **You can point any game at any listing yourself**, using the field that was
-  already there: **Quick Access → EnhancedGV → Store data source**. A bare number
-  or Steam URL still means Steam, exactly as before. To use another source, type
-  `igdb:1103` or `hasheous:6292` and press **Save ID**. The choice sticks and is
-  never re-detected. **Clear (leave blank)** still hides the panel for a game,
-  and **Re-detect automatically** still starts over.
-
-  IGDB ids are on the game's igdb.com page; an `igdb.com/games/…` link works too.
-
-**Step 3 — check it.**
-
-Open a retro game's page and press **Test artwork lookup**. It reports each stage
-separately, so a failure names itself rather than showing an empty gallery:
+If artwork doesn't appear, open a game's page and press **Test artwork lookup**. It
+reports each stage separately, so a failure names itself rather than showing an
+empty gallery:
 
 | Stage | A ✖ here means |
 | --- | --- |
-| Non-Steam sources enabled | The toggle in step 1 is off. |
+| Non-Steam sources enabled | The toggle is off. |
 | Credentials present | One of the two fields is empty. |
 | Access token from Twitch | Twitch rejected the pair — usually Client Type was not **Confidential**, or the secret was regenerated after you saved it. |
-| This game maps to IGDB | Hasheous has no IGDB link for *this* title. Not fatal: the credentials are then tested against a known game, so the rows below still tell you if they work. |
+| This game maps to IGDB | No IGDB link was found for *this* title. Not fatal: the credentials are then tested against a known game, so the rows below still tell you if they work. Set the id by hand with `igdb:…` in *Store data source*. |
 | IGDB game fetched | `401`/`403` = token or client id rejected. `429` = over the rate limit. |
 | Screenshots listed | Credentials work; IGDB simply has no screenshots for that title. |
 | Image address resolved | Screenshots exist but carried no image id. Please report this one. |
 
-**Known limits.** Steam games are untouched. No trailers, because IGDB supplies
-YouTube ids rather than playable URLs. A single emulator or frontend shortcut
-covering your whole library has no per-game page to attach to.
-
-**Please report:** whether step 1 works on your ROMs, and if you do step 2,
-whether the token stage passes. That second one has never run against a live
-IGDB response — there are no credentials on the build machine — so you are the
-first to exercise it.
-
+**Known limits.** Steam games are untouched by all of the above. No trailers for
+non-Steam games, because IGDB supplies YouTube ids rather than playable URLs. A
+single emulator or frontend shortcut covering your whole library has no per-game
+page to attach to.
 
 ### Security
 
 A multi-lens audit ran over the plugin once it started collecting credentials:
 65 candidate issues, each reviewed by three independent verifiers. Seventeen were
-confirmed and all are fixed in this build.
+confirmed and all are fixed in this release.
 
-Three of them were **not** new — they also affect v0.18.0, the current stable
-release: the news injection, the URL filter blind spot, and the freeze.
+Three of them were **not** new — they were also present in v0.18.0 and earlier:
+the news injection, the URL filter blind spot, and the freeze.
 
 - **The IGDB client secret is no longer readable by other plugins.** `get_settings`
   is an unauthenticated RPC that any code in the Steam UI can call, and it was
@@ -155,83 +168,6 @@ release: the news injection, the URL filter blind spot, and the freeze.
   exhaust memory.
 - **Matching a non-Steam game is bounded**, so one page open cannot turn into
   thousands of lookups.
-
-
-  a non-Steam game has no Steam store page, EnhancedGV can now pull a description,
-  details and artwork from **Hasheous** — a free, keyless community game database.
-  Turn it on in Quick Access → EnhancedGV → *Non-Steam games (experimental)*.
-  - It only kicks in for games that have their own entry in your Steam library
-    (e.g. ROMs added as individual shortcuts via Steam ROM Manager). A single
-    emulator/frontend shortcut (one ES-DE/RetroDeck entry for your whole library)
-    has no per-game page to attach to.
-  - Steam always wins when a game genuinely exists on Steam (you get the full store
-    page); Hasheous is only used as a fallback for titles Steam doesn't have.
-  - Reviews, Steam Deck compatibility and update history are Steam-only, so those
-    sections simply don't appear for a non-Steam game.
-  - You can still override any match by hand (Quick Access → *Store data source*).
-  - This is the keyless baseline (title, description, genres, developer/publisher,
-    platform, logo).
-- **Optional artwork upgrade for those games (free IGDB credentials).** The
-  keyless baseline above shows a logo and a description. Add IGDB credentials in
-  Quick Access → EnhancedGV → *Non-Steam games* and retro titles also get proper
-  **cover art, screenshots, genres and developers** — so the media gallery works
-  for a SNES ROM the same way it does for a Steam game.
-  - Entirely optional; with no credentials you get the keyless baseline unchanged.
-  - **IGDB is queried directly** rather than through Hasheous' metadata proxy.
-    The proxy needs a client API key issued per registered application, and only
-    Hasheous admins can create one — three exist service-wide. IGDB's own API is
-    free and self-serve, so anyone can turn this on.
-  - One expanded request per game now returns the cover, screenshots, genres and
-    companies together. The proxy route needed a separate request for every
-    image id.
-  - The access token is minted from your credentials, cached for its ~60-day
-    life and refreshed automatically. The secret travels in a form body, never a
-    URL, and is never logged or shown by the diagnostic.
-  - Steam games are untouched — this only affects games matched to a non-Steam
-    source.
-  - **Test artwork lookup** reports, step by step, whether the key was accepted
-    and whether artwork came back, so a failure tells you *which* part broke
-    instead of just showing an empty gallery.
-  - Images load in display sizes rather than originals (a cover is ~21 KB
-    instead of ~2.7 MB), so the gallery doesn't stall on a handheld connection.
-  - Trailers stay Steam-only: IGDB supplies YouTube ids, not playable video
-    URLs.
-  - The panel header notes where non-Steam content came from
-    ("via Hasheous + IGDB").
-- **Beta channel is back.** Quick Access → EnhancedGV → Updates → *Beta channel
-  (test builds)*. Betas are now published as GitHub pre-releases instead of
-  private drafts, so the toggle can actually see them; stable users are never
-  offered one. Each beta cut is numbered (`0.19.0-beta.1`, `.2`, …) and installs
-  under that version, so you're offered the next cut and, when it ships, the
-  finished release — previously the updater treated a beta and its release as
-  the same version and left beta testers stranded.
-- **Store content survives a flaky connection.** If a background refresh of
-  cached store data fails (offline, rate-limited), the last good copy is kept
-  instead of being replaced by the error.
-- **The panel appears far sooner on a game page.** It used to wait for a
-  once-every-2-seconds re-sync to notice the page had finished laying out, so on
-  most page loads it arrived a beat or two after everything else. It now retries
-  in a tight burst as soon as Steam renders the page and stops the moment it has
-  landed.
-- **Store content is fetched the instant the page opens**, in parallel with the
-  page transition and the panel's own setup, instead of only after the panel has
-  mounted. Plugin settings are read once at startup so they are never on that
-  path either.
-- **Content appears in two stages instead of all at once.** The description,
-  trailers, screenshots and details now paint as soon as they arrive rather than
-  waiting for reviews, update history and the Deck report; those sections show a
-  small shimmer and fill in a moment later.
-- **Revisiting a game is instant.** Cached store data past its refresh window is
-  now shown immediately and refreshed in the background, so a game you've opened
-  before never sends you back to the loading placeholder.
-- **Pressing down before the panel appears no longer skips it.** The placeholder
-  is a real selection stop, so the D-pad/stick scrolls into the section instead
-  of jumping straight to the tab strip — and if the press lands in the split
-  second before the panel is in place, it is replayed into the panel once it is,
-  so you end up where the press would have taken you.
-- **Focus is no longer lost when content replaces the placeholder** you were
-  sitting on — the selection moves to the panel's first item instead of dropping
-  out of the panel and scrolling the page back to the top.
 
 ## v0.18.0
 
