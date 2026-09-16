@@ -309,7 +309,7 @@ function IgdbCredentialsRow() {
           label="IGDB Client ID (optional)"
           description={
             saved
-              ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description."
+              ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description. They stay saved across plugin updates and reinstalls, and uninstalling the plugin does not remove them — press Remove credentials first if you want them off the device."
               : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
           }
           value={clientId}
@@ -506,7 +506,13 @@ export function QuickAccessSettings() {
   const persist = async (next: PluginSettings) => {
     setLocal(next);
     primeSettings(next); // update shared cache + live-update any open game page
-    await setSettings(next).catch(() => {});
+    // The IGDB pair is owned by the credentials row and the backend, never by
+    // this object — which is loaded once when the panel mounts and is stale the
+    // moment credentials are saved or removed. Sending it back is how flipping
+    // a switch used to erase a just-saved Client ID, and how a removed one could
+    // reappear. Omit both halves: set_settings leaves out what it isn't given.
+    const { igdbClientId: _id, igdbClientSecret: _secret, ...withoutCreds } = next;
+    await setSettings(withoutCreds).catch(() => {});
   };
 
   const toggleSection = (key: keyof SectionToggles, value: boolean) =>

@@ -108,7 +108,10 @@ scp -r "EnhancedGV" deck@<deck-ip>:"/home/deck/homebrew/plugins/EnhancedGV"
 ### Option B — build your own ZIP
 
 Build, then create a zip whose single top-level folder holds the plugin files
-(`dist/`, `main.py`, `plugin.json`, `package.json`, `LICENSE`, `README.md`):
+(`dist/`, `main.py`, `plugin.json`, `package.json`, `LICENSE`, `README.md`).
+Name that folder exactly `EnhancedGV`: Decky keys a plugin's settings folder on
+it, so a differently named one starts with empty settings and leaves any saved
+IGDB credentials behind in the old folder.
 
 ```bash
 # bash (Deck / Linux / macOS)
@@ -213,7 +216,10 @@ anything this plugin does.
 2. Paste the **Client ID** and **Client Secret**, then press **Save credentials**.
    The secret field is masked, and saving clears cached store data so games you've
    already opened refetch with artwork.
-3. **Remove credentials** reverts to the keyless baseline at any time.
+3. **Remove credentials** reverts to the keyless baseline at any time. Do this
+   *before* uninstalling if you want the secret off the device: Decky removes a
+   plugin's own folder but keeps every plugin's settings folder, so the
+   credentials outlive an uninstall (which is also why they survive updates).
 
 The plugin exchanges the pair for an access token that lasts about 60 days,
 caches it beside its settings, and refreshes it automatically. The secret is sent
@@ -247,6 +253,15 @@ which part broke:
 - **Credentials are stored locally** in the plugin's own settings file. The secret
   goes only to `id.twitch.tv`, in a form body rather than a URL, and is never
   logged or returned by **Test artwork lookup**.
+- **They survive updates, reinstalls and uninstalling the plugin.** The pair and
+  the cached access token live in `~/homebrew/settings/EnhancedGV/`, owner-only,
+  which Decky never deletes — a plugin update removes only the plugin's own
+  folder. That is deliberate: updating shouldn't log you out of IGDB. The flip
+  side is that uninstalling does not erase them either, so **Remove credentials**
+  (or deleting that folder) is the erase step. They are stored per device and
+  shared by every Steam account on it. If the Deck changes hands, regenerate the
+  secret in the Twitch developer console — that is the only revocation that does
+  not depend on the device.
 
 ## Notes & limits
 

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.19.1
+
+- **Saving any other setting no longer forgets your IGDB Client ID.** Right after
+  saving credentials, flipping any switch in the same Quick Access panel wrote
+  back the empty Client ID the panel had loaded with. The secret stayed on disk,
+  but IGDB quietly dropped to the keyless baseline and the **Remove credentials**
+  button disappeared, so the only way back was to paste the id again. An empty
+  id now means "leave it alone", exactly as an empty secret already did; only
+  **Remove credentials** erases them.
+- **Credentials survive updates, reinstalls and uninstalling the plugin**, and
+  the README and the panel now say so. They live in Decky's settings folder,
+  which a plugin update never touches — so updating doesn't log you out of IGDB.
+  The flip side is that uninstalling doesn't erase them either: press **Remove
+  credentials** first if you want the secret off the device.
+- The cached IGDB access token is created owner-only rather than being made
+  owner-only immediately after, closing a brief window on first write.
+
 ## v0.19.0
 
 - **Metadata for emulated / non-Steam games (experimental, off by default).** When

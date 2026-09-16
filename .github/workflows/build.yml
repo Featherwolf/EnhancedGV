@@ -49,6 +49,14 @@ jobs:
       - name: Check frontend/backend callable contract
         run: python3 scripts/check_callables.py
 
+      # A user's IGDB client id and secret live in ~/homebrew/settings/<folder>,
+      # which Decky never deletes — that, and the plugin not erasing them
+      # unasked, is the whole guarantee that they survive an update. Both halves
+      # have regressed once already (the secret in 4001719, the id after it), so
+      # the contract gets a gate rather than a comment.
+      - name: Check stored credentials survive update/uninstall
+        run: python3 scripts/check_credentials_survive.py
+
       - name: Install dependencies
         run: npm install
 
@@ -60,6 +68,14 @@ jobs:
 
       - name: Package plugin
         run: |
+          # This name is load-bearing and must never change. Decky unzips the
+          # archive straight into ~/homebrew/plugins, so the ZIP's top-level
+          # folder becomes the plugin directory, and the loader derives
+          # DECKY_PLUGIN_SETTINGS_DIR from that folder name. Rename it and every
+          # existing user's saved IGDB credentials are orphaned on disk — not
+          # deleted, but invisible to the new install. (The same applies to the
+          # directory name if this plugin is ever submitted to the Decky store:
+          # the store's build names the folder after the submodule directory.)
           PLUGIN=EnhancedGV
           rm -rf "dist_pkg/$PLUGIN"
           mkdir -p "dist_pkg/$PLUGIN"

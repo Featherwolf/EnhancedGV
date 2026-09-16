@@ -35,6 +35,15 @@ SETTINGS_FILE = os.path.join(SETTINGS_DIR, "settings.json")
 MATCHES_FILE = os.path.join(SETTINGS_DIR, "matches.json")
 # IGDB app access token cache (derived state, not a preference).
 IGDB_TOKEN_FILE = os.path.join(SETTINGS_DIR, "igdb_token.json")
+# All three live in SETTINGS_DIR (~/homebrew/settings/<plugin folder>) and NOT
+# in CACHE_DIR, and that is what makes a saved IGDB credential survive an
+# update, a reinstall and an uninstall: Decky's uninstall path deletes only
+# ~/homebrew/plugins/<folder> and edits four of its own bookkeeping lists — it
+# never touches the settings tree, and every load simply re-creates the
+# directory. CACHE_DIR is the opposite: _purge_stale_cache empties it whenever
+# CACHE_VERSION changes. Never move a credential, a token or a user's match
+# choices into CACHE_DIR. scripts/check_credentials_survive.py fails the build
+# if this drifts.
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
@@ -430,7 +439,12 @@ def _igdb_token_sync(client_id: str, client_secret: str) -> str:
         raise RuntimeError("no access_token in the token response")
     try:
         os.makedirs(SETTINGS_DIR, exist_ok=True)
-        with open(IGDB_TOKEN_FILE, "w", encoding="utf-8") as fh:
+        # 0600 from creation, as set_settings does: open(..., "w") would use
+        # 0666 & ~umask. This file holds a live ~60-day bearer token. The chmod
+        # stays because O_CREAT's mode does not apply to an existing file, so it
+        # is what repairs a token written by an older build.
+        fd = os.open(IGDB_TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump({"client_id": client_id, "access_token": token,
                        "expires_at": now + float(got.get("expires_in") or 0)}, fh)
         os.chmod(IGDB_TOKEN_FILE, 0o600)
@@ -1563,6 +1577,11 @@ class Plugin:
         decky.logger.info("EnhancedGV backend unloading")
 
     async def _uninstall(self):
+        # Deliberately log-only. Decky implements an UPDATE as uninstall then
+        # install, so this hook fires on every update as well as on a real
+        # removal, and nothing reaches the plugin that tells the two apart.
+        # Erasing credentials here would therefore log the user out of IGDB on
+        # every upgrade. "Remove credentials" in the panel is the erase path.
         decky.logger.info("EnhancedGV backend uninstalling")
 
     # --- generic fetch with cache + in-flight dedup ------------------------ #
@@ -2728,8 +2747,9 @@ class Plugin:
             # either changed, the cached token is either wrong or about to be,
             # so drop it rather than let a stale token mask new credentials.
             prev_id, prev_secret = _igdb_creds()
+            new_id = str(settings.get("igdbClientId", "") or "").strip()
             new_secret = str(settings.get(SECRET_KEY, "") or "").strip()
-            if (str(settings.get("igdbClientId", "") or "").strip() != prev_id
+            if ((new_id and new_id != prev_id)
                     or (new_secret and new_secret != prev_secret)):
                 _igdb_forget_token()
         except Exception:
@@ -2744,11 +2764,23 @@ class Plugin:
             # it was given — so an incoming payload with no secret means "leave
             # it alone", not "erase it". Only an explicit non-empty value sets a
             # new one, and only clear_igdb_credentials removes it.
+            #
+            # The SAME rule has to cover the client id, for a different reason:
+            # the Quick Access panel loads its settings object once when it
+            # mounts and hands that copy to every toggle (QuickAccessSettings
+            # .tsx: DEFAULTS -> loaded in a mount effect -> spread by persist()).
+            # Saving credentials does not refresh it, so the first toggle flipped
+            # after a first-time save writes the EMPTY id it mounted with. That
+            # blanked the id while leaving the secret on disk: IGDB silently went
+            # back to the keyless baseline, the cached token was dropped, and the
+            # "Remove credentials" button hid itself because the panel decides
+            # that from the id. An empty id therefore means "leave it alone" too.
             merged = dict(settings)
-            if not str(merged.get(SECRET_KEY, "") or "").strip():
-                kept = _igdb_creds()[1]
-                if kept:
-                    merged[SECRET_KEY] = kept
+            kept_id, kept_secret = _igdb_creds()
+            if not str(merged.get("igdbClientId", "") or "").strip() and kept_id:
+                merged["igdbClientId"] = kept_id
+            if not str(merged.get(SECRET_KEY, "") or "").strip() and kept_secret:
+                merged[SECRET_KEY] = kept_secret
             merged.pop("igdbClientSecretSet", None)  # a report, not a setting
             tmp = SETTINGS_FILE + ".tmp"
             # 0600 from the moment of creation. open(tmp, "w") would have used
