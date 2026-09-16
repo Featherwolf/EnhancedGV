@@ -2,41 +2,25 @@
 
 ## v0.19.1
 
-> **Hotfix.** If you set up IGDB credentials on 0.19.0, flipping any switch in
-> the Quick Access panel afterwards silently forgot your Client ID. Update, then
-> paste the Client ID in once more — the Secret field can stay empty, the stored
-> one is kept. It sticks from then on.
+> **Hotfix.** If you set up IGDB credentials on 0.19.0, changing any other
+> setting afterwards silently forgot your Client ID. Update, then paste the
+> Client ID in once more — leave the Secret field empty, the saved one is kept.
 
-- **Saving any other setting no longer forgets your IGDB Client ID.** Right after
-  saving credentials, flipping any switch in the same panel wrote back the empty
-  Client ID the panel had loaded with. The secret stayed on disk, but IGDB quietly
-  dropped to the keyless baseline and the **Remove credentials** button
-  disappeared, so the only way back was to paste the id in again. An empty id now
-  means "leave it alone", exactly as an empty secret already did; the panel no
-  longer sends either half back at all.
-- **Remove credentials now erases everything, not just the values.** It deletes
-  both fields outright rather than blanking them, overwrites the old contents of
-  the settings file before replacing it, deletes the cached access token (itself a
-  live ~60-day credential) the same way, clears out any half-written save, and
-  drops store data cached while IGDB was in use. Nothing else holds them: they are
-  read from disk when needed rather than kept in memory, and neither value is ever
-  logged or reported by **Test artwork lookup**.
-  - The overwrite is best effort and worth being precise about: on a
-    copy-on-write filesystem or an SSD doing wear levelling, the old blocks may
-    survive it. Regenerating the secret at dev.twitch.tv is the only revocation
-    that does not depend on the storage layer, and the panel now says so after a
-    wipe.
-- **The Remove credentials button now appears whenever anything is stored**, not
-  only when both halves are. A build affected by the bug above could leave a
-  secret on disk with no Client ID beside it — which hid the one button that
-  could remove it.
-- **Credentials survive updates, reinstalls and uninstalling the plugin**, and
-  the README and the panel now say so. They live in Decky's settings folder,
-  which a plugin update never touches — so updating doesn't log you out of IGDB.
-  The flip side is that uninstalling doesn't erase them either: press **Remove
-  credentials** first if you want the secret off the device.
-- The cached IGDB access token is created owner-only rather than being made
-  owner-only immediately after, closing a brief window on first write.
+- **Saving another setting no longer forgets your IGDB Client ID.** The panel
+  was writing back the empty id it had loaded with, which dropped IGDB to the
+  keyless baseline and hid the **Remove credentials** button. An empty id now
+  means "leave it alone", exactly as an empty secret already did.
+- **Remove credentials now erases rather than blanks.** Both fields are deleted
+  outright, the old settings contents and the cached access token are
+  overwritten before removal, and store data cached while IGDB was in use is
+  dropped. The overwrite is best effort — on an SSD doing wear levelling the old
+  blocks can survive it — so regenerating the secret at dev.twitch.tv is still
+  the only complete revocation. The button now also appears whenever *either*
+  half is stored, so a device left holding a secret with no id can clear it.
+- **Credentials survive updates, reinstalls and uninstalling the plugin.** They
+  live in Decky's settings folder, which a plugin update never touches, so
+  updating doesn't log you out of IGDB. Uninstalling doesn't erase them either:
+  press **Remove credentials** first if you want the secret off the device.
 
 ## v0.19.0
 
