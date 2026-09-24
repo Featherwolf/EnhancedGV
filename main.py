@@ -283,19 +283,24 @@ def _http_post_json(url: str, payload: dict) -> dict:
 def _appdetails_envelope(raw, appid):
     """Pick this app's envelope out of an appdetails response.
 
-    Steam keys that response by the appid you asked for, except when it does
-    not. Observed 2026-09-24: a request for 275850 comes back keyed "3380990"
-    (the game's first DLC) carrying success:true and the right game inside.
-    Nineteen of twenty popular appids surveyed behaved this way; the one that
-    did not has no DLC. Trusting the key therefore made every game with DLC
-    report "no store data (success=false)" while Steam had in fact answered
-    perfectly well.
+    The reply is a map keyed by appid, and the code used to assume the key was
+    the appid it asked for. Since at least 2026-09-24 Steam has been labelling
+    many replies with a different, larger appid while the data inside still
+    describes the requested game: 275850 comes back under "3380990", one of its
+    DLC. In a sample of 120 games, 67 were labelled this way. Every game that
+    lists DLC was among them, usually under its last-listed DLC, and so were 12
+    of the 65 that list none. Trusting the key made all of them report
+    "no store data (success=false)" when Steam had answered correctly.
 
-    The appid inside the payload (data.steam_appid) stayed correct throughout,
-    so match on that instead. An envelope whose data names a DIFFERENT app is
-    never accepted, because rendering someone else's store page is far worse
-    than showing nothing. A lone envelope carrying no data at all is a real
-    failure and is handed back so the caller can report it honestly.
+    So: take the envelope under the requested key when there is one. That is
+    unchanged behaviour, and it is how redirected appids work (100 answers with
+    Condition Zero's data, steam_appid 80). Otherwise take the envelope whose
+    data.steam_appid is the requested appid, and never an envelope whose data
+    names some other app. A lone envelope with no data is handed back so that a
+    genuine failure is reported as one.
+
+    Not handled: a redirected appid whose reply is also mislabelled. It has not
+    been seen, and accepting it would mean guessing which game the data is for.
     """
     if not isinstance(raw, dict):
         return None
@@ -1723,13 +1728,21 @@ class Plugin:
         )
 
         def norm(raw):
+            # Three different failures, which v0.19.1 reported with one message.
+            # An empty reply is what appdetails sends when it is throttling, and
+            # it has a much stricter limit than the reviews and news endpoints.
+            if not isinstance(raw, dict) or not raw:
+                return {"ok": False,
+                        "error": "Steam sent an empty reply (often rate limiting); try again shortly"}
             env = _appdetails_envelope(raw, appid)
             if not isinstance(env, dict):
-                # Distinguished from the case below on purpose: this one used to
-                # be reported as "success=false", which sent everyone looking at
-                # Steam for a fault that was in how the reply was being read.
+                # Logged because nothing on screen shows what Steam actually sent.
+                decky.logger.warning(
+                    f"appdetails {appid}: no entry matched; reply keyed {list(raw)[:3]}")
                 return {"ok": False, "error": "store returned no entry for this app"}
-            if not env.get("success") or "data" not in env:
+            # isinstance, not a key check: an envelope can carry success:true with
+            # data null or [], and _normalize_appdetails raises on either.
+            if not env.get("success") or not isinstance(env.get("data"), dict):
                 return {"ok": False, "error": "no store data (success=false)"}
             out = _normalize_appdetails(env["data"])
             out["ok"] = True

@@ -57,9 +57,10 @@ jobs:
       - name: Check stored credentials survive update/uninstall
         run: python3 scripts/check_credentials_survive.py
 
-      # Steam keys an appdetails reply by appid, right up until it doesn't: on
-      # 2026-09-24 it began keying most games by their first DLC, which made the
-      # plugin report "success=false" for content Steam had returned perfectly.
+      # An appdetails reply is a map keyed by appid, and the plugin assumed the
+      # key was the appid it asked for. Since at least 2026-09-24 Steam has been
+      # labelling many replies with a different appid (often one of the game's
+      # DLC), so games showed "success=false" for data Steam had sent correctly.
       # The outer key is not a contract; data.steam_appid is.
       - name: Check appdetails is parsed by contents, not by key
         run: python3 scripts/check_appdetails_parse.py

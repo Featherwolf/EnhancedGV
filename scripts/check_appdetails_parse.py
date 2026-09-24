@@ -1,15 +1,18 @@
 """The appdetails reply must be read by its contents, not by its key.
 
-On 2026-09-24 every EnhancedGV user with a DLC-owning game in their library
-started seeing "Store content unavailable — no store data (success=false)".
-Steam had changed nothing about the data: a request for appid 275850 came back
-keyed "3380990" (that game's first DLC), success:true, No Man's Sky inside.
-Nineteen of twenty popular appids surveyed did this. The plugin looked the
-envelope up by the appid it asked for, got nothing, and blamed Steam.
+Around 2026-09-24 most Steam games in EnhancedGV started showing "Store content
+unavailable: no store data (success=false)". Steam was answering correctly, but
+it had started labelling many replies with a different, larger appid: 275850 (No
+Man's Sky) came back under "3380990", one of its DLC, with the right game inside.
+Across 120 sampled games, 67 were labelled this way, including every game that
+lists DLC and 12 of the 65 that list none. The plugin looked the reply up under
+the appid it had asked for, found nothing, and blamed Steam.
 
-The lesson is narrow and worth locking down: the outer key is not a contract,
-data.steam_appid is. These cases are synthetic so the gate needs no network and
-cannot go red because Steam is having a bad day.
+The outer key is not a contract; data.steam_appid is. These cases are synthetic,
+so the gate needs no network and cannot go red because Steam is having a bad day.
+Every malformed payload is also driven through get_appdetails itself, because
+the first version of this gate only exercised the helper and so missed a crash
+one layer up.
 """
 import importlib.util, logging, os, sys, tempfile, types
 
@@ -68,17 +71,20 @@ check("a lone success:false envelope is returned as-is",
 check("a success:false envelope under an odd key is still returned",
       pick({"999": dead}, 1070560) is dead)
 
-print("== and nothing here throws ==")
-for bad in (None, [], "", {}, {"1": None}, {"1": "not a dict"},
-            {"1": {"success": True, "data": None}},
-            {"1": {"success": True, "data": {"steam_appid": None}}}):
+MALFORMED = (None, [], "", {}, {"1": None}, {"1": "not a dict"},
+             {"1": {"success": True, "data": None}},
+             {"1": {"success": True, "data": []}},
+             {"275850": {"success": True, "data": None}},
+             {"275850": {"success": True, "data": []}},
+             {"1": {"success": True, "data": {"steam_appid": None}}})
+
+print("== the picker never throws ==")
+for bad in MALFORMED:
     try:
         pick(bad, 275850)
-        ok += 1
+        check(f"picker survives {bad!r}", True)
     except Exception as exc:
-        fail += 1
-        print(f"  FAIL raised on {bad!r}: {exc}")
-print(f"  OK   8 malformed payloads handled without raising")
+        check(f"picker survives {bad!r}", False, f"raised {exc!r}")
 
 print("== end to end through get_appdetails' own normalizer ==")
 import asyncio
@@ -102,6 +108,25 @@ check("a real success:false is still reported as such",
 res = norm_via({"999": other})
 check("a wrong-game payload reports no entry, not the wrong game",
       res.get("ok") is False and "no entry" in str(res.get("error")), res.get("error"))
+
+res = norm_via({"100": {"success": True, "data": {"steam_appid": 80, "name": "Counter-Strike: Condition Zero"}}}, 100)
+check("a redirected appid still resolves through its own key",
+      res.get("ok") is True and res.get("name") == "Counter-Strike: Condition Zero", res)
+
+for empty in (None, {}, []):
+    res = norm_via(empty)
+    check(f"an empty reply ({empty!r}) is reported as one, not as success=false",
+          res.get("ok") is False and "empty reply" in str(res.get("error")), res.get("error"))
+
+# The regression the first version of this gate missed: a lone envelope carrying
+# success:true but no usable data reached _normalize_appdetails and raised.
+for bad in MALFORMED:
+    if not isinstance(bad, dict) or not bad:
+        continue
+    res = norm_via(bad)
+    check(f"get_appdetails fails cleanly on {bad!r}",
+          res.get("ok") is False and "object has no attribute" not in str(res.get("error"))
+          and "NoneType" not in str(res.get("error")), res.get("error"))
 
 print(f"\n{ok} passed, {fail} failed")
 if fail:

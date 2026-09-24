@@ -2,21 +2,20 @@
 
 ## v0.19.2
 
-> **Hotfix.** Most games stopped showing store content, with "no store data
-> (success=false)" in the details row. Update and it comes back; nothing on your
-> end was wrong and no settings were lost.
+> **Hotfix.** Store content stopped loading for most Steam games, showing
+> "no store data (success=false)". Update and it comes back. Nothing on your
+> end was wrong, and no settings are lost.
 
-- **Store content works again for games that have DLC.** Steam changed how it
-  labels its reply: asking for No Man's Sky (275850) now returns the data under
-  the appid of that game's first DLC instead. The content was correct and
-  complete the whole time, but the plugin looked it up by the appid it had asked
-  for, found nothing there, and reported the game as unavailable. It now
-  identifies the reply by the appid recorded inside it, so the label no longer
-  matters. Games without DLC were never affected, which is why only some of your
-  library broke.
-- The details row says "store returned no entry for this app" when that is
-  actually what happened, instead of blaming Steam for a `success=false` it
-  never sent.
+- **Store content loads again.** Steam's store has been labelling many of its
+  replies with a different app's number, often one of the game's DLC, while the
+  details inside still describe the right game. The plugin looked the reply up
+  under the game's own number, found nothing, and called the game unavailable.
+  It now checks which game the details describe instead of trusting the label.
+  Whether a game was hit depends on what Steam lists against it in the store,
+  not on any DLC you own, which is why it looked random.
+- **Clearer errors in the details row.** An empty reply from Steam, which
+  usually means it is throttling requests, now says so instead of reporting
+  `success=false`.
 
 ## v0.19.1
 
