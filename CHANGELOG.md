@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.19.2
+
+> **Hotfix.** Most games stopped showing store content, with "no store data
+> (success=false)" in the details row. Update and it comes back; nothing on your
+> end was wrong and no settings were lost.
+
+- **Store content works again for games that have DLC.** Steam changed how it
+  labels its reply: asking for No Man's Sky (275850) now returns the data under
+  the appid of that game's first DLC instead. The content was correct and
+  complete the whole time, but the plugin looked it up by the appid it had asked
+  for, found nothing there, and reported the game as unavailable. It now
+  identifies the reply by the appid recorded inside it, so the label no longer
+  matters. Games without DLC were never affected, which is why only some of your
+  library broke.
+- The details row says "store returned no entry for this app" when that is
+  actually what happened, instead of blaming Steam for a `success=false` it
+  never sent.
+
 ## v0.19.1
 
 > **Hotfix.** If you set up IGDB credentials on 0.19.0, changing any other

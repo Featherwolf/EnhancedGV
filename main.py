@@ -280,6 +280,38 @@ def _http_post_json(url: str, payload: dict) -> dict:
     return json.loads(raw)
 
 
+def _appdetails_envelope(raw, appid):
+    """Pick this app's envelope out of an appdetails response.
+
+    Steam keys that response by the appid you asked for, except when it does
+    not. Observed 2026-09-24: a request for 275850 comes back keyed "3380990"
+    (the game's first DLC) carrying success:true and the right game inside.
+    Nineteen of twenty popular appids surveyed behaved this way; the one that
+    did not has no DLC. Trusting the key therefore made every game with DLC
+    report "no store data (success=false)" while Steam had in fact answered
+    perfectly well.
+
+    The appid inside the payload (data.steam_appid) stayed correct throughout,
+    so match on that instead. An envelope whose data names a DIFFERENT app is
+    never accepted, because rendering someone else's store page is far worse
+    than showing nothing. A lone envelope carrying no data at all is a real
+    failure and is handed back so the caller can report it honestly.
+    """
+    if not isinstance(raw, dict):
+        return None
+    direct = raw.get(str(appid))
+    if isinstance(direct, dict):
+        return direct
+    entries = [v for v in raw.values() if isinstance(v, dict)]
+    for env in entries:
+        data = env.get("data")
+        if isinstance(data, dict) and str(data.get("steam_appid", "")) == str(appid):
+            return env
+    if len(entries) == 1 and not isinstance(entries[0].get("data"), dict):
+        return entries[0]
+    return None
+
+
 def _cache_path(kind: str, key: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{kind}_{key}")
     return os.path.join(CACHE_DIR, f"{safe}.json")
@@ -1691,8 +1723,13 @@ class Plugin:
         )
 
         def norm(raw):
-            env = raw.get(str(appid)) if isinstance(raw, dict) else None
-            if not env or not env.get("success") or "data" not in env:
+            env = _appdetails_envelope(raw, appid)
+            if not isinstance(env, dict):
+                # Distinguished from the case below on purpose: this one used to
+                # be reported as "success=false", which sent everyone looking at
+                # Steam for a fault that was in how the reply was being read.
+                return {"ok": False, "error": "store returned no entry for this app"}
+            if not env.get("success") or "data" not in env:
                 return {"ok": False, "error": "no store data (success=false)"}
             out = _normalize_appdetails(env["data"])
             out["ok"] = True
