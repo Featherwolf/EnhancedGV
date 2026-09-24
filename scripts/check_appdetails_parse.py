@@ -1,18 +1,18 @@
 """The appdetails reply must be read by its contents, not by its key.
 
-Around 2026-09-24 most Steam games in EnhancedGV started showing "Store content
+By 2026-09-24 many Steam games in EnhancedGV were showing "Store content
 unavailable: no store data (success=false)". Steam was answering correctly, but
-it had started labelling many replies with a different, larger appid: 275850 (No
-Man's Sky) came back under "3380990", one of its DLC, with the right game inside.
+it had started labelling many replies with a different appid: 275850 (No Man's
+Sky) came back under "3380990", one of its DLC, with the right game inside.
 Across 120 sampled games, 67 were labelled this way, including every game that
 lists DLC and 12 of the 65 that list none. The plugin looked the reply up under
 the appid it had asked for, found nothing, and blamed Steam.
 
 The outer key is not a contract; data.steam_appid is. These cases are synthetic,
 so the gate needs no network and cannot go red because Steam is having a bad day.
-Every malformed payload is also driven through get_appdetails itself, because
-the first version of this gate only exercised the helper and so missed a crash
-one layer up.
+Each malformed envelope is also driven through get_appdetails itself, and must
+end in one of norm()'s own messages: the first version of this gate ran them
+only against the helper, and missed one surfacing as a raw Python error.
 """
 import importlib.util, logging, os, sys, tempfile, types
 
@@ -63,6 +63,11 @@ check("a lone envelope naming a DIFFERENT app is refused",
       pick({"999": other}, 275850) is None)
 check("several envelopes, none matching, are all refused",
       pick({"1": other, "2": other}, 275850) is None)
+dlc_under_our_key = {"success": True, "data": {"steam_appid": 3380990, "name": "A DLC"}}
+check("the entry describing the game beats a stray entry under our key",
+      pick({"275850": dlc_under_our_key, "3380990": GOOD}, 275850) is GOOD)
+check("and beats a failure under our key",
+      pick({"275850": {"success": False}, "3380990": GOOD}, 275850) is GOOD)
 
 print("== genuine failures still read as failures ==")
 dead = {"success": False}
@@ -76,7 +81,8 @@ MALFORMED = (None, [], "", {}, {"1": None}, {"1": "not a dict"},
              {"1": {"success": True, "data": []}},
              {"275850": {"success": True, "data": None}},
              {"275850": {"success": True, "data": []}},
-             {"1": {"success": True, "data": {"steam_appid": None}}})
+             {"1": {"success": True, "data": {"steam_appid": None}}},
+             {"1": {"success": True, "data": {"name": "no steam_appid at all"}}})
 
 print("== the picker never throws ==")
 for bad in MALFORMED:
@@ -116,7 +122,16 @@ check("a redirected appid still resolves through its own key",
 for empty in (None, {}, []):
     res = norm_via(empty)
     check(f"an empty reply ({empty!r}) is reported as one, not as success=false",
-          res.get("ok") is False and "empty reply" in str(res.get("error")), res.get("error"))
+          res.get("ok") is False and "empty or unreadable reply" in str(res.get("error")), res.get("error"))
+
+# _do() turns ANY exception into {"ok": False, "error": str(exc)}, so "it failed"
+# proves nothing about whether norm() crashed. Only its own messages count.
+NORM_MESSAGES = {
+    "Steam sent an empty or unreadable reply (often rate limiting); try again shortly",
+    "store returned no entry for this app",
+    "no store data (success=false)",
+    "no store data",
+}
 
 # The regression the first version of this gate missed: a lone envelope carrying
 # success:true but no usable data reached _normalize_appdetails and raised.
@@ -124,9 +139,9 @@ for bad in MALFORMED:
     if not isinstance(bad, dict) or not bad:
         continue
     res = norm_via(bad)
+    err = str(res.get("error"))
     check(f"get_appdetails fails cleanly on {bad!r}",
-          res.get("ok") is False and "object has no attribute" not in str(res.get("error"))
-          and "NoneType" not in str(res.get("error")), res.get("error"))
+          res.get("ok") is False and err in NORM_MESSAGES, err)
 
 print(f"\n{ok} passed, {fail} failed")
 if fail:

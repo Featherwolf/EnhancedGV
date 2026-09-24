@@ -2,20 +2,18 @@
 
 ## v0.19.2
 
-> **Hotfix.** Store content stopped loading for most Steam games, showing
-> "no store data (success=false)". Update and it comes back. Nothing on your
-> end was wrong, and no settings are lost.
+> **Hotfix.** Store content stopped loading for many Steam games, showing
+> "no store data (success=false)". Update and it comes back within a couple of
+> minutes. Nothing on your end was wrong, and no settings are lost.
 
 - **Store content loads again.** Steam's store has been labelling many of its
   replies with a different app's number, often one of the game's DLC, while the
   details inside still describe the right game. The plugin looked the reply up
   under the game's own number, found nothing, and called the game unavailable.
   It now checks which game the details describe instead of trusting the label.
-  Whether a game was hit depends on what Steam lists against it in the store,
-  not on any DLC you own, which is why it looked random.
-- **Clearer errors in the details row.** An empty reply from Steam, which
-  usually means it is throttling requests, now says so instead of reporting
-  `success=false`.
+  It has nothing to do with which DLC you own.
+- **Clearer error when Steam sends nothing back.** An empty reply now says so
+  instead of reporting `success=false`.
 
 ## v0.19.1
 
