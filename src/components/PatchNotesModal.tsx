@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ModalRoot } from "@decky/ui";
 import { getPatchNotes } from "../api";
 import { FocusableBlocks } from "./FocusableBlocks";
+import { useTranslation } from "../i18n";
 
 // Render the CHANGELOG markdown for a version as safe, D-pad-scrollable content.
 // The notes are our own changelog, but we still escape first and only add the
@@ -30,6 +31,7 @@ export function PatchNotesModal({
   version?: string;
   closeModal?: () => void;
 }) {
+  const { t } = useTranslation();
   const [notes, setNotes] = useState<string | null>(null);
   const [ver, setVer] = useState<string>(version ?? "");
   const [err, setErr] = useState<string>("");
@@ -41,7 +43,7 @@ export function PatchNotesModal({
         if (cancelled) return;
         setVer(r?.version ?? version ?? "");
         if (r?.ok) setNotes(r.notes ?? "");
-        else setErr(r?.error ?? "Couldn't load patch notes.");
+        else setErr(r?.error ?? t("patchNotes.loadError"));
       })
       .catch((e) => {
         if (!cancelled) setErr(String(e));
@@ -49,16 +51,17 @@ export function PatchNotesModal({
     return () => {
       cancelled = true;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [version]);
 
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>
       <div style={{ maxHeight: "80vh", overflowY: "auto", padding: "6px 10px" }}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 10 }}>
-          EnhancedGV {ver ? `v${ver}` : ""} — patch notes
+          {t("patchNotes.title", { version: ver ? `v${ver}` : "" })}
         </div>
         {notes === null && !err && (
-          <div style={{ opacity: 0.6, fontSize: 13 }}>Loading…</div>
+          <div style={{ opacity: 0.6, fontSize: 13 }}>{t("patchNotes.loading")}</div>
         )}
         {err && <div style={{ opacity: 0.7, fontSize: 13 }}>{err}</div>}
         {notes !== null && !err && (
@@ -66,7 +69,7 @@ export function PatchNotesModal({
             <FocusableBlocks html={notesToSafeHtml(notes)} blockClass="ssp-notes" targetPerStop={6} />
           ) : (
             <div style={{ opacity: 0.6, fontSize: 13 }}>
-              No patch notes recorded for this version.
+              {t("patchNotes.none")}
             </div>
           )
         )}

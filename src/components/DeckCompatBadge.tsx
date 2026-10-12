@@ -1,4 +1,5 @@
 import type { DeckCompat } from "../types";
+import { useTranslation } from "../i18n";
 
 const COLORS: Record<number, string> = {
   0: "#8f98a0", // Unknown
@@ -15,6 +16,7 @@ const GLYPH: Record<number, string> = {
 };
 
 export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
+  const { t } = useTranslation();
   if (!deck || !deck.ok) return null;
   const cat = deck.category ?? 0;
   const color = COLORS[cat] ?? COLORS[0];
@@ -36,7 +38,7 @@ export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
       title={deck.notes.map((n) => n.text).filter(Boolean).join(" • ")}
     >
       <span>{GLYPH[cat] ?? "?"}</span>
-      <span>Deck: {deck.label}</span>
+      <span>{t("deck.label", { label: deck.label })}</span>
     </div>
   );
 }
@@ -52,10 +54,11 @@ const RESULT_MARK: Record<number, { mark: string; color: string }> = {
 const INFO_MARK = { mark: "ⓘ", color: "#8f98a0" };
 
 export function DeckCompatDetails({ deck }: { deck: DeckCompat }) {
+  const { t } = useTranslation();
   if (!deck || !deck.ok) {
     return (
       <div style={{ opacity: 0.6, fontSize: 13 }}>
-        No Steam Deck compatibility report.
+        {t("deck.none")}
       </div>
     );
   }

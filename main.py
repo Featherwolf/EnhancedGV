@@ -2827,6 +2827,11 @@ class Plugin:
             # An explicit language name here would be a manual override.
             "language": "auto",
             "country": "auto",
+            # UI language ("auto" | "en" | "pt-BR"): the plugin's own interface
+            # text (settings, section titles, empty-state messages) — separate
+            # from "language" above, which is the Steam STORE CONTENT language.
+            # "auto" follows the same Steam-locale detection as "language".
+            "uiLanguage": "auto",
             # Opt in to pre-release "beta" builds in the update check. Default off
             # so risky test builds never reach stable users.
             "beta": False,

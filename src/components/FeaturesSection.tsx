@@ -3,6 +3,7 @@ import { openExternal } from "../nav";
 import { Focusable } from "@decky/ui";
 import type { AppDetails } from "../types";
 import { FOCUS_SCROLL_MARGIN } from "../focus";
+import { useTranslation } from "../i18n";
 
 function Pill({ children }: { children: ReactNode }) {
   return (
@@ -31,6 +32,7 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
 }
 
 export function FeaturesSection({ d }: { d: AppDetails }) {
+  const { t } = useTranslation();
   const platforms = [
     d.platforms?.windows && "Windows",
     d.platforms?.mac && "macOS",
@@ -51,27 +53,33 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
       )}
 
       <div>
-        <InfoRow label="Developer" value={d.developers.join(", ")} />
-        <InfoRow label="Publisher" value={d.publishers.join(", ")} />
+        <InfoRow label={t("features.developer")} value={d.developers.join(", ")} />
+        <InfoRow label={t("features.publisher")} value={d.publishers.join(", ")} />
         <InfoRow
-          label="Released"
-          value={d.coming_soon ? `${d.release_date} (Coming soon)` : d.release_date}
+          label={t("features.released")}
+          value={
+            d.coming_soon
+              ? t("features.comingSoon", { date: d.release_date })
+              : d.release_date
+          }
         />
-        <InfoRow label="Platforms" value={platforms.join(" · ")} />
+        <InfoRow label={t("features.platforms")} value={platforms.join(" · ")} />
         {d.controller_support && (
           <InfoRow
-            label="Controller"
+            label={t("features.controller")}
             value={
-              d.controller_support === "full" ? "Full support" : "Partial support"
+              d.controller_support === "full"
+                ? t("features.controllerFull")
+                : t("features.controllerPartial")
             }
           />
         )}
         {d.achievements_total != null && d.achievements_total > 0 && (
-          <InfoRow label="Achievements" value={d.achievements_total} />
+          <InfoRow label={t("features.achievements")} value={d.achievements_total} />
         )}
         {d.metacritic && (
           <InfoRow
-            label="Metacritic"
+            label={t("features.metacritic")}
             value={
               d.metacritic.url ? (
                 <Focusable
@@ -99,7 +107,7 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
         )}
         {d.price && (
           <InfoRow
-            label="Price"
+            label={t("features.price")}
             value={
               d.price.discount > 0
                 ? `${d.price.final}  (-${d.price.discount}%)`
@@ -111,7 +119,7 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
 
       {d.supported_languages_html && (
         <div style={{ fontSize: 12.5 }}>
-          <div style={{ opacity: 0.55, marginBottom: 4 }}>Languages</div>
+          <div style={{ opacity: 0.55, marginBottom: 4 }}>{t("features.languages")}</div>
           <div
             style={{ lineHeight: 1.5 }}
             dangerouslySetInnerHTML={{ __html: d.supported_languages_html }}

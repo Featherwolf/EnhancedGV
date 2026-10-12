@@ -2,12 +2,15 @@ import { ModalRoot } from "@decky/ui";
 import { FaThumbsUp, FaThumbsDown } from "react-icons/fa";
 import type { ReviewItem } from "../types";
 import { FocusableBlocks } from "./FocusableBlocks";
+import { useTranslation } from "../i18n";
+
+type T = (key: import("../i18n").TranslationKey, vars?: Record<string, string | number>) => string;
 
 // Details shared by the review card and this popup.
 // Deck hours are as of when the review was written.
-export function deckNote(r: ReviewItem): string | null {
-  if (r.deck_hours && r.deck_hours > 0) return `🎮 ${r.deck_hours}h on Deck`;
-  return r.steam_deck ? "🎮 on Deck" : null;
+export function deckNote(r: ReviewItem, t: T): string | null {
+  if (r.deck_hours && r.deck_hours > 0) return t("reviews.onDeckHours", { hours: r.deck_hours });
+  return r.steam_deck ? t("reviews.onDeck") : null;
 }
 
 export function postedDate(r: ReviewItem): string | null {
@@ -19,12 +22,10 @@ export function postedDate(r: ReviewItem): string | null {
   });
 }
 
-export function helpfulText(r: ReviewItem): string | null {
+export function helpfulText(r: ReviewItem, t: T): string | null {
   const n = r.votes_up || 0;
   if (n <= 0) return null;
-  return n === 1
-    ? "1 person found this helpful"
-    : `${n.toLocaleString()} people found this helpful`;
+  return n === 1 ? t("reviews.helpfulOne") : t("reviews.helpfulMany", { n: n.toLocaleString() });
 }
 
 // Escape review text (plain, user-written — treat as untrusted) so it renders as
@@ -46,10 +47,11 @@ export function ReviewModal({
   review: ReviewItem;
   closeModal?: () => void;
 }) {
+  const { t } = useTranslation();
   const html = textToSafeHtml(review.text);
-  const deck = deckNote(review);
+  const deck = deckNote(review, t);
   const posted = postedDate(review);
-  const helpful = helpfulText(review);
+  const helpful = helpfulText(review, t);
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>
       <div style={{ maxHeight: "80vh", overflowY: "auto", padding: "6px 10px" }}>
@@ -70,12 +72,12 @@ export function ReviewModal({
             <FaThumbsDown size={13} color="#c15b58" />
           )}
           <span style={{ fontWeight: 600 }}>
-            {review.voted_up ? "Recommended" : "Not recommended"}
+            {review.voted_up ? t("reviews.recommended") : t("reviews.notRecommended")}
           </span>
           <span>·</span>
-          <span>{review.playtime_hours}h played</span>
+          <span>{t("reviews.hoursPlayed", { hours: review.playtime_hours })}</span>
           {deck && <span>· {deck}</span>}
-          {review.early_access && <span>· Early Access</span>}
+          {review.early_access && <span>· {t("reviews.earlyAccess")}</span>}
           {posted && <span style={{ marginLeft: "auto" }}>{posted}</span>}
         </div>
         {helpful && (
@@ -87,7 +89,7 @@ export function ReviewModal({
           <FocusableBlocks html={html} blockClass="ssp-review" targetPerStop={6} />
         ) : (
           <div style={{ opacity: 0.6, fontSize: 13 }}>
-            This review has no written text.
+            {t("reviews.noText")}
           </div>
         )}
       </div>

@@ -191,6 +191,10 @@ export interface PluginSettings {
   expanded?: ExpandedToggles;
   language: string;
   country: string;
+  // UI language ("auto" | "en" | "pt-BR"): the plugin's OWN interface text —
+  // independent of `language` above, which is the Steam STORE CONTENT
+  // language (description/reviews/news). See src/i18n/index.ts.
+  uiLanguage?: string;
   beta?: boolean; // opt in to pre-release update checks
   // Hasheous CLIENT API key. Empty = keyless baseline (logo + description);
   // set = IGDB artwork/details for non-Steam games. Stored locally only.
