@@ -17,6 +17,7 @@ import json
 import time
 import html
 import asyncio
+import datetime
 import functools
 import hashlib
 import urllib.parse
@@ -56,13 +57,17 @@ STEAM_REVIEWS_URL = "https://store.steampowered.com/ajaxappreviews/{appid}?"
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
-CACHE_VERSION = "0.15.0-lang"
+CACHE_VERSION = "0.21.0-locale"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
        "reviews_recent": 3600, "news_posts": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
-       "hasheous": 604800, "igdb": 604800}
+       "hasheous": 604800, "igdb": 604800,
+       # Nintendo's own eShop "related news" for a Switch game — an update
+       # announcement is a rare event, so this is cached like deck/appdetails
+       # rather than refetched often.
+       "switch_news": 86400}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
@@ -82,12 +87,23 @@ DECK_LABELS = {0: "Unknown", 1: "Unsupported", 2: "Playable", 3: "Verified"}
 # tool). The one appdetails failure that a retry won't fix; see get_all.
 NO_STORE_PAGE = "no store data (success=false)"
 
-# Deck report notes in plain words, keyed by the token Steam sends (minus the
-# leading "#" it added, which is why the old table never matched anything).
-# Tokens not listed fall back to the token name split into words.
+# A compact map for the most common Deck-compat reviewer notes (loc_token -> text).
+# Unknown tokens fall back to a prettified version of the token itself. Steam's
+# own ajaxgetdeckappcompatibilityreport NEVER localizes these (verified live:
+# l=brazilian and l=english return byte-identical loc_token strings — Valve
+# resolves them client-side, inside the real Steam UI, which we don't have),
+# so there is no reply to request in another language the way get_appdetails/
+# get_reviews do with their own l= param. Only our own translation (see
+# src/i18n/*.ts, keyed by the normalized token below) can localize this text.
 DECK_LOC_TOKENS = {
+    "SteamDeckVerified_TestResult_DefaultControllerConfigFullySupported":
+        "Default controller configuration is fully supported",
+    # Same test, current wording (seen live 2026-10-12) alongside the older
+    # one above — Valve has renamed a handful of these over time, and neither
+    # the report nor any changelog says which; keeping both as synonyms costs
+    # nothing and keeps old AND new replies out of the prettified fallback.
     "SteamDeckVerified_TestResult_DefaultControllerConfigFullyFunctional":
-        "All functionality is accessible when using the default controller configuration",
+        "Default controller configuration is fully supported",
     "SteamDeckVerified_TestResult_ControllerGlyphsMatchDeckDevice":
         "This game shows Steam Deck controller icons",
     "SteamDeckVerified_TestResult_ControllerGlyphsDoNotMatchDeckDevice":
@@ -97,7 +113,13 @@ DECK_LOC_TOKENS = {
     "SteamDeckVerified_TestResult_InterfaceTextIsNotLegible":
         "Some in-game text is small and may be difficult to read",
     "SteamDeckVerified_TestResult_DefaultConfigurationIsPerformant":
-        "This game's default graphics configuration performs well on Steam Deck",
+        "Default graphics configuration performs well",
+    "SteamDeckVerified_TestResult_TextIsLegible":
+        "In-game text is legible",
+    "SteamDeckVerified_TestResult_ResolutionSupported":
+        "Native display resolution is supported",
+    "SteamDeckVerified_TestResult_DisplayOutputHasBlackBars":
+        "Display has black bars (non-native aspect ratio)",
     "SteamDeckVerified_TestResult_TextInputDoesNotAutomaticallyInvokesKeyboard":
         "Entering some text requires manually invoking the on-screen keyboard",
     "SteamDeckVerified_TestResult_ExternalControllersNotSupportedPrimaryPlayer":
@@ -293,6 +315,20 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
             if (final.netloc, final.path) != (asked.netloc, asked.path) else ""
         raise ValueError(f"{asked.netloc} sent a web page instead of data{moved}; "
                          f"the endpoint may have moved") from None
+
+
+def _http_get_text(url: str, headers: dict = None) -> str:
+    """Like _http_get_json, but for an HTML page (Nintendo's product/news
+    pages) rather than a JSON API — no json.loads at the end."""
+    hdrs = {"User-Agent": USER_AGENT}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
+    return raw.decode("utf-8", "replace")
 
 
 def _http_post_json(url: str, payload: dict) -> dict:
@@ -1430,12 +1466,23 @@ def _normalize_deck(data: dict) -> dict:
     cat = results.get("resolved_category", 0)
     notes = []
     for item in (results.get("resolved_items") or []):
+        # The reply's loc_token is prefixed with "#" (Valve's own localization
+        # key syntax, e.g. "#SteamDeckVerified_TestResult_..."), which DECK_LOC_
+        # TOKENS' keys never carried — so the lookup below always missed and
+        # silently fell back to the prettified-token text, in English either
+        # way. Stripping it is what makes the dict (and the frontend i18n
+        # lookup keyed on "token") ever actually match.
         tok = str(item.get("loc_token") or "").lstrip("#")
         notes.append({
             "display_type": item.get("display_type"),
             "text": DECK_LOC_TOKENS.get(
                 tok, re.sub(r"(?<!^)(?=[A-Z])", " ",
                             tok.split("_")[-1]) if tok else ""),
+            # Normalized key for the frontend's i18n lookup (deck.note.<token>);
+            # unprefixed, so it's exactly the one DECK_LOC_TOKENS also matches
+            # on, and falls back to "text" above (English) when neither
+            # dictionary — ours or the plugin's i18n one — has that token.
+            "token": tok.split("_")[-1] if tok else "",
         })
     return {
         "category": cat,
@@ -1536,7 +1583,15 @@ def _igdb_facts(game: dict) -> dict:
     ts = _igdb_pick(game, "first_release_date")
     if ts:
         try:
+            # English fallback string only: %b is the C locale's abbreviated
+            # month name, which is always English here (nothing in this
+            # process calls locale.setlocale, and Decky's frozen Python
+            # runtime may not even ship other locales to switch to). The
+            # frontend prefers release_timestamp instead, formatting it with
+            # Intl.DateTimeFormat — which DOES have real per-language month
+            # names built in — keyed to the plugin's own uiLanguage setting.
             out["release_date"] = time.strftime("%d %b, %Y", time.gmtime(int(ts)))
+            out["release_timestamp"] = int(ts)
         except Exception:
             pass
     plats = [str(_igdb_pick(p, "name") or "")
@@ -1600,6 +1655,7 @@ def _empty_appdetails(name: str = "") -> dict:
         "developers": [],
         "publishers": [],
         "release_date": "",
+        "release_timestamp": None,
         "coming_soon": False,
         "website": "",
         "controller_support": None,
@@ -1697,6 +1753,127 @@ def _normalize_hasheous(obj: dict) -> dict:
         "igdb_id": igdb_id,
     })
     return out
+
+
+def _is_switch_platform(appdetails: dict) -> bool:
+    """Whether a normalized non-Steam AppDetails describes a Nintendo Switch
+    game — gates the Nintendo eShop news lookup below, which only makes sense
+    for Switch (not a SNES/Genesis/PS1/etc. ROM also served through the same
+    Hasheous/IGDB path). Reuses `categories`, already populated with the
+    platform name by _normalize_hasheous/_igdb_facts, rather than re-deriving
+    it from either provider's raw shape."""
+    for c in (appdetails.get("categories") or []):
+        if "switch" in str(c.get("description", "")).lower():
+            return True
+    return False
+
+
+# --- Nintendo eShop "related news" (Switch update announcements) ----------- #
+# Nintendo publishes no API for this and no per-game patch notes at all in the
+# way Steam does — confirmed by testing live: the eShop product page's own
+# embedded JSON (a Next.js "__NEXT_DATA__" blob, not a documented endpoint) is
+# the only structured, un-authenticated source that carries a game's real
+# announcement history (including genuine update posts) with full body text.
+# Fragile in the sense that any undocumented page internal is (a site
+# redesign can change this shape), but it is Nintendo's own first-party
+# content, served plainly over https with no bot-challenge encountered —
+# unlike e.g. nintendolife.com, which Cloudflare blocks outright.
+NINTENDO_PRODUCT_BASE = "https://www.nintendo.com/us/store/products"
+# Capped: a prolific title (Mario Kart 8 Deluxe) still only has a handful of
+# genuine news entries, and this trades one extra HTTP request per item.
+NINTENDO_NEWS_MAX = 8
+_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
+
+
+def _nintendo_slug(title: str) -> str:
+    """Best-guess nintendo.com product-page slug from a game title. Verified
+    live against two real titles (both matched on the first try), but this is
+    a guess, not a lookup — no reachable search API was found (the site's own
+    search is client-rendered, not server-embedded), so a miss here just means
+    no Switch news for that game, same as not finding one at all."""
+    s = re.sub(r"[™®©]", "", str(title or ""))
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
+    return s
+
+
+def _extract_next_data(raw_html: str):
+    m = _NEXT_DATA_RE.search(raw_html or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except Exception:
+        return None
+
+
+def _news_articles_from_next_data(data: dict) -> list:
+    """The product page's "Related news and events" list, newest first. Each
+    entry here only carries title/url/date/media — the full body lives on the
+    article's own page (see _fetch_switch_article)."""
+    try:
+        apollo = data["props"]["pageProps"]["initialApolloState"]
+    except Exception:
+        return []
+    arts = []
+    for k, v in apollo.items():
+        if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                and v.get("locale") == "en_US" and v.get("title") and v.get("url")):
+            arts.append(v)
+    arts.sort(key=lambda a: a.get("publishDate") or "", reverse=True)
+    return arts
+
+
+def _nintendo_richtext_to_html(node) -> str:
+    """Contentful rich-text JSON (the article body's native format) -> a
+    small HTML subset, built from the SAME allowed tags _sanitize_html already
+    permits. Unrecognized node types (embedded assets/entries, tables, …)
+    degrade to their flattened text rather than being dropped outright."""
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("nodeType", "")
+    if node_type == "text":
+        text = html.escape(str(node.get("value", "")), quote=False)
+        marks = {m.get("type") for m in (node.get("marks") or []) if isinstance(m, dict)}
+        if "code" in marks:
+            text = f"<code>{text}</code>"
+        if "italic" in marks:
+            text = f"<em>{text}</em>"
+        if "bold" in marks:
+            text = f"<strong>{text}</strong>"
+        if "underline" in marks:
+            text = f"<u>{text}</u>"
+        return text
+    children = "".join(
+        _nintendo_richtext_to_html(c) for c in (node.get("content") or [])
+    )
+    if node_type == "document":
+        return children
+    if node_type == "paragraph":
+        return f"<p>{children}</p>" if children.strip() else ""
+    if node_type in (
+        "heading-1", "heading-2", "heading-3",
+        "heading-4", "heading-5", "heading-6",
+    ):
+        level = node_type[-1]
+        return f"<h{level}>{children}</h{level}>"
+    if node_type == "unordered-list":
+        return f"<ul>{children}</ul>"
+    if node_type == "ordered-list":
+        return f"<ol>{children}</ol>"
+    if node_type == "list-item":
+        return f"<li>{children}</li>"
+    if node_type == "blockquote":
+        return f"<blockquote>{children}</blockquote>"
+    if node_type == "hr":
+        return "<hr>"
+    if node_type == "hyperlink":
+        uri = str((node.get("data") or {}).get("uri", ""))
+        safe = html.escape(_safe_url(uri), quote=True)
+        return f'<a href="{safe}" target="_blank" rel="noreferrer">{children}</a>'
+    # embedded-asset-block / embedded-entry-block / table / anything future:
+    # no safe generic rendering, so just keep whatever text it carries.
+    return children
 
 
 # --------------------------------------------------------------------------- #
@@ -1989,6 +2166,117 @@ class Plugin:
         # converter), so the fix shows at once instead of after the cached copy
         # expires.
         return await self._fetch("news_posts", str(appid), url, norm)
+
+    async def _fetch_switch_article(self, url: str) -> dict:
+        """One Nintendo news article's full body, by re-parsing ITS OWN
+        __NEXT_DATA__ (the product page only carries title/date/url — see
+        _news_articles_from_next_data). Best-effort: a failure here still
+        leaves the title/date/link usable, just with an empty body, rather
+        than dropping the item from the list."""
+        try:
+            loop = asyncio.get_running_loop()
+            raw_html = await loop.run_in_executor(None, _http_get_text, url)
+        except Exception as exc:
+            decky.logger.warning(f"switch article fetch failed ({url}): {exc}")
+            return {"html": ""}
+        data = _extract_next_data(raw_html)
+        if not isinstance(data, dict):
+            return {"html": ""}
+        try:
+            apollo = data["props"]["pageProps"]["initialApolloState"]
+        except Exception:
+            return {"html": ""}
+        for k, v in apollo.items():
+            # On an article's OWN page, its en_US cache entry's `url` field is
+            # null (only populated when the SAME article is referenced FROM a
+            # product page's related-news list) — `body` is what's actually
+            # exclusive to the one entry we want, so match on that instead.
+            if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                    and v.get("locale") == "en_US" and v.get("body")):
+                body_json = (v.get("body") or {}).get("json")
+                if not body_json:
+                    return {"html": ""}
+                try:
+                    return {"html": _sanitize_html(_nintendo_richtext_to_html(body_json))}
+                except Exception as exc:
+                    decky.logger.warning(f"switch article body render failed ({url}): {exc}")
+                    return {"html": ""}
+        return {"html": ""}
+
+    async def get_switch_news(self, title: str) -> dict:
+        """Nintendo eShop 'Related news and events' for a Switch game — see
+        the module-level comment above _is_switch_platform/NINTENDO_PRODUCT_
+        BASE for why this guesses a URL instead of calling a documented API
+        (none exists). Only called for a title _is_switch_platform already
+        said is a Switch game; a slug guess that misses just means no update
+        history for this one, same as any other title Nintendo never covered.
+        """
+        slug_base = _nintendo_slug(title)
+        if not slug_base:
+            return {"ok": False, "error": "no title to search"}
+
+        cached, fresh = _read_cache_entry("switch_news", slug_base)
+        if cached is not None and fresh:
+            return cached
+
+        loop = asyncio.get_running_loop()
+        candidates = [f"{slug_base}-switch", f"{slug_base}-switch-2", slug_base]
+        page_html = None
+        for cand in candidates:
+            url = f"{NINTENDO_PRODUCT_BASE}/{cand}/"
+            try:
+                page_html = await loop.run_in_executor(None, _http_get_text, url)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    decky.logger.warning(f"switch product page HTTP {exc.code} for {cand}")
+                continue
+            except Exception as exc:
+                decky.logger.warning(f"switch product page fetch failed ({cand}): {exc}")
+                continue
+
+        if page_html is None:
+            res = {"ok": False, "error": "no Nintendo eShop page found for this title"}
+            _write_negative("switch_news", slug_base, res)
+            return res
+
+        data = _extract_next_data(page_html)
+        arts = _news_articles_from_next_data(data) if isinstance(data, dict) else []
+        if not arts:
+            res = {"ok": True, "items": []}
+            _write_cache("switch_news", slug_base, res)
+            return res
+
+        arts = arts[:NINTENDO_NEWS_MAX]
+        bodies = await asyncio.gather(
+            *[self._fetch_switch_article(str(a.get("url", ""))) for a in arts],
+            return_exceptions=True,
+        )
+
+        items = []
+        for art, body in zip(arts, bodies):
+            body_html = body.get("html", "") if isinstance(body, dict) else ""
+            pub = str(art.get("publishDate") or "")
+            try:
+                ts = int(
+                    datetime.datetime.fromisoformat(pub.replace("Z", "+00:00")).timestamp()
+                )
+            except Exception:
+                ts = 0
+            items.append({
+                "gid": str(art.get("id", "")),
+                "title": str(art.get("title", "")),
+                "html": body_html,
+                "date": ts,
+                "url": _safe_ext_url(str(art.get("url", ""))),
+                "external": True,
+                "feedlabel": "Nintendo",
+                "author": "",
+            })
+
+        res = {"ok": True, "items": items}
+        _write_cache("switch_news", slug_base, res)
+        return res
 
     async def get_deck(self, appid: int, lang: str = "english"):
         url = ("https://store.steampowered.com/saleaction/"
@@ -2361,6 +2649,16 @@ class Plugin:
         out["igdb_enriched"] = True
         return out
 
+    async def _switch_news_for(self, appdetails: dict) -> dict:
+        """News section for a non-Steam provider result: Nintendo's own
+        eShop update announcements when this is recognizably a Switch game,
+        the existing "Steam-only" placeholder otherwise (SNES/Genesis/PS1/…
+        ROMs matched through the exact same Hasheous/IGDB path have no
+        equivalent to try)."""
+        if not _is_switch_platform(appdetails):
+            return {"ok": False, "error": "update history is Steam-only"}
+        return await self.get_switch_news(str(appdetails.get("name") or ""))
+
     async def get_all_provider(self, provider, id, lang: str = "english",
                                cc: str = "us"):
         """Non-Steam metadata aggregate — same AppData shape as get_all, with
@@ -2414,7 +2712,7 @@ class Plugin:
             return {
                 "ok": True, "appid": gid, "appdetails": appdetails,
                 "reviews": {"ok": False, "error": "reviews are Steam-only"},
-                "news": {"ok": False, "error": "update history is Steam-only"},
+                "news": await self._switch_news_for(appdetails),
                 "deck": {"ok": False, "error": "not a Steam app"},
             }
         url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
@@ -2444,7 +2742,7 @@ class Plugin:
             "appid": gid,
             "appdetails": appdetails,
             "reviews": {"ok": False, "error": "reviews are Steam-only"},
-            "news": {"ok": False, "error": "update history is Steam-only"},
+            "news": await self._switch_news_for(appdetails),
             "deck": {"ok": False, "error": "not a Steam app"},
         }
 

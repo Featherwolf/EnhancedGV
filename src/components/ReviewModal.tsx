@@ -13,13 +13,19 @@ export function deckNote(r: ReviewItem, t: T): string | null {
   return r.steam_deck ? t("reviews.onDeck") : null;
 }
 
-export function postedDate(r: ReviewItem): string | null {
+// Keyed to the plugin's own uiLanguage, same as ReviewsSection's card list,
+// rather than the runtime's default locale.
+export function postedDate(r: ReviewItem, language: string): string | null {
   if (!r.timestamp) return null;
-  return new Date(r.timestamp * 1000).toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  try {
+    return new Intl.DateTimeFormat(language, {
+      year: "numeric",
+      month: "short",
+      day: "numeric",
+    }).format(new Date(r.timestamp * 1000));
+  } catch {
+    return null;
+  }
 }
 
 export function helpfulText(r: ReviewItem, t: T): string | null {
@@ -47,10 +53,10 @@ export function ReviewModal({
   review: ReviewItem;
   closeModal?: () => void;
 }) {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const html = textToSafeHtml(review.text);
   const deck = deckNote(review, t);
-  const posted = postedDate(review);
+  const posted = postedDate(review, language);
   const helpful = helpfulText(review, t);
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>

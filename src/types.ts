@@ -47,7 +47,14 @@ export interface AppDetails {
   background: string;
   developers: string[];
   publishers: string[];
+  // English fallback string (backend-formatted). Steam's own appdetails reply
+  // is already localized via get_appdetails' l= param, so this IS the right
+  // string to show for a Steam game as-is. For a non-Steam/IGDB-enriched game
+  // it's only ever in English (no locale data available server-side) — the
+  // frontend prefers `release_timestamp` there, formatting it with
+  // Intl.DateTimeFormat for a real per-language month name.
   release_date: string;
+  release_timestamp?: number | null;
   coming_soon: boolean;
   website: string | null;
   controller_support: string | null;
@@ -147,9 +154,19 @@ export interface DeckCompat {
   ok: boolean;
   error?: string;
   category: number; // 0 Unknown / 1 Unsupported / 2 Playable / 3 Verified
+  // English, computed by the backend — Steam's own compat-report endpoint
+  // never localizes (verified live: l=brazilian and l=english return
+  // byte-identical loc_tokens). Prefer translating `category` via i18n's
+  // deck.cat.<n> instead of displaying this.
   label: string;
   steamos_category: number | null;
-  notes: { display_type: number; text: string }[];
+  notes: {
+    display_type: number;
+    text: string; // English fallback; see `token`
+    // Normalized loc_token (e.g. "DefaultControllerConfigFullyFunctional"),
+    // for an i18n lookup (deck.note.<token>) — empty if Steam sent none.
+    token?: string;
+  }[];
   blog_url: string;
 }
 

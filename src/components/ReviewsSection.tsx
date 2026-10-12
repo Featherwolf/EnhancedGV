@@ -14,10 +14,10 @@ import type { TranslationKey } from "../i18n";
 // it while scrolling, and A opens the full text in a popup — the list keeps the
 // 5-line clamp so it stays skimmable.
 function ReviewCard({ review }: { review: ReviewItem }) {
-  const { t } = useTranslation();
+  const { t, language } = useTranslation();
   const [focused, setFocused] = useState(false);
   const deck = deckNote(review, t);
-  const posted = postedDate(review);
+  const posted = postedDate(review, language);
   const helpful = helpfulText(review, t);
   return (
     <Focusable
@@ -112,17 +112,14 @@ function ScoreRow({
   );
 }
 
-// Steam's language codes that don't read as names once capitalized.
-const LANG_NAMES: Record<string, string> = {
-  schinese: "Simplified Chinese",
-  tchinese: "Traditional Chinese",
-  koreana: "Korean",
-  latam: "Latin American Spanish",
-  brazilian: "Brazilian Portuguese",
-};
-
-function langName(code: string): string {
-  return LANG_NAMES[code] ?? code.charAt(0).toUpperCase() + code.slice(1);
+// reviews.lang is a Steam store-API language SLUG ("brazilian", "schinese", …
+// — see STORE_LANGS in lang.ts), not fit to show as-is; look up its display
+// name, falling back to a capitalized version of the code for anything added
+// to STORE_LANGS without a matching lang.* key yet.
+function langDisplayName(code: string, t: (k: TranslationKey) => string): string {
+  const key = `lang.${code.toLowerCase()}` as TranslationKey;
+  const translated = t(key);
+  return translated !== key ? translated : code.charAt(0).toUpperCase() + code.slice(1);
 }
 
 // No "Recent" chip: every list is the newest reviews already, so a 30-day
@@ -232,7 +229,9 @@ export function ReviewsSection({
         )}
         {ls && ls.total_reviews > 0 && ls.total_reviews !== s.total_reviews && (
           <ScoreRow
-            label={t("reviews.langReviews", { lang: langName(reviews.lang ?? "english") })}
+            label={t("reviews.langReviews", {
+              lang: langDisplayName(reviews.lang ?? "english", t),
+            })}
             s={ls}
             t={t}
           />

@@ -42,13 +42,86 @@ export const ptBR: Record<TranslationKey, string> = {
   "features.price": "Preço",
   "features.languages": "Idiomas",
 
+  // Tradução de melhor esforço para os badges de gênero/tema. Os gêneros e
+  // categorias da própria Steam já chegam localizados (via o parâmetro l= de
+  // get_appdetails), então essas chaves nunca batem com eles -- continuam
+  // aparecendo sem alteração do mesmo jeito. Elas existem para jogos
+  // não-Steam (Hasheous), cujas tags são geradas por IA e não têm nenhuma
+  // API de tradução para chamar -- um vocabulário aberto e crescente a cada
+  // jogo, então isto cobre só as palavras de gênero/tema mais comuns e
+  // reutilizáveis; o que não estiver aqui aparece com o texto original em
+  // inglês (ver tagLabel em FeaturesSection.tsx).
+  "tag.platform": "Plataforma",
+  "tag.platformer": "Plataforma",
+  "tag.action": "Ação",
+  "tag.adventure": "Aventura",
+  "tag.action_adventure": "Ação e Aventura",
+  "tag.puzzle": "Quebra-cabeça",
+  "tag.shooter": "Tiro",
+  "tag.racing": "Corrida",
+  "tag.rpg": "RPG",
+  "tag.strategy": "Estratégia",
+  "tag.simulation": "Simulação",
+  "tag.sports": "Esportes",
+  "tag.horror": "Terror",
+  "tag.stealth": "Furtividade",
+  "tag.survival": "Sobrevivência",
+  "tag.fighting": "Luta",
+  "tag.arcade": "Arcade",
+  "tag.indie": "Indie",
+  "tag.retro": "Retrô",
+  "tag.multiplayer": "Multijogador",
+  "tag.singleplayer": "Um jogador",
+  "tag.single_player": "Um jogador",
+  "tag.card": "Cartas",
+  "tag.party": "Festa",
+  "tag.music": "Música",
+  "tag.rhythm": "Ritmo",
+  "tag.educational": "Educativo",
+  "tag.trivia": "Perguntas e respostas",
+  "tag.roguelike": "Roguelike",
+  "tag.sandbox": "Sandbox",
+  "tag.exploration": "Exploração",
+  "tag.combat": "Combate",
+  "tag.competitive": "Competitivo",
+  "tag.turn_based": "Por turnos",
+  "tag.top_down": "Visão de cima",
+  "tag.side_view": "Visão lateral",
+  "tag.collect": "Coleta",
+  "tag.construction": "Construção",
+
   // Steam Deck compatibility
   "deck.none": "Sem relatório de compatibilidade com o Steam Deck.",
   "deck.label": "Deck: {label}",
+  "deck.cat.0": "Desconhecido",
+  "deck.cat.1": "Não suportado",
+  "deck.cat.2": "Jogável",
+  "deck.cat.3": "Verificado",
+  "deck.note.DefaultControllerConfigFullySupported":
+    "A configuração padrão do controle tem suporte completo",
+  "deck.note.DefaultControllerConfigFullyFunctional":
+    "A configuração padrão do controle tem suporte completo",
+  "deck.note.ControllerGlyphsMatchDeckDevice":
+    "Os ícones do controle no jogo correspondem ao Deck",
+  "deck.note.DefaultConfigurationIsPerformant":
+    "A configuração gráfica padrão tem bom desempenho",
+  "deck.note.TextIsLegible": "O texto do jogo é legível",
+  "deck.note.InterfaceTextIsLegible": "O texto do jogo é legível",
+  "deck.note.ResolutionSupported": "A resolução nativa da tela é suportada",
+  "deck.note.DisplayOutputHasBlackBars":
+    "A tela apresenta faixas pretas (proporção não nativa)",
+  "deck.note.TextInputDoesNotAutomaticallyInvokesKeyboard":
+    "O teclado virtual não é aberto automaticamente para entrada de texto",
+  "deck.note.LauncherInteractionIssues":
+    "O launcher/configuração exige interação extra",
+  "deck.note.ExternalControllersNotSupportedInLauncher":
+    "Parte da interface não é acessível só com os controles embutidos",
+  "deck.note.GamepadNavigationInGameStore":
+    "Este jogo mostra o teclado virtual quando necessário",
 
   // Update history (news)
   "news.none": "Nenhuma atualização recente.",
-  "news.viewOnSteam": "Ver na Steam",
+  "news.viewOnline": "Ver online",
 
   // Reviews
   "reviews.none": "Nenhuma avaliação disponível.",
@@ -56,6 +129,40 @@ export const ptBR: Record<TranslationKey, string> = {
   "reviews.recent": "Avaliações recentes:",
   "reviews.langReviews": "Avaliações em {lang}:",
   "reviews.noScore": "Sem pontuação",
+  // Nome de exibição para um código de idioma da API da loja Steam (reviews.lang
+  // / a linha "Avaliações em {lang}:") -- o código em si ("brazilian",
+  // "schinese", …) é uma sigla interna da API, não serve para mostrar direto.
+  // Corresponde exatamente ao STORE_LANGS de lang.ts.
+  "lang.english": "Inglês",
+  "lang.german": "Alemão",
+  "lang.french": "Francês",
+  "lang.italian": "Italiano",
+  "lang.koreana": "Coreano",
+  "lang.latam": "Espanhol (América Latina)",
+  "lang.spanish": "Espanhol",
+  "lang.schinese": "Chinês (Simplificado)",
+  "lang.tchinese": "Chinês (Tradicional)",
+  "lang.russian": "Russo",
+  "lang.thai": "Tailandês",
+  "lang.japanese": "Japonês",
+  "lang.brazilian": "Português (Brasil)",
+  "lang.portuguese": "Português",
+  "lang.polish": "Polonês",
+  "lang.danish": "Dinamarquês",
+  "lang.dutch": "Holandês",
+  "lang.finnish": "Finlandês",
+  "lang.norwegian": "Norueguês",
+  "lang.swedish": "Sueco",
+  "lang.hungarian": "Húngaro",
+  "lang.czech": "Tcheco",
+  "lang.romanian": "Romeno",
+  "lang.turkish": "Turco",
+  "lang.arabic": "Árabe",
+  "lang.bulgarian": "Búlgaro",
+  "lang.greek": "Grego",
+  "lang.ukrainian": "Ucraniano",
+  "lang.vietnamese": "Vietnamita",
+  "lang.indonesian": "Indonésio",
   "reviews.summaryLine": "{pct}% positivas · {pos} positivas / {neg} negativas",
   "reviews.chipAll": "Todas",
   "reviews.chipPositive": "Positivas",

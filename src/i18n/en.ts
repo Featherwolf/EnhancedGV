@@ -47,13 +47,94 @@ export const en = {
   "features.price": "Price",
   "features.languages": "Languages",
 
+  // Best-effort translation for genre/theme pills. Steam's own genres/
+  // categories already arrive pre-localized (via get_appdetails' l= param),
+  // so these keys never match them and they render unchanged either way.
+  // They exist for non-Steam (Hasheous) games, whose AI-generated tags have
+  // no translation API to call — an open, ever-growing vocabulary across
+  // every game, so this covers only the common, reusable genre/theme words;
+  // anything not listed here renders as the original English tag text
+  // (see tagLabel in FeaturesSection.tsx).
+  "tag.platform": "Platform",
+  "tag.platformer": "Platformer",
+  "tag.action": "Action",
+  "tag.adventure": "Adventure",
+  "tag.action_adventure": "Action-Adventure",
+  "tag.puzzle": "Puzzle",
+  "tag.shooter": "Shooter",
+  "tag.racing": "Racing",
+  "tag.rpg": "RPG",
+  "tag.strategy": "Strategy",
+  "tag.simulation": "Simulation",
+  "tag.sports": "Sports",
+  "tag.horror": "Horror",
+  "tag.stealth": "Stealth",
+  "tag.survival": "Survival",
+  "tag.fighting": "Fighting",
+  "tag.arcade": "Arcade",
+  "tag.indie": "Indie",
+  "tag.retro": "Retro",
+  "tag.multiplayer": "Multiplayer",
+  "tag.singleplayer": "Singleplayer",
+  "tag.single_player": "Single-Player",
+  "tag.card": "Card",
+  "tag.party": "Party",
+  "tag.music": "Music",
+  "tag.rhythm": "Rhythm",
+  "tag.educational": "Educational",
+  "tag.trivia": "Trivia",
+  "tag.roguelike": "Roguelike",
+  "tag.sandbox": "Sandbox",
+  "tag.exploration": "Exploration",
+  "tag.combat": "Combat",
+  "tag.competitive": "Competitive",
+  "tag.turn_based": "Turn-Based",
+  "tag.top_down": "Top-Down",
+  "tag.side_view": "Side View",
+  "tag.collect": "Collect",
+  "tag.construction": "Construction",
+
   // Steam Deck compatibility
   "deck.none": "No Steam Deck compatibility report.",
   "deck.label": "Deck: {label}",
+  // Category labels (Steam's own compat-report endpoint never localizes —
+  // verified live: l=brazilian and l=english come back byte-identical — so
+  // these are translated here instead of trusting the backend's label).
+  "deck.cat.0": "Unknown",
+  "deck.cat.1": "Unsupported",
+  "deck.cat.2": "Playable",
+  "deck.cat.3": "Verified",
+  // Per-note explanations, keyed by the normalized loc_token (see
+  // DeckCompat.notes[].token in types.ts). Same reasoning as deck.cat.* —
+  // Steam sends only the raw token, never resolved text, in any language.
+  "deck.note.DefaultControllerConfigFullySupported":
+    "Default controller configuration is fully supported",
+  "deck.note.DefaultControllerConfigFullyFunctional":
+    "Default controller configuration is fully supported",
+  "deck.note.ControllerGlyphsMatchDeckDevice":
+    "In-game controller glyphs match the Deck",
+  "deck.note.DefaultConfigurationIsPerformant":
+    "Default graphics configuration performs well",
+  "deck.note.TextIsLegible": "In-game text is legible",
+  "deck.note.InterfaceTextIsLegible": "In-game text is legible",
+  "deck.note.ResolutionSupported": "Native display resolution is supported",
+  "deck.note.DisplayOutputHasBlackBars":
+    "Display has black bars (non-native aspect ratio)",
+  "deck.note.TextInputDoesNotAutomaticallyInvokesKeyboard":
+    "On-screen keyboard is not brought up automatically for text input",
+  "deck.note.LauncherInteractionIssues":
+    "Launcher/setup requires extra interaction",
+  "deck.note.ExternalControllersNotSupportedInLauncher":
+    "Some functionality is not accessible with the built-in controls",
+  "deck.note.GamepadNavigationInGameStore":
+    "This game shows the on-screen keyboard when needed",
 
   // Update history (news)
   "news.none": "No recent updates.",
-  "news.viewOnSteam": "View on Steam",
+  // Opens the item's own link (Steam's announcement page, or a Nintendo
+  // eShop article for a Switch game) — not source-specific, unlike the old
+  // "View on Steam" wording, which was wrong for every non-Steam item.
+  "news.viewOnline": "View online",
 
   // Reviews
   "reviews.none": "No reviews available.",
@@ -61,6 +142,40 @@ export const en = {
   "reviews.recent": "Recent Reviews:",
   "reviews.langReviews": "{lang} Reviews:",
   "reviews.noScore": "No score",
+  // Display name for a Steam store-API language code (reviews.lang / the
+  // "{lang} Reviews:" row) — the code itself ("brazilian", "schinese", …) is
+  // an internal API slug, not fit to show as-is. Matches lang.ts's
+  // STORE_LANGS exactly.
+  "lang.english": "English",
+  "lang.german": "German",
+  "lang.french": "French",
+  "lang.italian": "Italian",
+  "lang.koreana": "Korean",
+  "lang.latam": "Spanish (Latin America)",
+  "lang.spanish": "Spanish",
+  "lang.schinese": "Chinese (Simplified)",
+  "lang.tchinese": "Chinese (Traditional)",
+  "lang.russian": "Russian",
+  "lang.thai": "Thai",
+  "lang.japanese": "Japanese",
+  "lang.brazilian": "Portuguese (Brazil)",
+  "lang.portuguese": "Portuguese",
+  "lang.polish": "Polish",
+  "lang.danish": "Danish",
+  "lang.dutch": "Dutch",
+  "lang.finnish": "Finnish",
+  "lang.norwegian": "Norwegian",
+  "lang.swedish": "Swedish",
+  "lang.hungarian": "Hungarian",
+  "lang.czech": "Czech",
+  "lang.romanian": "Romanian",
+  "lang.turkish": "Turkish",
+  "lang.arabic": "Arabic",
+  "lang.bulgarian": "Bulgarian",
+  "lang.greek": "Greek",
+  "lang.ukrainian": "Ukrainian",
+  "lang.vietnamese": "Vietnamese",
+  "lang.indonesian": "Indonesian",
   "reviews.summaryLine": "{pct}% positive · {pos} up / {neg} down",
   "reviews.chipAll": "All",
   "reviews.chipPositive": "Positive",
