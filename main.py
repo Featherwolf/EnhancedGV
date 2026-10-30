@@ -19,6 +19,7 @@ import html
 import asyncio
 import datetime
 import functools
+import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -48,7 +49,7 @@ IGDB_TOKEN_FILE = os.path.join(SETTINGS_DIR, "igdb_token.json")
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
-CACHE_VERSION = "0.21.0-locale"
+CACHE_VERSION = "0.22.0-pn-priority"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
@@ -62,6 +63,15 @@ TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
+# Per-kind override of the above. switch_news's negative case is reached a lot
+# more often than a plain network blip: perfectly-nintendo.com genuinely has no
+# article for plenty of titles, and that's a stable fact, not a glitch — the
+# 120s default was only ever a stopgap for testing the matching logic itself.
+# An hour avoids re-hitting both sources (and perfectly-nintendo.com's own
+# intermittent TLS flakiness — see PN_RETRY_ATTEMPTS) on every revisit within
+# a session, while still recovering well within the same day if a fetch
+# failure, rather than a genuine miss, was the actual cause.
+NEGATIVE_TTL_OVERRIDE = {"switch_news": 3600}
 # How long past its TTL a cached entry may still be SERVED while a refresh runs
 # in the background (stale-while-revalidate). Revisiting a game after the TTL
 # expired used to mean sitting on the loading placeholder through a full set of
@@ -372,7 +382,7 @@ def _read_cache_entry(kind: str, key: str):
         return None, False  # corrupt/foreign file -> a cache miss, never raise
     age = time.time() - blob.get("fetched_at", 0)
     negative = bool(blob.get("negative"))
-    ttl = NEGATIVE_TTL if negative else TTL.get(kind, 3600)
+    ttl = NEGATIVE_TTL_OVERRIDE.get(kind, NEGATIVE_TTL) if negative else TTL.get(kind, 3600)
     if age < ttl:
         return blob.get("data"), True
     # A stale FAILURE is worthless — never serve it; retry instead.
@@ -1697,8 +1707,16 @@ def _nintendo_slug(title: str) -> str:
     live against two real titles (both matched on the first try), but this is
     a guess, not a lookup — no reachable search API was found (the site's own
     search is client-rendered, not server-embedded), so a miss here just means
-    no Switch news for that game, same as not finding one at all."""
-    s = re.sub(r"[™®©]", "", str(title or ""))
+    no Switch news for that game, same as not finding one at all.
+
+    Also used (see _parse_pn_search) to normalize titles for the
+    perfectly-nintendo.com fallback match — NFKD-decomposing first matters
+    there specifically: without it, "Pokémon" loses its "é" to the ASCII-only
+    strip below and becomes "pok-mon", which never matches "pokemon" (bug
+    found live: every accented title silently got zero fallback results)."""
+    s = unicodedata.normalize("NFKD", str(title or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[™®©]", "", s)
     s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
     return s
 
@@ -1728,6 +1746,130 @@ def _news_articles_from_next_data(data: dict) -> list:
             arts.append(v)
     arts.sort(key=lambda a: a.get("publishDate") or "", reverse=True)
     return arts
+
+
+# --- perfectly-nintendo.com (tried FIRST — see get_switch_news) ----------- #
+# perfectly-nintendo.com maintains one hand-written "all the updates" article
+# per game — a single page, continuously edited in place, with the full real
+# version/patch-note history. Nintendo's own eShop page (below) is tried
+# second: its "related news" is PR-style announcements, which several titles
+# have PLENTY of while carrying zero actual patch notes (confirmed live —
+# see get_switch_news), so checking it first would mask this site's content
+# rather than merely filling a gap. It has no API and no server-rendered
+# search result we can query as JSON either, just an ordinary WordPress
+# search page, so this is scraped the same way as the Nintendo page: request
+# a page, regex out what's needed.
+PN_BASE = "https://www.perfectly-nintendo.com"
+# A browser-shaped UA, used instead of the module-wide USER_AGENT purely by
+# convention for a third-party site — doesn't actually move the failure rate
+# below (that's the WAF flakiness, not UA sniffing).
+PN_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                 "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+# This host's TLS handshake intermittently times out — confirmed live, ~30%
+# of requests, independent of UA, spaced seconds apart, immediately followed
+# by a clean success (looks like a WAF/edge node that occasionally just
+# drops the connection rather than a slow server or a hard block). A single
+# retry still missed it occasionally in practice (confirmed live), so
+# _fetch_pn_update_page gets 3 attempts per request rather than 2.
+PN_RETRY_ATTEMPTS = 3
+PN_RETRY_DELAY = 2.0
+_PN_RESULT_RE = re.compile(r'<h2 class="cm-entry-title">\s*<a href="([^"]+)" title="([^"]*)">')
+# Every "all the updates" article's URL carries this segment (sometimes with
+# a "switch" infix, sometimes not) — verified against a dozen real titles.
+# Not anchored to the end: some of these slugs tack on a trailing version
+# number at creation time (e.g. "...-switch-software-updates-latest-ver-1-0-2/"
+# for Donkey Kong Country: Tropical Freeze — confirmed live), so the end-
+# anchored form missed real update pages.
+_PN_UPDATES_URL_RE = re.compile(r'-(?:switch-)?(?:software-updates|all-the-updates)(?:-|/|$)')
+
+
+def _pn_http_get_text(url: str) -> str:
+    """_http_get_text against perfectly-nintendo.com, retrying PN_RETRY_
+    ATTEMPTS times on failure (see PN_RETRY_ATTEMPTS comment above). Runs
+    inside the executor thread, so the blocking sleep between attempts
+    doesn't stall the event loop."""
+    last_exc = None
+    for attempt in range(PN_RETRY_ATTEMPTS):
+        try:
+            return _http_get_text(url, {"User-Agent": PN_USER_AGENT})
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < PN_RETRY_ATTEMPTS:
+                time.sleep(PN_RETRY_DELAY)
+    raise last_exc
+_PN_DIV_RE = re.compile(r'<(/?)div\b[^>]*>')
+_PN_CONTENT_START_RE = re.compile(r'<div class="cm-entry-summary">')
+_PN_TITLE_RE = re.compile(r'<h1 class="cm-entry-title">\s*(.*?)\s*</h1>', re.S)
+_PN_DATE_RE = re.compile(r'<time\b[^>]*\bdatetime="([^"]+)"')
+
+
+def _pn_title_matches(want_words: list, got: str) -> bool:
+    """Whether every word of our (slugified) game title appears in the
+    candidate article's slug, IN ORDER, allowing gaps. A plain prefix check
+    (got.startswith(want)) missed real pages where perfectly-nintendo.com
+    bundles several games into one article — e.g. "Super Mario Galaxy +
+    Super Mario Galaxy 2" for a "Super Mario Galaxy 2" lookup, or "Pokémon
+    Brilliant Diamond / Shining Pearl" for "Pokémon Shining Pearl" — both
+    confirmed live misses before this. The URL-suffix filter already run by
+    the caller keeps this from being too loose."""
+    got_words = got.split("-")
+    i = 0
+    for w in want_words:
+        try:
+            i = got_words.index(w, i) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def _parse_pn_search(raw_html: str, game_title: str) -> str:
+    """Best-matching 'software updates' article URL from a perfectly-nintendo.
+    com search-results page, or "" if nothing looks like a safe match. Unlike
+    the blind nintendo.com slug guess, this site's search hands back real
+    article titles, so a result is only trusted when its title actually
+    contains our game's words in order (see _pn_title_matches) — avoids
+    attaching another game's update history just because it mentioned ours
+    in passing."""
+    want = _nintendo_slug(game_title)
+    if not want:
+        return ""
+    want_words = want.split("-")
+    for href, title_attr in _PN_RESULT_RE.findall(raw_html or ""):
+        if not _PN_UPDATES_URL_RE.search(href):
+            continue
+        got = _nintendo_slug(html.unescape(title_attr))
+        if _pn_title_matches(want_words, got):
+            return href
+    return ""
+
+
+def _pn_extract_div_content(raw_html: str, open_tag_end: int) -> str:
+    """Inner HTML of a <div>...</div>, matched by nesting depth rather than a
+    fixed sibling marker — the article body is long (full version history)
+    and nothing reliably follows it across every page layout variant."""
+    depth = 1
+    for m in _PN_DIV_RE.finditer(raw_html, open_tag_end):
+        depth += 1 if m.group(1) == "" else -1
+        if depth == 0:
+            return raw_html[open_tag_end:m.start()]
+    return raw_html[open_tag_end:]
+
+
+def _parse_pn_article(raw_html: str):
+    m = _PN_CONTENT_START_RE.search(raw_html or "")
+    if not m:
+        return None
+    body_raw = _pn_extract_div_content(raw_html, m.end())
+    title_m = _PN_TITLE_RE.search(raw_html)
+    title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
+    date_m = _PN_DATE_RE.search(raw_html)
+    ts = 0
+    if date_m:
+        try:
+            ts = int(datetime.datetime.fromisoformat(date_m.group(1)).timestamp())
+        except Exception:
+            ts = 0
+    return {"title": title, "html": _sanitize_html(body_raw), "date": ts}
 
 
 def _nintendo_richtext_to_html(node) -> str:
@@ -2180,22 +2322,55 @@ class Plugin:
                     return {"html": ""}
         return {"html": ""}
 
-    async def get_switch_news(self, title: str) -> dict:
+    async def _fetch_pn_update_page(self, title: str) -> dict:
+        """perfectly-nintendo.com lookup for get_switch_news, tried FIRST
+        (see the module comment above PN_BASE): search the site for this
+        title, then scrape its one "all the updates" article into the same
+        news-item shape the Nintendo path produces, so the frontend can't
+        tell which source it came from."""
+        loop = asyncio.get_running_loop()
+        search_url = f"{PN_BASE}/?s={urllib.parse.quote_plus(title)}"
+        try:
+            search_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, search_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo search failed ({title}): {exc}")
+            return {"ok": False, "error": "perfectly-nintendo.com search failed"}
+
+        article_url = _parse_pn_search(search_html, title)
+        if not article_url:
+            return {"ok": True, "items": []}
+
+        try:
+            article_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, article_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo article fetch failed ({article_url}): {exc}")
+            return {"ok": True, "items": []}
+
+        art = _parse_pn_article(article_html)
+        if not art or not art.get("html"):
+            return {"ok": True, "items": []}
+
+        item = {
+            "gid": _nintendo_slug(title) or "pn-updates",
+            "title": art.get("title") or f"{title}: software updates",
+            "html": art["html"],
+            "date": art.get("date", 0),
+            "url": _safe_ext_url(article_url),
+            "external": True,
+            "feedlabel": "Perfectly Nintendo",
+            "author": "",
+        }
+        return {"ok": True, "items": [item]}
+
+    async def _get_nintendo_eshop_news(self, title: str, slug_base: str) -> dict:
         """Nintendo eShop 'Related news and events' for a Switch game — see
         the module-level comment above _is_switch_platform/NINTENDO_PRODUCT_
         BASE for why this guesses a URL instead of calling a documented API
-        (none exists). Only called for a title _is_switch_platform already
-        said is a Switch game; a slug guess that misses just means no update
-        history for this one, same as any other title Nintendo never covered.
-        """
-        slug_base = _nintendo_slug(title)
-        if not slug_base:
-            return {"ok": False, "error": "no title to search"}
-
-        cached, fresh = _read_cache_entry("switch_news", slug_base)
-        if cached is not None and fresh:
-            return cached
-
+        (none exists). These are PR-style announcement articles, NOT a
+        version/patch history — see get_switch_news for why that makes this
+        the second choice, not the first."""
         loop = asyncio.get_running_loop()
         candidates = [f"{slug_base}-switch", f"{slug_base}-switch-2", slug_base]
         page_html = None
@@ -2213,16 +2388,12 @@ class Plugin:
                 continue
 
         if page_html is None:
-            res = {"ok": False, "error": "no Nintendo eShop page found for this title"}
-            _write_negative("switch_news", slug_base, res)
-            return res
+            return {"ok": True, "items": []}
 
         data = _extract_next_data(page_html)
         arts = _news_articles_from_next_data(data) if isinstance(data, dict) else []
         if not arts:
-            res = {"ok": True, "items": []}
-            _write_cache("switch_news", slug_base, res)
-            return res
+            return {"ok": True, "items": []}
 
         arts = arts[:NINTENDO_NEWS_MAX]
         bodies = await asyncio.gather(
@@ -2251,8 +2422,38 @@ class Plugin:
                 "author": "",
             })
 
-        res = {"ok": True, "items": items}
-        _write_cache("switch_news", slug_base, res)
+        return {"ok": True, "items": items}
+
+    async def get_switch_news(self, title: str) -> dict:
+        """Update history for a Switch game. perfectly-nintendo.com is tried
+        FIRST, not as a fallback: its "all the updates" article is an actual
+        version/patch-note history (what this feature is for), while Nintendo's
+        own eShop "related news" is PR-style announcements that often exist
+        even when no real patch history does (Super Mario Bros. Wonder has 6
+        such announcement articles and zero patch notes — confirmed live) and
+        would otherwise mask perfectly-nintendo.com's real content. Nintendo's
+        eShop page is still tried second, so a title with no perfectly-
+        nintendo.com article isn't left with nothing."""
+        slug_base = _nintendo_slug(title)
+        if not slug_base:
+            return {"ok": False, "error": "no title to search"}
+
+        cached, fresh = _read_cache_entry("switch_news", slug_base)
+        if cached is not None and fresh:
+            return cached
+
+        res = await self._fetch_pn_update_page(title)
+        if not (res.get("ok") and res.get("items")):
+            res = await self._get_nintendo_eshop_news(title, slug_base)
+
+        # An empty/failed result is negative-cached (NEGATIVE_TTL_OVERRIDE's
+        # 1h for this kind) rather than for a full day like a real hit — a
+        # transient PN fetch hiccup looks identical to "genuinely no article
+        # exists" from here, so a real miss still gets rechecked same-day.
+        if res.get("ok") and res.get("items"):
+            _write_cache("switch_news", slug_base, res)
+        else:
+            _write_negative("switch_news", slug_base, res)
         return res
 
     async def get_deck(self, appid: int, lang: str = "english"):

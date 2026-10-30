@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.22.0
+
+- **Switch update history now has a real patch-note source.**
+  perfectly-nintendo.com's hand-maintained "all the updates" article (full
+  version-by-version patch notes) is now tried first for every Switch game;
+  Nintendo's own eShop "related news" — PR-style announcements, often
+  present even when no real patch history is — is used only when
+  perfectly-nintendo.com has no article for that title. Includes a few
+  rounds of fixes found testing this live: accented titles (e.g. "Pokémon")
+  no longer break the lookup, bundled/combo articles (e.g. "Super Mario
+  Galaxy + Super Mario Galaxy 2") and version-suffixed URLs now match
+  correctly, and perfectly-nintendo.com's intermittent TLS handshake
+  timeouts get up to 3 retries. An empty/failed result caches for 2 minutes
+  instead of a full day, so a transient miss corrects itself quickly.
+
 ## v0.21.0
 
 - **Update history now works for Nintendo Switch games.** Non-Steam Switch
