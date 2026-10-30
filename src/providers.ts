@@ -4,6 +4,7 @@
 // non-Steam metadata sources (Hasheous, …) flow through the exact same caches
 // and components.
 import type { DataRef, DataProvider } from "./types";
+import { translate } from "./i18n";
 
 // Stable string key for a ref — used to key the in-memory app-data caches and as
 // the effect dependency (an object identity would re-fire the effect every
@@ -36,11 +37,11 @@ export function steamAppidOf(ref: DataRef | null): number | null {
 export function providerLabel(provider: DataProvider): string {
   switch (provider) {
     case "hasheous":
-      return "Hasheous";
+      return translate("provider.hasheous");
     case "igdb":
-      return "IGDB";
+      return translate("provider.igdb");
     case "steam":
     default:
-      return "Steam";
+      return translate("provider.steam");
   }
 }

@@ -17,7 +17,9 @@ import json
 import time
 import html
 import asyncio
+import datetime
 import functools
+import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -47,16 +49,29 @@ IGDB_TOKEN_FILE = os.path.join(SETTINGS_DIR, "igdb_token.json")
 
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
-CACHE_VERSION = "0.15.0-lang"
+CACHE_VERSION = "0.22.0-pn-priority"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
        "reviews_recent": 3600, "news": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
-       "hasheous": 604800, "igdb": 604800}
+       "hasheous": 604800, "igdb": 604800,
+       # Nintendo's own eShop "related news" for a Switch game — an update
+       # announcement is a rare event, so this is cached like deck/appdetails
+       # rather than refetched often.
+       "switch_news": 86400}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
+# Per-kind override of the above. switch_news's negative case is reached a lot
+# more often than a plain network blip: perfectly-nintendo.com genuinely has no
+# article for plenty of titles, and that's a stable fact, not a glitch — the
+# 120s default was only ever a stopgap for testing the matching logic itself.
+# An hour avoids re-hitting both sources (and perfectly-nintendo.com's own
+# intermittent TLS flakiness — see PN_RETRY_ATTEMPTS) on every revisit within
+# a session, while still recovering well within the same day if a fetch
+# failure, rather than a genuine miss, was the actual cause.
+NEGATIVE_TTL_OVERRIDE = {"switch_news": 3600}
 # How long past its TTL a cached entry may still be SERVED while a refresh runs
 # in the background (stale-while-revalidate). Revisiting a game after the TTL
 # expired used to mean sitting on the loading placeholder through a full set of
@@ -70,15 +85,29 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; SteamDeck) DeckyStorePanel/0.1"
 DECK_LABELS = {0: "Unknown", 1: "Unsupported", 2: "Playable", 3: "Verified"}
 
 # A compact map for the most common Deck-compat reviewer notes (loc_token -> text).
-# Unknown tokens fall back to a prettified version of the token itself.
+# Unknown tokens fall back to a prettified version of the token itself. Steam's
+# own ajaxgetdeckappcompatibilityreport NEVER localizes these (verified live:
+# l=brazilian and l=english return byte-identical loc_token strings — Valve
+# resolves them client-side, inside the real Steam UI, which we don't have),
+# so there is no reply to request in another language the way get_appdetails/
+# get_reviews do with their own l= param. Only our own translation (see
+# src/i18n/*.ts, keyed by the normalized token below) can localize this text.
 DECK_LOC_TOKENS = {
     "SteamDeckVerified_TestResult_DefaultControllerConfigFullySupported":
+        "Default controller configuration is fully supported",
+    # Same test, current wording (seen live 2026-10-12) alongside the older
+    # one above — Valve has renamed a handful of these over time, and neither
+    # the report nor any changelog says which; keeping both as synonyms costs
+    # nothing and keeps old AND new replies out of the prettified fallback.
+    "SteamDeckVerified_TestResult_DefaultControllerConfigFullyFunctional":
         "Default controller configuration is fully supported",
     "SteamDeckVerified_TestResult_ControllerGlyphsMatchDeckDevice":
         "In-game controller glyphs match the Deck",
     "SteamDeckVerified_TestResult_DefaultConfigurationIsPerformant":
         "Default graphics configuration performs well",
     "SteamDeckVerified_TestResult_TextIsLegible":
+        "In-game text is legible",
+    "SteamDeckVerified_TestResult_InterfaceTextIsLegible":
         "In-game text is legible",
     "SteamDeckVerified_TestResult_ResolutionSupported":
         "Native display resolution is supported",
@@ -266,6 +295,20 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
     return json.loads(raw)
 
 
+def _http_get_text(url: str, headers: dict = None) -> str:
+    """Like _http_get_json, but for an HTML page (Nintendo's product/news
+    pages) rather than a JSON API — no json.loads at the end."""
+    hdrs = {"User-Agent": USER_AGENT}
+    if headers:
+        hdrs.update(headers)
+    req = urllib.request.Request(url, headers=hdrs)
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
+    return raw.decode("utf-8", "replace")
+
+
 def _http_post_json(url: str, payload: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -339,7 +382,7 @@ def _read_cache_entry(kind: str, key: str):
         return None, False  # corrupt/foreign file -> a cache miss, never raise
     age = time.time() - blob.get("fetched_at", 0)
     negative = bool(blob.get("negative"))
-    ttl = NEGATIVE_TTL if negative else TTL.get(kind, 3600)
+    ttl = NEGATIVE_TTL_OVERRIDE.get(kind, NEGATIVE_TTL) if negative else TTL.get(kind, 3600)
     if age < ttl:
         return blob.get("data"), True
     # A stale FAILURE is worthless — never serve it; retry instead.
@@ -1337,12 +1380,23 @@ def _normalize_deck(data: dict) -> dict:
     cat = results.get("resolved_category", 0)
     notes = []
     for item in (results.get("resolved_items") or []):
-        tok = item.get("loc_token", "")
+        # The reply's loc_token is prefixed with "#" (Valve's own localization
+        # key syntax, e.g. "#SteamDeckVerified_TestResult_..."), which DECK_LOC_
+        # TOKENS' keys never carried — so the lookup below always missed and
+        # silently fell back to the prettified-token text, in English either
+        # way. Stripping it is what makes the dict (and the frontend i18n
+        # lookup keyed on "token") ever actually match.
+        tok = item.get("loc_token", "").lstrip("#")
         notes.append({
             "display_type": item.get("display_type"),
             "text": DECK_LOC_TOKENS.get(
                 tok, re.sub(r"(?<!^)(?=[A-Z])", " ",
                             tok.split("_")[-1]) if tok else ""),
+            # Normalized key for the frontend's i18n lookup (deck.note.<token>);
+            # unprefixed, so it's exactly the one DECK_LOC_TOKENS also matches
+            # on, and falls back to "text" above (English) when neither
+            # dictionary — ours or the plugin's i18n one — has that token.
+            "token": tok.split("_")[-1] if tok else "",
         })
     return {
         "category": cat,
@@ -1443,7 +1497,15 @@ def _igdb_facts(game: dict) -> dict:
     ts = _igdb_pick(game, "first_release_date")
     if ts:
         try:
+            # English fallback string only: %b is the C locale's abbreviated
+            # month name, which is always English here (nothing in this
+            # process calls locale.setlocale, and Decky's frozen Python
+            # runtime may not even ship other locales to switch to). The
+            # frontend prefers release_timestamp instead, formatting it with
+            # Intl.DateTimeFormat — which DOES have real per-language month
+            # names built in — keyed to the plugin's own uiLanguage setting.
             out["release_date"] = time.strftime("%d %b, %Y", time.gmtime(int(ts)))
+            out["release_timestamp"] = int(ts)
         except Exception:
             pass
     plats = [str(_igdb_pick(p, "name") or "")
@@ -1508,6 +1570,7 @@ def _empty_appdetails(name: str = "") -> dict:
         "developers": [],
         "publishers": [],
         "release_date": "",
+        "release_timestamp": None,
         "coming_soon": False,
         "website": "",
         "controller_support": None,
@@ -1608,6 +1671,259 @@ def _normalize_hasheous(obj: dict) -> dict:
     return out
 
 
+def _is_switch_platform(appdetails: dict) -> bool:
+    """Whether a normalized non-Steam AppDetails describes a Nintendo Switch
+    game — gates the Nintendo eShop news lookup below, which only makes sense
+    for Switch (not a SNES/Genesis/PS1/etc. ROM also served through the same
+    Hasheous/IGDB path). Reuses `categories`, already populated with the
+    platform name by _normalize_hasheous/_igdb_facts, rather than re-deriving
+    it from either provider's raw shape."""
+    for c in (appdetails.get("categories") or []):
+        if "switch" in str(c.get("description", "")).lower():
+            return True
+    return False
+
+
+# --- Nintendo eShop "related news" (Switch update announcements) ----------- #
+# Nintendo publishes no API for this and no per-game patch notes at all in the
+# way Steam does — confirmed by testing live: the eShop product page's own
+# embedded JSON (a Next.js "__NEXT_DATA__" blob, not a documented endpoint) is
+# the only structured, un-authenticated source that carries a game's real
+# announcement history (including genuine update posts) with full body text.
+# Fragile in the sense that any undocumented page internal is (a site
+# redesign can change this shape), but it is Nintendo's own first-party
+# content, served plainly over https with no bot-challenge encountered —
+# unlike e.g. nintendolife.com, which Cloudflare blocks outright.
+NINTENDO_PRODUCT_BASE = "https://www.nintendo.com/us/store/products"
+# Capped: a prolific title (Mario Kart 8 Deluxe) still only has a handful of
+# genuine news entries, and this trades one extra HTTP request per item.
+NINTENDO_NEWS_MAX = 8
+_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
+
+
+def _nintendo_slug(title: str) -> str:
+    """Best-guess nintendo.com product-page slug from a game title. Verified
+    live against two real titles (both matched on the first try), but this is
+    a guess, not a lookup — no reachable search API was found (the site's own
+    search is client-rendered, not server-embedded), so a miss here just means
+    no Switch news for that game, same as not finding one at all.
+
+    Also used (see _parse_pn_search) to normalize titles for the
+    perfectly-nintendo.com fallback match — NFKD-decomposing first matters
+    there specifically: without it, "Pokémon" loses its "é" to the ASCII-only
+    strip below and becomes "pok-mon", which never matches "pokemon" (bug
+    found live: every accented title silently got zero fallback results)."""
+    s = unicodedata.normalize("NFKD", str(title or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[™®©]", "", s)
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
+    return s
+
+
+def _extract_next_data(raw_html: str):
+    m = _NEXT_DATA_RE.search(raw_html or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except Exception:
+        return None
+
+
+def _news_articles_from_next_data(data: dict) -> list:
+    """The product page's "Related news and events" list, newest first. Each
+    entry here only carries title/url/date/media — the full body lives on the
+    article's own page (see _fetch_switch_article)."""
+    try:
+        apollo = data["props"]["pageProps"]["initialApolloState"]
+    except Exception:
+        return []
+    arts = []
+    for k, v in apollo.items():
+        if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                and v.get("locale") == "en_US" and v.get("title") and v.get("url")):
+            arts.append(v)
+    arts.sort(key=lambda a: a.get("publishDate") or "", reverse=True)
+    return arts
+
+
+# --- perfectly-nintendo.com (tried FIRST — see get_switch_news) ----------- #
+# perfectly-nintendo.com maintains one hand-written "all the updates" article
+# per game — a single page, continuously edited in place, with the full real
+# version/patch-note history. Nintendo's own eShop page (below) is tried
+# second: its "related news" is PR-style announcements, which several titles
+# have PLENTY of while carrying zero actual patch notes (confirmed live —
+# see get_switch_news), so checking it first would mask this site's content
+# rather than merely filling a gap. It has no API and no server-rendered
+# search result we can query as JSON either, just an ordinary WordPress
+# search page, so this is scraped the same way as the Nintendo page: request
+# a page, regex out what's needed.
+PN_BASE = "https://www.perfectly-nintendo.com"
+# A browser-shaped UA, used instead of the module-wide USER_AGENT purely by
+# convention for a third-party site — doesn't actually move the failure rate
+# below (that's the WAF flakiness, not UA sniffing).
+PN_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                 "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+# This host's TLS handshake intermittently times out — confirmed live, ~30%
+# of requests, independent of UA, spaced seconds apart, immediately followed
+# by a clean success (looks like a WAF/edge node that occasionally just
+# drops the connection rather than a slow server or a hard block). A single
+# retry still missed it occasionally in practice (confirmed live), so
+# _fetch_pn_update_page gets 3 attempts per request rather than 2.
+PN_RETRY_ATTEMPTS = 3
+PN_RETRY_DELAY = 2.0
+_PN_RESULT_RE = re.compile(r'<h2 class="cm-entry-title">\s*<a href="([^"]+)" title="([^"]*)">')
+# Every "all the updates" article's URL carries this segment (sometimes with
+# a "switch" infix, sometimes not) — verified against a dozen real titles.
+# Not anchored to the end: some of these slugs tack on a trailing version
+# number at creation time (e.g. "...-switch-software-updates-latest-ver-1-0-2/"
+# for Donkey Kong Country: Tropical Freeze — confirmed live), so the end-
+# anchored form missed real update pages.
+_PN_UPDATES_URL_RE = re.compile(r'-(?:switch-)?(?:software-updates|all-the-updates)(?:-|/|$)')
+
+
+def _pn_http_get_text(url: str) -> str:
+    """_http_get_text against perfectly-nintendo.com, retrying PN_RETRY_
+    ATTEMPTS times on failure (see PN_RETRY_ATTEMPTS comment above). Runs
+    inside the executor thread, so the blocking sleep between attempts
+    doesn't stall the event loop."""
+    last_exc = None
+    for attempt in range(PN_RETRY_ATTEMPTS):
+        try:
+            return _http_get_text(url, {"User-Agent": PN_USER_AGENT})
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < PN_RETRY_ATTEMPTS:
+                time.sleep(PN_RETRY_DELAY)
+    raise last_exc
+_PN_DIV_RE = re.compile(r'<(/?)div\b[^>]*>')
+_PN_CONTENT_START_RE = re.compile(r'<div class="cm-entry-summary">')
+_PN_TITLE_RE = re.compile(r'<h1 class="cm-entry-title">\s*(.*?)\s*</h1>', re.S)
+_PN_DATE_RE = re.compile(r'<time\b[^>]*\bdatetime="([^"]+)"')
+
+
+def _pn_title_matches(want_words: list, got: str) -> bool:
+    """Whether every word of our (slugified) game title appears in the
+    candidate article's slug, IN ORDER, allowing gaps. A plain prefix check
+    (got.startswith(want)) missed real pages where perfectly-nintendo.com
+    bundles several games into one article — e.g. "Super Mario Galaxy +
+    Super Mario Galaxy 2" for a "Super Mario Galaxy 2" lookup, or "Pokémon
+    Brilliant Diamond / Shining Pearl" for "Pokémon Shining Pearl" — both
+    confirmed live misses before this. The URL-suffix filter already run by
+    the caller keeps this from being too loose."""
+    got_words = got.split("-")
+    i = 0
+    for w in want_words:
+        try:
+            i = got_words.index(w, i) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def _parse_pn_search(raw_html: str, game_title: str) -> str:
+    """Best-matching 'software updates' article URL from a perfectly-nintendo.
+    com search-results page, or "" if nothing looks like a safe match. Unlike
+    the blind nintendo.com slug guess, this site's search hands back real
+    article titles, so a result is only trusted when its title actually
+    contains our game's words in order (see _pn_title_matches) — avoids
+    attaching another game's update history just because it mentioned ours
+    in passing."""
+    want = _nintendo_slug(game_title)
+    if not want:
+        return ""
+    want_words = want.split("-")
+    for href, title_attr in _PN_RESULT_RE.findall(raw_html or ""):
+        if not _PN_UPDATES_URL_RE.search(href):
+            continue
+        got = _nintendo_slug(html.unescape(title_attr))
+        if _pn_title_matches(want_words, got):
+            return href
+    return ""
+
+
+def _pn_extract_div_content(raw_html: str, open_tag_end: int) -> str:
+    """Inner HTML of a <div>...</div>, matched by nesting depth rather than a
+    fixed sibling marker — the article body is long (full version history)
+    and nothing reliably follows it across every page layout variant."""
+    depth = 1
+    for m in _PN_DIV_RE.finditer(raw_html, open_tag_end):
+        depth += 1 if m.group(1) == "" else -1
+        if depth == 0:
+            return raw_html[open_tag_end:m.start()]
+    return raw_html[open_tag_end:]
+
+
+def _parse_pn_article(raw_html: str):
+    m = _PN_CONTENT_START_RE.search(raw_html or "")
+    if not m:
+        return None
+    body_raw = _pn_extract_div_content(raw_html, m.end())
+    title_m = _PN_TITLE_RE.search(raw_html)
+    title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
+    date_m = _PN_DATE_RE.search(raw_html)
+    ts = 0
+    if date_m:
+        try:
+            ts = int(datetime.datetime.fromisoformat(date_m.group(1)).timestamp())
+        except Exception:
+            ts = 0
+    return {"title": title, "html": _sanitize_html(body_raw), "date": ts}
+
+
+def _nintendo_richtext_to_html(node) -> str:
+    """Contentful rich-text JSON (the article body's native format) -> a
+    small HTML subset, built from the SAME allowed tags _sanitize_html already
+    permits. Unrecognized node types (embedded assets/entries, tables, …)
+    degrade to their flattened text rather than being dropped outright."""
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("nodeType", "")
+    if node_type == "text":
+        text = html.escape(str(node.get("value", "")), quote=False)
+        marks = {m.get("type") for m in (node.get("marks") or []) if isinstance(m, dict)}
+        if "code" in marks:
+            text = f"<code>{text}</code>"
+        if "italic" in marks:
+            text = f"<em>{text}</em>"
+        if "bold" in marks:
+            text = f"<strong>{text}</strong>"
+        if "underline" in marks:
+            text = f"<u>{text}</u>"
+        return text
+    children = "".join(
+        _nintendo_richtext_to_html(c) for c in (node.get("content") or [])
+    )
+    if node_type == "document":
+        return children
+    if node_type == "paragraph":
+        return f"<p>{children}</p>" if children.strip() else ""
+    if node_type in (
+        "heading-1", "heading-2", "heading-3",
+        "heading-4", "heading-5", "heading-6",
+    ):
+        level = node_type[-1]
+        return f"<h{level}>{children}</h{level}>"
+    if node_type == "unordered-list":
+        return f"<ul>{children}</ul>"
+    if node_type == "ordered-list":
+        return f"<ol>{children}</ol>"
+    if node_type == "list-item":
+        return f"<li>{children}</li>"
+    if node_type == "blockquote":
+        return f"<blockquote>{children}</blockquote>"
+    if node_type == "hr":
+        return "<hr>"
+    if node_type == "hyperlink":
+        uri = str((node.get("data") or {}).get("uri", ""))
+        safe = html.escape(_safe_url(uri), quote=True)
+        return f'<a href="{safe}" target="_blank" rel="noreferrer">{children}</a>'
+    # embedded-asset-block / embedded-entry-block / table / anything future:
+    # no safe generic rendering, so just keep whatever text it carries.
+    return children
+
+
 # --------------------------------------------------------------------------- #
 # Plugin
 # --------------------------------------------------------------------------- #
@@ -1697,12 +2013,15 @@ class Plugin:
                 return result
             except urllib.error.HTTPError as exc:
                 decky.logger.error(f"{kind} HTTP {exc.code} for {key}")
-                res = {"ok": False, "error": f"HTTP {exc.code}"}
+                # A transport-layer failure (rate limiting, a transient 5xx, …),
+                # never Steam's catalog saying "no such app" — always worth
+                # retrying soon rather than pinning for the session. See #11.
+                res = {"ok": False, "transient": True, "error": f"HTTP {exc.code}"}
                 _write_negative(kind, key, res)
                 return res
             except Exception as exc:
                 decky.logger.error(f"{kind} fetch failed for {key}: {exc}")
-                res = {"ok": False, "error": str(exc)}
+                res = {"ok": False, "transient": True, "error": str(exc)}
                 _write_negative(kind, key, res)
                 return res
 
@@ -1735,8 +2054,15 @@ class Plugin:
             # Three different failures, which v0.19.1 reported with one message.
             # appdetails has been known to answer with an empty body when it is
             # throttling; anything that is not a non-empty object lands here.
+            #
+            # Each carries "transient": whether retrying soon is likely to help
+            # (empty/garbled reply, no matching entry, no data despite
+            # success:true — all plausibly rate-limiting or a one-off hiccup) vs
+            # Steam genuinely saying this app has no store page (success:false),
+            # which won't change on retry and should stay pinned instead of
+            # being retried every revisit. See useAppData's failureCache (#11).
             if not isinstance(raw, dict) or not raw:
-                return {"ok": False,
+                return {"ok": False, "transient": True,
                         "error": "Steam sent an empty or unreadable reply "
                                  "(often rate limiting); try again shortly"}
             env = _appdetails_envelope(raw, appid)
@@ -1747,14 +2073,15 @@ class Plugin:
                 decky.logger.warning(
                     f"appdetails {appid}: no entry matched; reply keyed "
                     f"{[str(k)[:16] for k in list(raw)[:3]]}")
-                return {"ok": False, "error": "store returned no entry for this app"}
+                return {"ok": False, "transient": True,
+                        "error": "store returned no entry for this app"}
             # isinstance, not a key check: an envelope can carry success:true with
             # data null or [], and _normalize_appdetails raises on either. Only
             # say success=false when Steam actually did.
             if not env.get("success"):
                 return {"ok": False, "error": "no store data (success=false)"}
             if not isinstance(env.get("data"), dict):
-                return {"ok": False, "error": "no store data"}
+                return {"ok": False, "transient": True, "error": "no store data"}
             out = _normalize_appdetails(env["data"])
             out["ok"] = True
             return out
@@ -1768,15 +2095,23 @@ class Plugin:
         base = f"https://store.steampowered.com/appreviews/{appid}?"
 
         def summary_url(extra: dict) -> str:
+            # "l" picks the DISPLAY language for query_summary.review_score_desc
+            # ("Very Positive" -> "Muito positivas" for l=brazilian, verified
+            # live) — independent of "language", which filters WHICH reviews'
+            # text/totals are aggregated. Always the resolved store-content
+            # language, so every score line on screen reads in the same
+            # language regardless of which review population it counts.
             q = {"json": 1, "language": "all", "purchase_type": "all",
-                 "num_per_page": 0, "filter": "all", "review_type": "all"}
+                 "num_per_page": 0, "filter": "all", "review_type": "all",
+                 "l": lang}
             q.update(extra)
             return base + urllib.parse.urlencode(q)
 
         def list_url(language: str) -> str:
             return base + urllib.parse.urlencode(
                 {"json": 1, "language": language, "purchase_type": "all",
-                 "num_per_page": 20, "filter": "all", "review_type": "all"}
+                 "num_per_page": 20, "filter": "all", "review_type": "all",
+                 "l": lang}
             )
 
         def norm_summary(raw):
@@ -1800,7 +2135,13 @@ class Plugin:
             return out
 
         alltime, recent, localized = await asyncio.gather(
-            self._fetch("reviews_sum", str(appid), summary_url({}), norm_summary),
+            # Cache key MUST carry lang: summary_url's new l= makes
+            # review_score_desc language-dependent, and _fetch's cache is
+            # keyed by (kind, key) alone — appid-only would let whichever
+            # language a game was first fetched in silently stick for every
+            # later request, same game or not (same mistake the f"reviews_
+            # list_{lang}" kind below already avoids).
+            self._fetch(f"reviews_sum_{lang}", str(appid), summary_url({}), norm_summary),
             # NOTE: appreviews' day_range does NOT restrict query_summary (the
             # totals stay all-time — observed on-device as identical numbers),
             # so the 30-day score is computed by paginating recent reviews.
@@ -1813,9 +2154,12 @@ class Plugin:
         localized = localized if isinstance(localized, dict) else {"ok": False}
 
         # Fallback: no reviews written in the user's language -> English texts.
+        # Cache key still carries lang (despite the review TEXT being English
+        # either way): list_url's l=lang makes the summary riding along in
+        # this reply language-dependent too, same reasoning as reviews_sum_*.
         if lang != "english" and (not localized.get("ok") or not localized.get("list")):
             fallback = await self._fetch(
-                "reviews_list_english", str(appid), list_url("english"), norm_list
+                f"reviews_list_english_{lang}", str(appid), list_url("english"), norm_list
             )
             if isinstance(fallback, dict) and fallback.get("ok") and fallback.get("list"):
                 localized = fallback
@@ -1847,20 +2191,26 @@ class Plugin:
 
     @staticmethod
     def _score_label(pos: int, total: int) -> str:
+        """A stable bucket KEY, not display text: this score is computed from
+        the 30-day histogram ourselves (appreviews' day_range doesn't actually
+        window query_summary — see _recent_summary), so there is no Steam reply
+        to request in the user's language the way get_reviews' l= param does
+        for the all-time/lang-filtered scores. The frontend's i18n translates
+        the key (reviews.bucket.<key>); an unrecognized key renders as-is."""
         if total == 0:
             return ""
         pct = pos / total * 100
         if pct >= 95:
-            return "Overwhelmingly Positive"
+            return "overwhelmingly_positive"
         if pct >= 80:
-            return "Very Positive"
+            return "very_positive"
         if pct >= 70:
-            return "Mostly Positive"
+            return "mostly_positive"
         if pct >= 40:
-            return "Mixed"
+            return "mixed"
         if pct >= 20:
-            return "Mostly Negative"
-        return "Very Negative"
+            return "mostly_negative"
+        return "very_negative"
 
     async def _recent_summary(self, appid: int):
         """EXACT 30-day totals from appreviewhistogram — the endpoint the store
@@ -1936,6 +2286,176 @@ class Plugin:
 
         return await self._fetch("news", str(appid), url, norm)
 
+    async def _fetch_switch_article(self, url: str) -> dict:
+        """One Nintendo news article's full body, by re-parsing ITS OWN
+        __NEXT_DATA__ (the product page only carries title/date/url — see
+        _news_articles_from_next_data). Best-effort: a failure here still
+        leaves the title/date/link usable, just with an empty body, rather
+        than dropping the item from the list."""
+        try:
+            loop = asyncio.get_running_loop()
+            raw_html = await loop.run_in_executor(None, _http_get_text, url)
+        except Exception as exc:
+            decky.logger.warning(f"switch article fetch failed ({url}): {exc}")
+            return {"html": ""}
+        data = _extract_next_data(raw_html)
+        if not isinstance(data, dict):
+            return {"html": ""}
+        try:
+            apollo = data["props"]["pageProps"]["initialApolloState"]
+        except Exception:
+            return {"html": ""}
+        for k, v in apollo.items():
+            # On an article's OWN page, its en_US cache entry's `url` field is
+            # null (only populated when the SAME article is referenced FROM a
+            # product page's related-news list) — `body` is what's actually
+            # exclusive to the one entry we want, so match on that instead.
+            if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                    and v.get("locale") == "en_US" and v.get("body")):
+                body_json = (v.get("body") or {}).get("json")
+                if not body_json:
+                    return {"html": ""}
+                try:
+                    return {"html": _sanitize_html(_nintendo_richtext_to_html(body_json))}
+                except Exception as exc:
+                    decky.logger.warning(f"switch article body render failed ({url}): {exc}")
+                    return {"html": ""}
+        return {"html": ""}
+
+    async def _fetch_pn_update_page(self, title: str) -> dict:
+        """perfectly-nintendo.com lookup for get_switch_news, tried FIRST
+        (see the module comment above PN_BASE): search the site for this
+        title, then scrape its one "all the updates" article into the same
+        news-item shape the Nintendo path produces, so the frontend can't
+        tell which source it came from."""
+        loop = asyncio.get_running_loop()
+        search_url = f"{PN_BASE}/?s={urllib.parse.quote_plus(title)}"
+        try:
+            search_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, search_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo search failed ({title}): {exc}")
+            return {"ok": False, "error": "perfectly-nintendo.com search failed"}
+
+        article_url = _parse_pn_search(search_html, title)
+        if not article_url:
+            return {"ok": True, "items": []}
+
+        try:
+            article_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, article_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo article fetch failed ({article_url}): {exc}")
+            return {"ok": True, "items": []}
+
+        art = _parse_pn_article(article_html)
+        if not art or not art.get("html"):
+            return {"ok": True, "items": []}
+
+        item = {
+            "gid": _nintendo_slug(title) or "pn-updates",
+            "title": art.get("title") or f"{title}: software updates",
+            "html": art["html"],
+            "date": art.get("date", 0),
+            "url": _safe_ext_url(article_url),
+            "external": True,
+            "feedlabel": "Perfectly Nintendo",
+            "author": "",
+        }
+        return {"ok": True, "items": [item]}
+
+    async def _get_nintendo_eshop_news(self, title: str, slug_base: str) -> dict:
+        """Nintendo eShop 'Related news and events' for a Switch game — see
+        the module-level comment above _is_switch_platform/NINTENDO_PRODUCT_
+        BASE for why this guesses a URL instead of calling a documented API
+        (none exists). These are PR-style announcement articles, NOT a
+        version/patch history — see get_switch_news for why that makes this
+        the second choice, not the first."""
+        loop = asyncio.get_running_loop()
+        candidates = [f"{slug_base}-switch", f"{slug_base}-switch-2", slug_base]
+        page_html = None
+        for cand in candidates:
+            url = f"{NINTENDO_PRODUCT_BASE}/{cand}/"
+            try:
+                page_html = await loop.run_in_executor(None, _http_get_text, url)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    decky.logger.warning(f"switch product page HTTP {exc.code} for {cand}")
+                continue
+            except Exception as exc:
+                decky.logger.warning(f"switch product page fetch failed ({cand}): {exc}")
+                continue
+
+        if page_html is None:
+            return {"ok": True, "items": []}
+
+        data = _extract_next_data(page_html)
+        arts = _news_articles_from_next_data(data) if isinstance(data, dict) else []
+        if not arts:
+            return {"ok": True, "items": []}
+
+        arts = arts[:NINTENDO_NEWS_MAX]
+        bodies = await asyncio.gather(
+            *[self._fetch_switch_article(str(a.get("url", ""))) for a in arts],
+            return_exceptions=True,
+        )
+
+        items = []
+        for art, body in zip(arts, bodies):
+            body_html = body.get("html", "") if isinstance(body, dict) else ""
+            pub = str(art.get("publishDate") or "")
+            try:
+                ts = int(
+                    datetime.datetime.fromisoformat(pub.replace("Z", "+00:00")).timestamp()
+                )
+            except Exception:
+                ts = 0
+            items.append({
+                "gid": str(art.get("id", "")),
+                "title": str(art.get("title", "")),
+                "html": body_html,
+                "date": ts,
+                "url": _safe_ext_url(str(art.get("url", ""))),
+                "external": True,
+                "feedlabel": "Nintendo",
+                "author": "",
+            })
+
+        return {"ok": True, "items": items}
+
+    async def get_switch_news(self, title: str) -> dict:
+        """Update history for a Switch game. perfectly-nintendo.com is tried
+        FIRST, not as a fallback: its "all the updates" article is an actual
+        version/patch-note history (what this feature is for), while Nintendo's
+        own eShop "related news" is PR-style announcements that often exist
+        even when no real patch history does (Super Mario Bros. Wonder has 6
+        such announcement articles and zero patch notes — confirmed live) and
+        would otherwise mask perfectly-nintendo.com's real content. Nintendo's
+        eShop page is still tried second, so a title with no perfectly-
+        nintendo.com article isn't left with nothing."""
+        slug_base = _nintendo_slug(title)
+        if not slug_base:
+            return {"ok": False, "error": "no title to search"}
+
+        cached, fresh = _read_cache_entry("switch_news", slug_base)
+        if cached is not None and fresh:
+            return cached
+
+        res = await self._fetch_pn_update_page(title)
+        if not (res.get("ok") and res.get("items")):
+            res = await self._get_nintendo_eshop_news(title, slug_base)
+
+        # An empty/failed result is negative-cached (NEGATIVE_TTL_OVERRIDE's
+        # 1h for this kind) rather than for a full day like a real hit — a
+        # transient PN fetch hiccup looks identical to "genuinely no article
+        # exists" from here, so a real miss still gets rechecked same-day.
+        if res.get("ok") and res.get("items"):
+            _write_cache("switch_news", slug_base, res)
+        else:
+            _write_negative("switch_news", slug_base, res)
+        return res
+
     async def get_deck(self, appid: int, lang: str = "english"):
         url = ("https://store.steampowered.com/saleaction/"
                "ajaxgetdeckappcompatibilityreport?" + urllib.parse.urlencode(
@@ -1979,7 +2499,9 @@ class Plugin:
         def _coerce(section):
             if isinstance(section, BaseException):
                 decky.logger.error(f"get_all section failed: {section}")
-                return {"ok": False, "error": str(section)}
+                # An uncaught crash, not a deliberate "no data" answer — worth
+                # retrying soon rather than pinning for the session. See #11.
+                return {"ok": False, "transient": True, "error": str(section)}
             return section
 
         return {
@@ -2295,6 +2817,16 @@ class Plugin:
         out["igdb_enriched"] = True
         return out
 
+    async def _switch_news_for(self, appdetails: dict) -> dict:
+        """News section for a non-Steam provider result: Nintendo's own
+        eShop update announcements when this is recognizably a Switch game,
+        the existing "Steam-only" placeholder otherwise (SNES/Genesis/PS1/…
+        ROMs matched through the exact same Hasheous/IGDB path have no
+        equivalent to try)."""
+        if not _is_switch_platform(appdetails):
+            return {"ok": False, "error": "update history is Steam-only"}
+        return await self.get_switch_news(str(appdetails.get("name") or ""))
+
     async def get_all_provider(self, provider, id, lang: str = "english",
                                cc: str = "us"):
         """Non-Steam metadata aggregate — same AppData shape as get_all, with
@@ -2348,7 +2880,7 @@ class Plugin:
             return {
                 "ok": True, "appid": gid, "appdetails": appdetails,
                 "reviews": {"ok": False, "error": "reviews are Steam-only"},
-                "news": {"ok": False, "error": "update history is Steam-only"},
+                "news": await self._switch_news_for(appdetails),
                 "deck": {"ok": False, "error": "not a Steam app"},
             }
         url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
@@ -2378,7 +2910,7 @@ class Plugin:
             "appid": gid,
             "appdetails": appdetails,
             "reviews": {"ok": False, "error": "reviews are Steam-only"},
-            "news": {"ok": False, "error": "update history is Steam-only"},
+            "news": await self._switch_news_for(appdetails),
             "deck": {"ok": False, "error": "not a Steam app"},
         }
 
@@ -2763,6 +3295,11 @@ class Plugin:
             # An explicit language name here would be a manual override.
             "language": "auto",
             "country": "auto",
+            # UI language ("auto" | "en" | "pt-BR"): the plugin's own interface
+            # text (settings, section titles, empty-state messages) — separate
+            # from "language" above, which is the Steam STORE CONTENT language.
+            # "auto" follows the same Steam-locale detection as "language".
+            "uiLanguage": "auto",
             # Opt in to pre-release "beta" builds in the update check. Default off
             # so risky test builds never reach stable users.
             "beta": False,

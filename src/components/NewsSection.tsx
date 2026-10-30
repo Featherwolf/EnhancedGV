@@ -7,6 +7,8 @@ import {
 import type { News, NewsItem } from "../types";
 import { openExternal } from "../nav";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
+import { useTranslation } from "../i18n";
+import { FocusableBlocks } from "./FocusableBlocks";
 
 function fmtDate(unix: number): string {
   try {
@@ -33,30 +35,34 @@ function NewsModal({
   item: NewsItem;
   closeModal?: () => void;
 }) {
+  const { t } = useTranslation();
   return (
-    <ModalRoot onCancel={closeModal} onEscKeypress={closeModal}>
+    <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>
       <style>{NEWS_HTML_STYLE}</style>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 18, fontWeight: 700 }}>{item.title}</div>
-        <div style={{ fontSize: 12, opacity: 0.6 }}>
+      <div style={{ maxHeight: "80vh", overflowY: "auto", padding: "6px 10px" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{item.title}</div>
+        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10 }}>
           {item.feedlabel} · {fmtDate(item.date)}
         </div>
-        <div
-          className="ssp-news"
-          style={{
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            maxHeight: "60vh",
-            overflowY: "auto",
-          }}
-          dangerouslySetInnerHTML={{ __html: item.html }}
+        <FocusableBlocks
+          html={item.html}
+          blockClass="ssp-news"
+          targetPerStop={6}
+          splitLongContainers
         />
         {item.url && (
-          <DialogButton
-            onClick={() => openExternal(item.url)}
-          >
-            View on Steam
-          </DialogButton>
+          <div style={{ marginTop: 10 }}>
+            <DialogButton
+              onClick={() => {
+                // Close first: the external page opens behind an otherwise
+                // still-open dialog, which reads as if nothing happened.
+                closeModal?.();
+                openExternal(item.url);
+              }}
+            >
+              {t("news.viewOnline")}
+            </DialogButton>
+          </div>
         )}
       </div>
     </ModalRoot>
@@ -64,8 +70,9 @@ function NewsModal({
 }
 
 export function NewsSection({ news }: { news: News }) {
+  const { t } = useTranslation();
   if (!news || !news.ok || news.items.length === 0) {
-    return <div style={{ opacity: 0.6, fontSize: 13 }}>No recent updates.</div>;
+    return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("news.none")}</div>;
   }
 
   return (

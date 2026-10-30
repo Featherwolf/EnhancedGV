@@ -21,6 +21,7 @@ import { FeaturesSection } from "./FeaturesSection";
 import { ReviewsSection } from "./ReviewsSection";
 import { NewsSection } from "./NewsSection";
 import { DeckCompatBadge, DeckCompatDetails } from "./DeckCompatBadge";
+import { useTranslation } from "../i18n";
 
 interface Props {
   appid: number;
@@ -122,6 +123,7 @@ function StatusBanner({ tone, text }: { tone: "info" | "warn"; text: string }) {
 // plain div it was skipped between the hero and the sections and could never be
 // centered/read on a gamepad.
 function ShortDescCard({ text }: { text: string }) {
+  const { t } = useTranslation();
   const [focused, setFocused] = useState(false);
   return (
     <Focusable
@@ -152,7 +154,7 @@ function ShortDescCard({ text }: { text: string }) {
           marginBottom: 4,
         }}
       >
-        What's this game about?
+        {t("store.whatsThisAbout")}
       </div>
       <div style={{ fontSize: 14.5, lineHeight: 1.55 }}>{text}</div>
     </Focusable>
@@ -160,6 +162,7 @@ function ShortDescCard({ text }: { text: string }) {
 }
 
 export function StorePanel({ appid, slot = "primary", fallback }: Props) {
+  const { t } = useTranslation();
   markStoreRender(); // synchronous render probe (see diag.ts)
   // Resolve the (possibly non-Steam) game to the store appid to fetch. For a
   // Steam game this is the appid itself; for a non-Steam shortcut it's the
@@ -255,7 +258,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // loaded panel, so the panel is unmistakably present the moment it mounts.
   const chromeHeader = (
     <div style={HEADER_STYLE}>
-      <div style={{ fontSize: 17, fontWeight: 700 }}>Store</div>
+      <div style={{ fontSize: 17, fontWeight: 700 }}>{t("store.title")}</div>
       <div style={{ fontSize: 12, opacity: 0.5 }}>EnhancedGV</div>
     </div>
   );
@@ -283,10 +286,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       <Focusable ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
         <PlaceholderStop onFocusChange={(f) => (placeholderFocused.current = f)}>
-          <StatusBanner
-            tone="info"
-            text="This game isn’t matched to a Steam store page yet. Set its Steam App ID from Quick Access → EnhancedGV → Store data source to pull content."
-          />
+          <StatusBanner tone="info" text={t("store.unmatched")} />
         </PlaceholderStop>
         {fallback}
       </Focusable>
@@ -300,12 +300,12 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     const why =
       (data && !data.appdetails?.ok
         ? (data.appdetails as { error?: string })?.error
-        : error) || "no store data";
+        : error) || t("store.noStoreData");
     return (
       <Focusable ref={rootRef} style={CONTAINER_STYLE}>
         {chromeHeader}
         <PlaceholderStop onFocusChange={(f) => (placeholderFocused.current = f)}>
-          <StatusBanner tone="warn" text={`Store content unavailable (${why})`} />
+          <StatusBanner tone="warn" text={t("store.unavailable", { reason: why })} />
         </PlaceholderStop>
         {fallback}
       </Focusable>
@@ -325,7 +325,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   const sourceNote =
     provider === "steam"
       ? ""
-      : `via ${providerLabel(provider)}${d.igdb_enriched ? " + IGDB" : ""}`;
+      : `${t("store.via", { provider: providerLabel(provider) })}${d.igdb_enriched ? " + IGDB" : ""}`;
   const expanded = { ...DEFAULT_EXPANDED, ...settings.expanded };
   const reviewSummary = data.reviews?.ok ? data.reviews.summary.desc : "";
 
@@ -336,7 +336,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   if (sec.about)
     sections.push({
       id: "about",
-      title: "About this game",
+      title: t("section.about"),
       defaultOpen: expanded.about,
       node: (
         <DescriptionSection aboutHtml={d.about_html} short={d.short_description} />
@@ -345,14 +345,14 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   if (sec.features)
     sections.push({
       id: "features",
-      title: "Features & details",
+      title: t("section.features"),
       defaultOpen: expanded.features,
       node: <FeaturesSection d={d} />,
     });
   if (sec.deck)
     sections.push({
       id: "deck",
-      title: "Steam Deck",
+      title: t("section.deck"),
       subtitle: data.deck?.ok ? data.deck.label : pending ? "…" : undefined,
       defaultOpen: expanded.deck,
       node: pending ? <SectionLoading lines={2} /> : <DeckCompatDetails deck={data.deck} />,
@@ -360,7 +360,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   if (sec.reviews)
     sections.push({
       id: "reviews",
-      title: "Reviews",
+      title: t("section.reviews"),
       subtitle: data.reviews?.ok
         ? data.reviews.summary.total_reviews.toLocaleString()
         : pending
@@ -380,7 +380,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   if (sec.news)
     sections.push({
       id: "news",
-      title: "Update history",
+      title: t("section.news"),
       subtitle: data.news?.ok ? `${data.news.items.length}` : pending ? "…" : undefined,
       defaultOpen: expanded.news,
       node: pending ? <SectionLoading lines={3} /> : <NewsSection news={data.news} />,
@@ -388,7 +388,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
 
   const header = (
     <div style={HEADER_STYLE}>
-      <div style={{ fontSize: 17, fontWeight: 700 }}>Store</div>
+      <div style={{ fontSize: 17, fontWeight: 700 }}>{t("store.title")}</div>
       <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         {reviewSummary && (
           <span style={{ fontSize: 12.5, opacity: 0.85 }}>{reviewSummary}</span>

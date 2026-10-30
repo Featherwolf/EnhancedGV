@@ -147,8 +147,14 @@ game first so the game-specific options appear.
 - **Sections shown on the game page** — turn Media, About, Features & details,
   Steam Deck, Reviews, and Update history on or off.
 - **Expanded by default** — choose which sections start open vs. collapsed.
-- **Store language** follows your Steam client language automatically (there's no
-  in-app language picker); the Status row shows the language it detected.
+- **Store language** (the description/reviews/update history Steam sends back)
+  follows your Steam client language automatically — there's no picker for it;
+  the Status row shows the language it detected.
+- **Language** (its own setting, separate from the above) controls the
+  plugin's *own* interface text — section titles, buttons, settings labels.
+  **Automatic (System)** follows the same Steam-client detection; English and
+  Português (Brasil) are also selectable directly. Any text missing from a
+  translation falls back to English.
 - **Clear cached store data** forces a fresh fetch if anything looks stale.
 - **Updates → Beta channel (test builds)** opts in to pre-release builds. Betas
   are GitHub pre-releases tagged `vX.Y.Z-beta.N` (a new number per cut) —
@@ -346,7 +352,8 @@ EnhancedGV/
     ├── api.ts               # callable() bindings to main.py
     ├── identity.ts          # reads game identity (Steam vs non-Steam shortcut)
     ├── matches.ts           # non-Steam match-change pub/sub
-    ├── lang.ts              # Steam-language detection
+    ├── lang.ts              # Steam-language detection (store CONTENT language)
+    ├── i18n/                # plugin UI text (English fallback + translations)
     ├── dashPlayer.ts        # MSE DASH player for manifest-only trailers
     ├── diag.ts / focus.ts   # diagnostics + gamepad-focus helpers
     ├── types.ts             # shared TS types

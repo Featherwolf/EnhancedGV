@@ -3,6 +3,19 @@ import { openExternal } from "../nav";
 import { Focusable } from "@decky/ui";
 import type { AppDetails } from "../types";
 import { FOCUS_SCROLL_MARGIN } from "../focus";
+import { useTranslation } from "../i18n";
+import type { TranslationKey } from "../i18n";
+
+// Best-effort translation for a genre/category pill's text (see tag.* in
+// src/i18n/*.ts for why this can only ever be best-effort, not exhaustive).
+// Steam's own genres/categories arrive already localized, so normalizing one
+// of those (e.g. "Ação") just fails to match any tag.* key and falls back to
+// rendering it unchanged — safe either way.
+function tagLabel(text: string, t: (k: TranslationKey) => string): string {
+  const key = `tag.${text.toLowerCase().trim().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}` as TranslationKey;
+  const translated = t(key);
+  return translated !== key ? translated : text;
+}
 
 function Pill({ children }: { children: ReactNode }) {
   return (
@@ -30,7 +43,29 @@ function InfoRow({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+// IGDB-sourced games (non-Steam) carry a raw `release_timestamp` because the
+// backend has no locale data to format it with (release_date is an English-
+// only fallback there — see types.ts). Steam's own appdetails reply has
+// already been localized server-side via get_appdetails' l= param, so a
+// Steam game's `release_date` is the right string to show as-is and never
+// sets `release_timestamp`.
+function releaseDateText(d: AppDetails, language: string): string {
+  if (d.release_timestamp != null) {
+    try {
+      return new Intl.DateTimeFormat(language, {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      }).format(new Date(d.release_timestamp * 1000));
+    } catch {
+      /* fall through to the English string below */
+    }
+  }
+  return d.release_date;
+}
+
 export function FeaturesSection({ d }: { d: AppDetails }) {
+  const { t, language } = useTranslation();
   const platforms = [
     d.platforms?.windows && "Windows",
     d.platforms?.mac && "macOS",
@@ -42,36 +77,42 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
       {(d.genres.length > 0 || d.categories.length > 0) && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
           {d.genres.map((g) => (
-            <Pill key={`g-${g.id}`}>{g.description}</Pill>
+            <Pill key={`g-${g.id}`}>{tagLabel(g.description, t)}</Pill>
           ))}
           {d.categories.map((c) => (
-            <Pill key={`c-${c.id}`}>{c.description}</Pill>
+            <Pill key={`c-${c.id}`}>{tagLabel(c.description, t)}</Pill>
           ))}
         </div>
       )}
 
       <div>
-        <InfoRow label="Developer" value={d.developers.join(", ")} />
-        <InfoRow label="Publisher" value={d.publishers.join(", ")} />
+        <InfoRow label={t("features.developer")} value={d.developers.join(", ")} />
+        <InfoRow label={t("features.publisher")} value={d.publishers.join(", ")} />
         <InfoRow
-          label="Released"
-          value={d.coming_soon ? `${d.release_date} (Coming soon)` : d.release_date}
+          label={t("features.released")}
+          value={
+            d.coming_soon
+              ? t("features.comingSoon", { date: releaseDateText(d, language) })
+              : releaseDateText(d, language)
+          }
         />
-        <InfoRow label="Platforms" value={platforms.join(" · ")} />
+        <InfoRow label={t("features.platforms")} value={platforms.join(" · ")} />
         {d.controller_support && (
           <InfoRow
-            label="Controller"
+            label={t("features.controller")}
             value={
-              d.controller_support === "full" ? "Full support" : "Partial support"
+              d.controller_support === "full"
+                ? t("features.controllerFull")
+                : t("features.controllerPartial")
             }
           />
         )}
         {d.achievements_total != null && d.achievements_total > 0 && (
-          <InfoRow label="Achievements" value={d.achievements_total} />
+          <InfoRow label={t("features.achievements")} value={d.achievements_total} />
         )}
         {d.metacritic && (
           <InfoRow
-            label="Metacritic"
+            label={t("features.metacritic")}
             value={
               d.metacritic.url ? (
                 <Focusable
@@ -99,7 +140,7 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
         )}
         {d.price && (
           <InfoRow
-            label="Price"
+            label={t("features.price")}
             value={
               d.price.discount > 0
                 ? `${d.price.final}  (-${d.price.discount}%)`
@@ -111,7 +152,7 @@ export function FeaturesSection({ d }: { d: AppDetails }) {
 
       {d.supported_languages_html && (
         <div style={{ fontSize: 12.5 }}>
-          <div style={{ opacity: 0.55, marginBottom: 4 }}>Languages</div>
+          <div style={{ opacity: 0.55, marginBottom: 4 }}>{t("features.languages")}</div>
           <div
             style={{ lineHeight: 1.5 }}
             dangerouslySetInnerHTML={{ __html: d.supported_languages_html }}

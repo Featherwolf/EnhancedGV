@@ -1,5 +1,90 @@
 # Changelog
 
+## v0.22.1
+
+- **Fix: Switch update-history news dialog cut off long paragraphs.** The
+  patch-note dialog opened from the update history list (sourced from
+  perfectly-nintendo.com/eShop) could show a focus stop taller than the
+  screen with no way to scroll past it, clipping part of the text — the
+  HTML from those feeds wraps long paragraphs in real `<p>` tags, which
+  were kept as one unsplittable block. Long paragraphs in that dialog are
+  now split the same way bare text already was. Scoped to that dialog only;
+  patch notes and review popups are unaffected.
+
+## v0.22.0
+
+- **Switch update history now has a real patch-note source.**
+  perfectly-nintendo.com's hand-maintained "all the updates" article (full
+  version-by-version patch notes) is now tried first for every Switch game;
+  Nintendo's own eShop "related news" — PR-style announcements, often
+  present even when no real patch history is — is used only when
+  perfectly-nintendo.com has no article for that title. Includes a few
+  rounds of fixes found testing this live: accented titles (e.g. "Pokémon")
+  no longer break the lookup, bundled/combo articles (e.g. "Super Mario
+  Galaxy + Super Mario Galaxy 2") and version-suffixed URLs now match
+  correctly, and perfectly-nintendo.com's intermittent TLS handshake
+  timeouts get up to 3 retries. An empty/failed result caches for 2 minutes
+  instead of a full day, so a transient miss corrects itself quickly.
+
+## v0.21.0
+
+- **Update history now works for Nintendo Switch games.** Non-Steam Switch
+  titles (matched via Hasheous/IGDB) now pull real update announcements from
+  Nintendo's own eShop — full text, not just a version number — instead of
+  always showing nothing. Only triggers for a game actually recognized as
+  Switch; other emulated platforms (SNES, Genesis, PS1, …) are unaffected.
+  Nintendo has no public API for this, so coverage isn't guaranteed for
+  every title, and one story's content can be unavailable by region —
+  that's Nintendo's own licensing, not a plugin bug.
+- **Update history articles are D-pad scrollable again.** Long Switch (and
+  Steam) news items now use the same scroll mechanism as the description and
+  full-review views; previously, anything taller than the dialog had no way
+  to scroll with a controller.
+- **"View online" replaces "View on Steam".** The button opened whatever
+  link the item carried regardless of source, so it said "Steam" even for a
+  Nintendo article. It also now closes the dialog before opening the link,
+  instead of leaving it sitting on top of the page that just opened behind it.
+- **Reviews and Steam Deck compatibility are localized.** The All/Recent/
+  "in {language}" review scores, the Steam Deck badge and its compatibility
+  notes, and each review's "{language} Reviews" label now follow your
+  plugin language setting (or Steam's own localized text, where Steam
+  actually provides one) instead of always showing in English. Fixed two
+  caching bugs found along the way: the review summary could get stuck in
+  whichever language was fetched first, and the Steam Deck note lookup
+  never matched because of an unstripped "#" in Steam's own reply.
+- **Release date and genre/platform tags are localized for non-Steam
+  games**, and each review now shows the date it was written.
+
+## v0.20.1
+
+- **A store-details hiccup no longer sticks for the rest of the session.**
+  `get_all` reports overall success even when only its appdetails section
+  failed (so a bad reviews/news/deck fetch can't sink the rest), but the
+  frontend was caching that shape as a permanent success regardless. A
+  transient appdetails failure (an empty or rate-limited reply, a timeout, an
+  HTTP error) showed "Store content unavailable" until Steam restarted, the
+  plugin was reinstalled, or the cache was cleared by hand. Navigating back to
+  the game after a minute now retries instead of replaying the stale failure.
+  A genuine "Steam has no store page for this app" still stays put for the
+  session, unchanged. Applies to non-Steam (Hasheous) games too.
+
+## v0.20.0
+
+- **Plugin UI localization.** The plugin's own interface — section titles,
+  buttons, settings labels, empty-state messages, and the Status/Advanced
+  diagnostics readout — is now translatable. A new **Language** setting
+  (Quick Access → EnhancedGV) offers Automatic (follows your Steam client,
+  same detection the store-content language already used), English, and
+  Português (Brasil). Any text missing from a translation falls back to
+  English. This is independent of the existing store-content language,
+  which still follows your Steam client automatically.
+- **CI test-build downloads install directly.** The workflow artifact
+  attached to non-release builds (e.g. `main` pushes) used to download as a
+  zip containing another zip containing the plugin, which Decky's Install
+  Plugin from ZIP rejected with `No plugin.json found in plugin ZIP` until
+  manually extracted. The artifact now zips the plugin folder directly, the
+  same layout a release uses. Published releases were never affected.
+
 ## v0.19.2
 
 > **Hotfix.** Store content stopped loading for many Steam games, showing

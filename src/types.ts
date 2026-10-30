@@ -41,6 +41,12 @@ export interface Requirements {
 export interface AppDetails {
   ok: boolean;
   error?: string;
+  // Set by the backend when `ok` is false and the failure is transient (empty/
+  // unreadable reply, rate limiting, timeout, transport error) rather than a
+  // genuine "Steam has nothing for this app" (success:false). Drives whether
+  // the frontend retries soon (see useAppData's failureCache) or pins the
+  // result for the rest of the session.
+  transient?: boolean;
   name: string;
   type: string;
   short_description: string;
@@ -50,7 +56,14 @@ export interface AppDetails {
   background: string;
   developers: string[];
   publishers: string[];
+  // English fallback string (backend-formatted). Steam's own appdetails reply
+  // is already localized via get_appdetails' l= param, so this IS the right
+  // string to show for a Steam game as-is. For a non-Steam/IGDB-enriched game
+  // it's only ever in English (no locale data available server-side) — the
+  // frontend prefers `release_timestamp` there, formatting it with
+  // Intl.DateTimeFormat for a real per-language month name.
   release_date: string;
+  release_timestamp?: number | null;
   coming_soon: boolean;
   website: string | null;
   controller_support: string | null;
@@ -96,6 +109,10 @@ export interface Reviews {
   };
   // 30-day window score (store-page "Recent Reviews"); absent on old caches.
   recent?: {
+    // A stable bucket KEY ("very_positive", …), not display text — this score
+    // is computed locally from the histogram, not fetched from Steam, so
+    // there is no reply to request in another language. Translate via
+    // i18n's reviews.bucket.<desc>; render as-is if somehow unrecognized.
     desc: string;
     total_positive: number;
     total_negative: number;
@@ -155,9 +172,19 @@ export interface DeckCompat {
   ok: boolean;
   error?: string;
   category: number; // 0 Unknown / 1 Unsupported / 2 Playable / 3 Verified
+  // English, computed by the backend — Steam's own compat-report endpoint
+  // never localizes (verified live: l=brazilian and l=english return
+  // byte-identical loc_tokens). Prefer translating `category` via i18n's
+  // deck.cat.<n> instead of displaying this.
   label: string;
   steamos_category: number | null;
-  notes: { display_type: number; text: string }[];
+  notes: {
+    display_type: number;
+    text: string; // English fallback; see `token`
+    // Normalized loc_token (e.g. "DefaultControllerConfigFullyFunctional"),
+    // for an i18n lookup (deck.note.<token>) — empty if Steam sent none.
+    token?: string;
+  }[];
   blog_url: string;
 }
 
@@ -199,6 +226,10 @@ export interface PluginSettings {
   expanded?: ExpandedToggles;
   language: string;
   country: string;
+  // UI language ("auto" | "en" | "pt-BR"): the plugin's OWN interface text —
+  // independent of `language` above, which is the Steam STORE CONTENT
+  // language (description/reviews/news). See src/i18n/index.ts.
+  uiLanguage?: string;
   beta?: boolean; // opt in to pre-release update checks
   // Hasheous CLIENT API key. Empty = keyless baseline (logo + description);
   // set = IGDB artwork/details for non-Steam games. Stored locally only.

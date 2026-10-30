@@ -160,6 +160,21 @@ async function loadSettings(): Promise<PluginSettings> {
   return settingsPromise;
 }
 
+// get_all's top-level `ok` only reflects whether the CALL completed — a
+// transient appdetails failure (empty reply, rate limiting, timeout) still
+// comes back as `ok: true` with `appdetails.ok: false`, since one failing
+// section must not sink the others (reviews/news/deck can legitimately
+// succeed on their own). StorePanel gates on `appdetails.ok`, though, so that
+// shape reads as "no content" on screen — and without this check it was
+// being cached in `dataCache` (no TTL) right alongside a real success,
+// pinning the failure for the rest of the Steam session instead of the 60s
+// `failureCache` retry window a failure should get (issue #11). Only a
+// transient appdetails failure is redirected; a genuine "no store data
+// (success=false)" still pins for the session, same as before.
+function isRetryableFailure(res: AppData): boolean {
+  return res?.ok === true && res.appdetails?.ok === false && !!res.appdetails.transient;
+}
+
 async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData> {
   const key = refKey(ref);
   const cached = dataCache.get(key);
@@ -191,7 +206,7 @@ async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData
           settledAt: Date.now(),
           note: res && res.ok ? `ok (${key})` : `not ok: ${res?.error ?? "?"}`,
         };
-        if (res && res.ok) lruSet(dataCache, key, res);
+        if (res && res.ok && !isRetryableFailure(res)) lruSet(dataCache, key, res);
         else lruSet(failureCache, key, { res, at: Date.now() });
         return res;
       })

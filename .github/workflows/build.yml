@@ -108,8 +108,18 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EnhancedGV-plugin
-          path: EnhancedGV.zip
+          # dist_pkg holds only the EnhancedGV/ folder at this point (see
+          # "Package plugin" above), and GitHub Actions zips an artifact
+          # DIRECTORY's contents for download — so this becomes a single
+          # EnhancedGV.zip with EnhancedGV/plugin.json one folder deep, the
+          # same layout as a release, installable directly via Decky's
+          # Install Plugin from ZIP. Uploading the already-zipped
+          # EnhancedGV.zip as `path` double-zips it instead: the download
+          # is EnhancedGV-plugin.zip containing EnhancedGV.zip containing
+          # the plugin, which Decky can't open without extracting first
+          # (fixes #12).
+          name: EnhancedGV
+          path: dist_pkg
           if-no-files-found: error
 
       - name: Attach to release (tags only)
