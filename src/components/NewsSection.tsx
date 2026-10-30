@@ -44,7 +44,12 @@ function NewsModal({
         <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10 }}>
           {item.feedlabel} · {fmtDate(item.date)}
         </div>
-        <FocusableBlocks html={item.html} blockClass="ssp-news" targetPerStop={6} />
+        <FocusableBlocks
+          html={item.html}
+          blockClass="ssp-news"
+          targetPerStop={6}
+          splitLongContainers
+        />
         {item.url && (
           <div style={{ marginTop: 10 }}>
             <DialogButton

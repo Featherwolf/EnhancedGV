@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.22.1
+
+- **Fix: Switch update-history news dialog cut off long paragraphs.** The
+  patch-note dialog opened from the update history list (sourced from
+  perfectly-nintendo.com/eShop) could show a focus stop taller than the
+  screen with no way to scroll past it, clipping part of the text — the
+  HTML from those feeds wraps long paragraphs in real `<p>` tags, which
+  were kept as one unsplittable block. Long paragraphs in that dialog are
+  now split the same way bare text already was. Scoped to that dialog only;
+  patch notes and review popups are unaffected.
+
 ## v0.22.0
 
 - **Switch update history now has a real patch-note source.**
