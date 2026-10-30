@@ -52,7 +52,11 @@ function escapeText(s: string): string {
 
 // Split already-sanitized HTML into ~half-screen focus stops. DOMParser only
 // re-groups the safe DOM (no new markup, no execution).
-function chunkHtml(html: string, targetPerStop: number): string[] {
+function chunkHtml(
+  html: string,
+  targetPerStop: number,
+  splitLongContainers: boolean
+): string[] {
   try {
     const doc = new DOMParser().parseFromString(
       `<div id="r">${html}</div>`,
@@ -72,33 +76,47 @@ function chunkHtml(html: string, targetPerStop: number): string[] {
     // viewport can't be D-pad scrolled (there's nothing to step focus to), so a
     // long single-paragraph review/description MUST be sliced into several stops.
     const maxTextChars = Math.max(220, targetPerStop * 220);
-    for (const n of nodes) {
-      if (n.nodeType === 3) {
-        const text = n.textContent ?? "";
-        if (!text.trim()) continue;
-        let i = 0;
-        while (i < text.length) {
-          let end = Math.min(i + maxTextChars, text.length);
-          if (end < text.length) {
-            const sp = text.lastIndexOf(" ", end);
-            if (sp > i) end = sp; // break at whitespace, never mid-word
-          }
-          const piece = text.slice(i, end);
-          buf += escapeText(piece); // re-encode — textContent was decoded
-          weight += Math.max(1, Math.ceil(piece.length / 220));
-          if (weight >= targetPerStop) flush();
-          i = end;
+    const tallTag = /^(img|h1|h2|h3|figure|table|ul|ol|picture|video)$/i;
+    // Block-level wrappers whose OWN text (e.g. one long news paragraph) must be
+    // split the same way a bare text node is — otherwise a single long <p> is
+    // kept atomic by outerHTML and becomes one focus stop taller than the
+    // viewport, with no inner stop to step to, leaving its top/bottom cut off.
+    // Gated by splitLongContainers: only the update-history news dialogs (whose
+    // HTML comes from perfectly-nintendo/eShop and uses real <p> wrappers) need
+    // this — patch notes/reviews already emit flat text nodes and are untouched.
+    const containerTag = /^(p|div|li|blockquote|section|article|dd|dt|td|th)$/i;
+    const addText = (text: string) => {
+      if (!text.trim()) return;
+      let i = 0;
+      while (i < text.length) {
+        let end = Math.min(i + maxTextChars, text.length);
+        if (end < text.length) {
+          const sp = text.lastIndexOf(" ", end);
+          if (sp > i) end = sp; // break at whitespace, never mid-word
         }
-        continue;
+        const piece = text.slice(i, end);
+        buf += escapeText(piece); // re-encode — textContent was decoded
+        weight += Math.max(1, Math.ceil(piece.length / 220));
+        if (weight >= targetPerStop) flush();
+        i = end;
       }
-      if (n.nodeType !== 1) continue;
+    };
+    const walk = (n: Node) => {
+      if (n.nodeType === 3) {
+        addText(n.textContent ?? "");
+        return;
+      }
+      if (n.nodeType !== 1) return;
       const el = n as HTMLElement;
       const frag = el.outerHTML;
-      if (!frag.trim()) continue;
+      if (!frag.trim()) return;
       // A long list (patch notes are often one list of dozens of items) would
       // be a single stop taller than the screen, so parts of it could never be
       // brought into view. Split it into several lists of whole items; an <ol>
       // keeps its numbering through start=. Only lists made purely of elements.
+      // Checked BEFORE tallTag below: tallTag also matches ul/ol, but a list
+      // long enough to need splitting must never fall into the single-stop
+      // isolation path instead.
       if (
         /^(ul|ol)$/i.test(el.tagName) &&
         Math.ceil(frag.length / 220) > targetPerStop &&
@@ -117,16 +135,39 @@ function chunkHtml(html: string, targetPerStop: number): string[] {
           }
         });
         weight = 0;
-        continue;
+        return;
+      }
+      if (tallTag.test(el.tagName)) {
+        // A tall element (e.g. a full-width news banner image, or a short
+        // list that didn't need splitting above) can by itself be taller
+        // than the modal's scroll viewport. Centering a focus stop can only
+        // show what fits around its middle, so if it shares a block with
+        // other content the combined height pushes its own top/bottom out
+        // of reach. Isolating it in its own stop is necessary (not
+        // sufficient — CSS still caps img/video height) to keep it reachable.
+        if (buf.trim()) flush();
+        buf += frag;
+        weight += Math.ceil(targetPerStop / 2);
+        flush();
+        return;
+      }
+      if (
+        splitLongContainers &&
+        containerTag.test(el.tagName) &&
+        (el.textContent?.length ?? 0) > maxTextChars
+      ) {
+        // Too long to stay atomic — recurse so its text gets split like a
+        // bare text node. Inline formatting tags (b/a/code) that straddle a
+        // split point are flattened to text; acceptable since this only
+        // triggers on paragraphs already too long to fit one screen anyway.
+        Array.from(el.childNodes).forEach(walk);
+        return;
       }
       buf += frag;
-      // Weight by rough visual height: media/headers count big, text by length.
-      const tall = /^(img|h1|h2|h3|figure|table|ul|ol|picture|video)$/i.test(
-        el.tagName
-      );
-      weight += tall ? Math.ceil(targetPerStop / 2) : Math.max(1, Math.ceil(frag.length / 220));
+      weight += Math.max(1, Math.ceil(frag.length / 220));
       if (weight >= targetPerStop) flush();
-    }
+    };
+    nodes.forEach(walk);
     flush();
     return out.length ? out : [html];
   } catch {
@@ -138,12 +179,21 @@ export function FocusableBlocks({
   html,
   blockClass,
   targetPerStop = 5,
+  splitLongContainers = false,
 }: {
   html: string;
   blockClass?: string;
   targetPerStop?: number;
+  // Opt-in: recurse into <p>/<div>/<li>/etc. wrappers taller than one focus
+  // stop and split their text too. Only needed for HTML sourced from external
+  // feeds (news dialogs) that wrap long paragraphs in real tags — our own
+  // generated content (patch notes, reviews) is flat text and doesn't need it.
+  splitLongContainers?: boolean;
 }) {
-  const chunks = useMemo(() => chunkHtml(html, targetPerStop), [html, targetPerStop]);
+  const chunks = useMemo(
+    () => chunkHtml(html, targetPerStop, splitLongContainers),
+    [html, targetPerStop, splitLongContainers]
+  );
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Steam descriptions can embed autoplaying muted <video> clips ("animated
