@@ -72,6 +72,13 @@ jobs:
       - name: Check reviews use the endpoint Steam's store page uses
         run: python3 scripts/check_reviews_endpoint.py
 
+      # Steam news is the most varied text the panel renders, and its converter
+      # had silently fallen behind Steam's current format (run-on paragraphs, a
+      # literal "[/*]" after every list item, missing images, deleted labels).
+      # Also pins the safety of everything remote text passes through.
+      - name: Check news renders as written and remote content stays inert
+        run: python3 scripts/check_remote_content.py
+
       - name: Install dependencies
         run: npm install
 

@@ -18,6 +18,7 @@ import time
 import html
 import asyncio
 import functools
+import hashlib
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -59,7 +60,7 @@ CACHE_VERSION = "0.15.0-lang"
 
 # Time-to-live per data kind, in seconds.
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
-       "reviews_recent": 3600, "news": 3600,
+       "reviews_recent": 3600, "news_posts": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
        "hasheous": 604800, "igdb": 604800}
 # Negative results (fetch failed / success=false) are cached only briefly so a
@@ -81,29 +82,27 @@ DECK_LABELS = {0: "Unknown", 1: "Unsupported", 2: "Playable", 3: "Verified"}
 # tool). The one appdetails failure that a retry won't fix; see get_all.
 NO_STORE_PAGE = "no store data (success=false)"
 
-# A compact map for the most common Deck-compat reviewer notes (loc_token -> text).
-# Unknown tokens fall back to a prettified version of the token itself.
+# Deck report notes in plain words, keyed by the token Steam sends (minus the
+# leading "#" it added, which is why the old table never matched anything).
+# Tokens not listed fall back to the token name split into words.
 DECK_LOC_TOKENS = {
-    "SteamDeckVerified_TestResult_DefaultControllerConfigFullySupported":
-        "Default controller configuration is fully supported",
+    "SteamDeckVerified_TestResult_DefaultControllerConfigFullyFunctional":
+        "All functionality is accessible when using the default controller configuration",
     "SteamDeckVerified_TestResult_ControllerGlyphsMatchDeckDevice":
-        "In-game controller glyphs match the Deck",
+        "This game shows Steam Deck controller icons",
+    "SteamDeckVerified_TestResult_ControllerGlyphsDoNotMatchDeckDevice":
+        "This game sometimes shows mouse, keyboard, or non-Steam-Deck controller icons",
+    "SteamDeckVerified_TestResult_InterfaceTextIsLegible":
+        "In-game interface text is legible on Steam Deck",
+    "SteamDeckVerified_TestResult_InterfaceTextIsNotLegible":
+        "Some in-game text is small and may be difficult to read",
     "SteamDeckVerified_TestResult_DefaultConfigurationIsPerformant":
-        "Default graphics configuration performs well",
-    "SteamDeckVerified_TestResult_TextIsLegible":
-        "In-game text is legible",
-    "SteamDeckVerified_TestResult_ResolutionSupported":
-        "Native display resolution is supported",
-    "SteamDeckVerified_TestResult_DisplayOutputHasBlackBars":
-        "Display has black bars (non-native aspect ratio)",
+        "This game's default graphics configuration performs well on Steam Deck",
     "SteamDeckVerified_TestResult_TextInputDoesNotAutomaticallyInvokesKeyboard":
-        "On-screen keyboard is not brought up automatically for text input",
-    "SteamDeckVerified_TestResult_LauncherInteractionIssues":
-        "Launcher/setup requires extra interaction",
-    "SteamDeckVerified_TestResult_ExternalControllersNotSupportedInLauncher":
-        "Some functionality is not accessible with the built-in controls",
-    "SteamDeckVerified_TestResult_GamepadNavigationInGameStore":
-        "This game shows the on-screen keyboard when needed",
+        "Entering some text requires manually invoking the on-screen keyboard",
+    "SteamDeckVerified_TestResult_ExternalControllersNotSupportedPrimaryPlayer":
+        "This game does not default to external Bluetooth/USB controllers on Deck, "
+        "and may require manually switching the active controller via the Quick Access Menu",
 }
 
 # Steam news BBCODE image placeholders map to the clan CDN. The placeholder is
@@ -276,6 +275,11 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
         final = urllib.parse.urlsplit(resp.geturl())
     if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
         raise ValueError("response exceeds the size limit")
+    if not raw.strip():
+        # What throttling usually looks like: a 200 with nothing in it. Not a
+        # moved endpoint, so don't let the message below say so.
+        raise ValueError(f"{urllib.parse.urlsplit(url).netloc} sent an empty reply "
+                         f"(often rate limiting)")
     try:
         return json.loads(raw)
     except ValueError:
@@ -748,6 +752,18 @@ _GITHUB_HOSTS = frozenset((
 ))
 
 
+def _plain_url(u) -> str:
+    """u, stripped, or "" if it holds a backslash, whitespace or a control
+    character. urlsplit reads "\\" as an ordinary character (part of the
+    userinfo or host), while browsers, CEF included, read it as "/". So
+    https://evil.example\\@github.com/ passes a host check here and loads
+    evil.example there. A real URL never needs any of these unencoded."""
+    s = str(u or "").strip()
+    if "\\" in s or any(ord(c) <= 0x20 or ord(c) == 0x7F for c in s):
+        return ""
+    return s
+
+
 def _github_url(u) -> str:
     """A URL from the release API, or "" if it is not plainly GitHub over https.
 
@@ -756,13 +772,14 @@ def _github_url(u) -> str:
     where the user is sent. Pin it to https and to GitHub's own hosts rather than
     trusting the field.
     """
+    s = _plain_url(u)
     try:
-        parts = urllib.parse.urlsplit(str(u or "").strip())
+        parts = urllib.parse.urlsplit(s)
     except Exception:
         return ""
     if parts.scheme != "https" or parts.hostname is None:
         return ""
-    return u if parts.hostname.lower() in _GITHUB_HOSTS else ""
+    return s if parts.hostname.lower() in _GITHUB_HOSTS else ""
 
 
 _SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
@@ -813,14 +830,15 @@ def _steam_media_url(u) -> str:
     AUTO-PLAYS on page open — so an appdetails response that names an arbitrary
     host gets a request series with no user interaction.
     """
+    s = _plain_url(u)
     try:
-        parts = urllib.parse.urlsplit(str(u or "").strip())
+        parts = urllib.parse.urlsplit(s)
     except Exception:
         return ""
     host = (parts.hostname or "").lower()
     if parts.scheme != "https":
         return ""
-    return u if host == "steamstatic.com" or host.endswith(".steamstatic.com") else ""
+    return s if host == "steamstatic.com" or host.endswith(".steamstatic.com") else ""
 
 
 def _safe_ext_url(u) -> str:
@@ -994,10 +1012,15 @@ class _Sanitizer(_HTMLParser):
 # of XSS/overlay payloads (parse-the-output live-danger check) — see CHANGELOG
 # v0.13.5. Anything it can't parse as a clean tag is escaped to inert text;
 # anything it emits as a tag has been attribute-filtered.
+# Comments, CDATA and declarations end at their terminator OR the end of the
+# input. Without the \Z, an unterminated "<!--" failed to match, finditer moved
+# one character on and tried again, rescanning to the end each time: quadratic,
+# about 6 s for 64 KB of "<!--" on a desktop, on the event loop. A browser also
+# runs an unterminated comment to the end of the document.
 _TOKEN_RE = re.compile(
-    r"<!--.*?-->"                                        # comments
-    r"|<!\[CDATA\[.*?\]\]>"                              # cdata
-    r"|<![^>]*>"                                         # doctype/declaration
+    r"<!--.*?(?:-->|\Z)"                                 # comments
+    r"|<!\[CDATA\[.*?(?:\]\]>|\Z)"                       # cdata
+    r"|<![^>]*(?:>|\Z)"                                  # doctype/declaration
     r"|<\s*/\s*([a-zA-Z][a-zA-Z0-9]*)\s*>"              # end tag        -> grp1
     r"|<\s*([a-zA-Z][a-zA-Z0-9]*)([^<>]*)>",             # start tag     -> grp2/3
     re.S,
@@ -1151,22 +1174,43 @@ def _expand_clan_images(text: str) -> str:
     return text
 
 
+def _bb_arg(s: str) -> str:
+    """A BBCode tag argument, without the quotes Steam's event editor adds."""
+    return s.strip().strip("\"'").strip()
+
+
+# Every BBCode tag Steam news uses that isn't rendered below is dropped. Only
+# these: any other bracketed text ("[PC]", "[Xbox only]", "[EU]") is part of the
+# note, and dropping it made an Xbox-only fix read as if it applied everywhere.
+_BB_KNOWN = (r"(?:p|b|i|u|s|strike|h[1-6]|list|olist|quote|code|url|img|hr|table"
+             r"|tr|td|th|spoiler|noparse|previewyoutube|expand|video|dynamiclink"
+             r"|carousel)")
+
+
 def _bbcode_to_html(text) -> str:
     """Convert the BBCODE that Steam news `contents` uses into a small, safe
-    HTML subset. Unknown tags are dropped rather than shown raw."""
+    HTML subset (the result is sanitized again by the caller). Known tags that
+    aren't rendered are dropped; other bracketed text is kept as text."""
     if not text or not isinstance(text, str):
         return ""
     # A literal NUL from upstream would forge one of our own placeholder tokens
     # after the escape pass, so it never gets to exist.
     t = _expand_clan_images(text.replace("\x00", ""))
+    # Steam writes a literal "[" as "\[". Set it aside before anything reads
+    # tags, so "\[ GAMEPLAY ]" is neither parsed nor left with its backslash.
+    t = t.replace("\\[", "\x00LB\x00")
 
-    # Images first (before we escape), capture the URL.
+    # Images first (before we escape), capture the URL. The event editor
+    # writes [img src="URL"][/img]; older posts use [img]URL[/img].
+    t = re.sub(r'\[img\s+src="?([^"\]]+)"?[^\]]*\](?:\s*\[/img\])?',
+               lambda m: f'\x00IMG\x00{m.group(1).strip()}\x00', t,
+               flags=re.IGNORECASE)
     t = re.sub(r"\[img\](.*?)\[/img\]",
                lambda m: f'\x00IMG\x00{m.group(1).strip()}\x00', t,
                flags=re.IGNORECASE | re.DOTALL)
-    # Links: [url=x]label[/url] and [url]x[/url]
+    # Links: [url=x]label[/url] (x often quoted now) and [url]x[/url]
     t = re.sub(r"\[url=([^\]]+)\](.*?)\[/url\]",
-               lambda m: f'\x00A\x00{m.group(1).strip()}\x00{m.group(2)}\x00/A\x00',
+               lambda m: f'\x00A\x00{_bb_arg(m.group(1))}\x00{m.group(2)}\x00/A\x00',
                t, flags=re.IGNORECASE | re.DOTALL)
     t = re.sub(r"\[url\](.*?)\[/url\]",
                lambda m: f'\x00A\x00{m.group(1).strip()}\x00{m.group(1).strip()}\x00/A\x00',
@@ -1174,6 +1218,7 @@ def _bbcode_to_html(text) -> str:
 
     # Escape everything else so raw user text can't inject markup.
     t = html.escape(t)
+    t = t.replace("\x00LB\x00", "&#91;")
 
     # Restore the tokens we set aside, as real (safe) HTML.
     # html.escape(..., quote=True) is NOT optional here. The URL was stashed as a
@@ -1191,6 +1236,7 @@ def _bbcode_to_html(text) -> str:
 
     # Block/inline formatting tags -> HTML.
     replacements = [
+        (r"\[p(?:\s[^\]]*)?\]", lambda m: "<p>"), (r"\[/p\]", lambda m: "</p>"),
         (r"\[/?b\]", lambda m: "</b>" if m.group(0)[1] == "/" else "<b>"),
         (r"\[/?i\]", lambda m: "</i>" if m.group(0)[1] == "/" else "<i>"),
         (r"\[/?u\]", lambda m: "</u>" if m.group(0)[1] == "/" else "<u>"),
@@ -1200,7 +1246,7 @@ def _bbcode_to_html(text) -> str:
         (r"\[h3\]", lambda m: "<h4>"), (r"\[/h3\]", lambda m: "</h4>"),
         (r"\[/?list\]", lambda m: "</ul>" if m.group(0)[1] == "/" else "<ul>"),
         (r"\[/?olist\]", lambda m: "</ol>" if m.group(0)[1] == "/" else "<ol>"),
-        (r"\[\*\]", lambda m: "<li>"),
+        (r"\[\*\]", lambda m: "<li>"), (r"\[/\*\]", lambda m: "</li>"),
         (r"\[/?quote(=[^\]]*)?\]",
          lambda m: "</blockquote>" if m.group(0)[1] == "/" else "<blockquote>"),
         (r"\[/?code\]", lambda m: "</code>" if m.group(0)[1] == "/" else "<code>"),
@@ -1208,9 +1254,12 @@ def _bbcode_to_html(text) -> str:
     for pattern, repl in replacements:
         t = re.sub(pattern, repl, t, flags=re.IGNORECASE)
 
-    # Drop any BBCODE tag we didn't explicitly handle.
-    t = re.sub(r"\[/?[a-zA-Z][^\]]*\]", "", t)
-    # Newlines -> <br> (Steam news relies on literal newlines).
+    # Drop the known tags we don't render (tables, spoilers, embeds...).
+    t = re.sub(r"\[/?" + _BB_KNOWN + r"\b[^\]]*\]", "", t, flags=re.IGNORECASE)
+    # A newline right after a block tag is source layout, not a line break in
+    # the text; as <br> it only adds a blank line.
+    t = re.sub(r"(</?(?:p|ul|ol|li|h3|h4|blockquote)>)[ \t]*\r?\n", r"\1", t)
+    # Newlines -> <br> (older posts rely on literal newlines).
     t = t.replace("\r\n", "\n").replace("\n", "<br>")
     return t.strip()
 
@@ -1266,14 +1315,6 @@ def _derive_movie_sources(movie: dict) -> dict:
 
 
 def _normalize_appdetails(data: dict) -> dict:
-    def reqs(obj):
-        if isinstance(obj, dict):
-            return {
-                "minimum": _sanitize_html(obj.get("minimum")),
-                "recommended": _sanitize_html(obj.get("recommended")),
-            }
-        return None
-
     price = None
     po = data.get("price_overview")
     if isinstance(po, dict):
@@ -1296,9 +1337,10 @@ def _normalize_appdetails(data: dict) -> dict:
     return {
         "name": data.get("name", ""),
         "type": data.get("type", ""),
-        "short_description": data.get("short_description", ""),
+        # Steam sends it HTML-escaped (&quot; and friends) and the panel shows it
+        # as plain text, so decode it once here.
+        "short_description": html.unescape(data.get("short_description") or ""),
         "about_html": _sanitize_html(data.get("about_the_game")),
-        "detailed_html": _sanitize_html(data.get("detailed_description")),
         "header_image": data.get("header_image", ""),
         "background": data.get("background_raw") or data.get("background", ""),
         "developers": data.get("developers", []) or [],
@@ -1328,7 +1370,6 @@ def _normalize_appdetails(data: dict) -> dict:
         "recommendations_total": (data.get("recommendations") or {}).get("total"),
         "achievements_total": (data.get("achievements") or {}).get("total"),
         "supported_languages_html": _sanitize_html(data.get("supported_languages")),
-        "pc_requirements": reqs(data.get("pc_requirements")),
         "content_descriptor_notes": (data.get("content_descriptors") or {}).get("notes"),
     }
 
@@ -1369,7 +1410,12 @@ def _normalize_news(data: dict) -> dict:
         items.append({
             "gid": n.get("gid"),
             "title": n.get("title", ""),
-            "html": _sanitize_html(_bbcode_to_html(n.get("contents", ""))),
+            # Announcements are BBCode (feed_type 1); Valve's steam_updates
+            # notes are HTML, which the BBCode pass would escape into visible
+            # tags. Either way the result goes through the sanitizer.
+            "html": _sanitize_html(
+                _bbcode_to_html(n.get("contents", "")) if n.get("feed_type") != 0
+                else n.get("contents", "")),
             "date": n.get("date"),
             "url": _safe_ext_url(n.get("url", "")),
             "external": bool(n.get("is_external_url")),
@@ -1384,7 +1430,7 @@ def _normalize_deck(data: dict) -> dict:
     cat = results.get("resolved_category", 0)
     notes = []
     for item in (results.get("resolved_items") or []):
-        tok = item.get("loc_token", "")
+        tok = str(item.get("loc_token") or "").lstrip("#")
         notes.append({
             "display_type": item.get("display_type"),
             "text": DECK_LOC_TOKENS.get(
@@ -1549,7 +1595,6 @@ def _empty_appdetails(name: str = "") -> dict:
         "type": "game",
         "short_description": "",
         "about_html": "",
-        "detailed_html": "",
         "header_image": "",
         "background": "",
         "developers": [],
@@ -1568,7 +1613,6 @@ def _empty_appdetails(name: str = "") -> dict:
         "recommendations_total": None,
         "achievements_total": None,
         "supported_languages_html": "",
-        "pc_requirements": None,
         "content_descriptor_notes": None,
         # Handle for the opt-in IGDB enrichment pass (0 = unmapped).
         "igdb_id": 0,
@@ -1913,7 +1957,10 @@ class Plugin:
         res = await self._fetch(
             f"reviews_list_{review_type}_{lang}", str(appid), build(lang), norm
         )
-        if lang != "english" and (not res.get("ok") or not res.get("list")):
+        # Only when the user's language came back empty. After a failure, a
+        # second request would usually fail the same way and double the wait
+        # (two 15 s timeouts can outlast the panel's own time limit).
+        if lang != "english" and res.get("ok") and not res.get("list"):
             used = "english"
             res = await self._fetch(
                 f"reviews_list_{review_type}_english", str(appid), build("english"), norm
@@ -1923,8 +1970,12 @@ class Plugin:
 
     async def get_news(self, appid: int, count: int = 10):
         url = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?" + urllib.parse.urlencode(
-            {"appid": appid, "count": count, "maxlength": 0,
-             "format": "json"}
+            {"appid": appid, "count": count, "maxlength": 0, "format": "json",
+             # The developer's own posts on Steam, plus Valve's update notes for
+             # its games (Team Fortress 2's arrive only on steam_updates).
+             # Unfiltered, press coverage filled the list: all ten items for
+             # Baldur's Gate 3 were articles from gaming sites.
+             "feeds": "steam_community_announcements,steam_updates"}
         )
 
         def norm(raw):
@@ -1934,7 +1985,10 @@ class Plugin:
             out["ok"] = True
             return out
 
-        return await self._fetch("news", str(appid), url, norm)
+        # Its own cache kind ("news" held the unfiltered list rendered by the old
+        # converter), so the fix shows at once instead of after the cached copy
+        # expires.
+        return await self._fetch("news_posts", str(appid), url, norm)
 
     async def get_deck(self, appid: int, lang: str = "english"):
         url = ("https://store.steampowered.com/saleaction/"
@@ -2024,7 +2078,11 @@ class Plugin:
                                 "image": it.get("tiny_image", "")})
             return {"ok": True, "items": out}
 
-        key = _norm_title(term) or "_"
+        # The exact query, hashed. _norm_title keeps only [a-z0-9], so every
+        # Japanese, Chinese, Korean, Cyrillic or Greek title used to share one
+        # key, and "ドラゴンクエストVII" was answered with the cached results for
+        # "ファイナルファンタジーVII", then saved as that game.
+        key = hashlib.sha1(f"{term}\n{lang}\n{cc}".encode("utf-8")).hexdigest()
         return await self._fetch("storesearch", key, url, norm)
 
     async def _name_year(self, appid: int, lang: str, cc: str):
@@ -2523,7 +2581,8 @@ class Plugin:
 
         if is_shortcut:
             res = await self._search_store(title or "", lang, cc)
-            items = res.get("items") if isinstance(res, dict) and res.get("ok") else []
+            steam_ok = isinstance(res, dict) and bool(res.get("ok"))
+            items = res.get("items") if steam_ok else []
             nt = _norm_title(title or "")
             exact = next((it for it in items if _norm_title(it.get("name")) == nt), None) if nt else None
             if exact:
@@ -2563,6 +2622,11 @@ class Plugin:
                             "platform": h.get("platform", ""), "name": h.get("name", ""),
                             "year": h.get("year", ""), "source": "auto",
                             "gen": MATCH_GENERATION, "ts": int(time.time())}
+                        if not steam_ok:
+                            # Steam's search failed (throttled, offline), so it
+                            # never got a say. Show this answer but don't save
+                            # it, or the next open never asks Steam again.
+                            return _rec_to_result(prov_rec)
                         async with self._matches_lock():
                             cur = _read_matches()
                             existing = cur.get(str(game_appid))
