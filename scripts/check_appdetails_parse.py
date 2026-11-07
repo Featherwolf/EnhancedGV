@@ -143,6 +143,38 @@ for bad in MALFORMED:
     check(f"get_appdetails fails cleanly on {bad!r}",
           res.get("ok") is False and err in NORM_MESSAGES, err)
 
+print("== get_all says which details failures a retry can fix (#11) ==")
+# get_all reports ok even when only the store details failed, and the panel
+# used to keep that result for the whole Steam session. It may now retry, but
+# only failures marked transient: a real success:false must stay put rather
+# than cost an appdetails request on every visit.
+import urllib.error
+def details_via(answer):
+    def fake(url, headers=None):
+        if "/api/appdetails" not in url:
+            return {}  # the other sections just fail; only details matter here
+        if isinstance(answer, BaseException):
+            raise answer
+        return answer
+    main._http_get_json = fake
+    main._read_cache_entry = lambda kind, key: (None, False)
+    main._write_cache = lambda *a, **k: None
+    main._write_negative = lambda *a, **k: None
+    return asyncio.run(P.get_all(275850)).get("appdetails") or {}
+
+d = details_via({"275850": GOOD})
+check("a good reply carries no retry flag", d.get("ok") is True and "transient" not in d, d.get("error"))
+for label, answer in (
+        ("an empty reply", None),
+        ("a reply with no entry for the app", {"999": {"success": True, "data": {"steam_appid": 999}}}),
+        ("HTTP 429", urllib.error.HTTPError("https://store.steampowered.com/api/appdetails", 429,
+                                            "Too Many Requests", None, None)),
+        ("a timeout", TimeoutError("timed out"))):
+    d = details_via(answer)
+    check(f"{label} is marked transient", d.get("ok") is False and d.get("transient") is True, d)
+d = details_via({"275850": {"success": False}})
+check("Steam's own success:false is not", d.get("ok") is False and d.get("transient") is False, d)
+
 print(f"\n{ok} passed, {fail} failed")
 if fail:
     print("FAIL — the appdetails reply is not being parsed safely.")

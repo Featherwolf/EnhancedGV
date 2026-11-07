@@ -41,6 +41,9 @@ export interface Requirements {
 export interface AppDetails {
   ok: boolean;
   error?: string;
+  // On a failure from get_all: true unless Steam said the app has no store
+  // data, i.e. a later retry may succeed.
+  transient?: boolean;
   name: string;
   type: string;
   short_description: string;

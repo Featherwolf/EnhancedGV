@@ -77,6 +77,10 @@ USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64; SteamDeck) DeckyStorePanel/0.1"
 
 DECK_LABELS = {0: "Unknown", 1: "Unsupported", 2: "Playable", 3: "Verified"}
 
+# Steam's own answer that an app has no store data (delisted, region-locked, a
+# tool). The one appdetails failure that a retry won't fix; see get_all.
+NO_STORE_PAGE = "no store data (success=false)"
+
 # A compact map for the most common Deck-compat reviewer notes (loc_token -> text).
 # Unknown tokens fall back to a prettified version of the token itself.
 DECK_LOC_TOKENS = {
@@ -1788,7 +1792,7 @@ class Plugin:
             # data null or [], and _normalize_appdetails raises on either. Only
             # say success=false when Steam actually did.
             if not env.get("success"):
-                return {"ok": False, "error": "no store data (success=false)"}
+                return {"ok": False, "error": NO_STORE_PAGE}
             if not isinstance(env.get("data"), dict):
                 return {"ok": False, "error": "no store data"}
             out = _normalize_appdetails(env["data"])
@@ -1974,10 +1978,18 @@ class Plugin:
                 return {"ok": False, "error": str(section)}
             return section
 
+        details = _coerce(appdetails)
+        if isinstance(details, dict) and not details.get("ok"):
+            # Everything except Steam's own success=false can clear up on a
+            # retry: a throttled or empty reply, a timeout, a network error.
+            # Saying so lets the panel try again on a later visit instead of
+            # keeping the failure for the rest of the Steam session (#11).
+            details = {**details, "transient": details.get("error") != NO_STORE_PAGE}
+
         return {
             "ok": True,
             "appid": appid,
-            "appdetails": _coerce(appdetails),
+            "appdetails": details,
             "reviews": _coerce(reviews),
             "news": _coerce(news),
             "deck": _coerce(deck),

@@ -191,7 +191,12 @@ async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData
           settledAt: Date.now(),
           note: res && res.ok ? `ok (${key})` : `not ok: ${res?.error ?? "?"}`,
         };
-        if (res && res.ok) lruSet(dataCache, key, res);
+        // get_all succeeds even when only the store details failed. A
+        // transient details failure (throttling, an empty reply, a timeout)
+        // goes in failureCache like any failure, so a visit a minute later
+        // tries again; a real "no store page" stays for the session (#11).
+        const retryable = !!res?.ok && res.appdetails?.ok === false && !!res.appdetails.transient;
+        if (res && res.ok && !retryable) lruSet(dataCache, key, res);
         else lruSet(failureCache, key, { res, at: Date.now() });
         return res;
       })
