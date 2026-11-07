@@ -3,10 +3,6 @@ import { FaThumbsUp, FaThumbsDown } from "react-icons/fa";
 import type { ReviewItem } from "../types";
 import { FocusableBlocks } from "./FocusableBlocks";
 
-// Escape review text (plain, user-written — treat as untrusted) so it renders as
-// literal text, then turn newlines into <br>. FocusableBlocks makes the result
-// D-pad scrollable (each chunk is a focus stop) — the same in-place scroll the
-// About section uses, so long reviews are fully readable on a controller.
 // Details shared by the review card and this popup.
 // Deck hours are as of when the review was written.
 export function deckNote(r: ReviewItem): string | null {
@@ -31,6 +27,10 @@ export function helpfulText(r: ReviewItem): string | null {
     : `${n.toLocaleString()} people found this helpful`;
 }
 
+// Escape review text (plain, user-written — treat as untrusted) so it renders as
+// literal text, then turn newlines into <br>. FocusableBlocks makes the result
+// D-pad scrollable (each chunk is a focus stop) — the same in-place scroll the
+// About section uses, so long reviews are fully readable on a controller.
 function textToSafeHtml(s: string): string {
   return (s || "")
     .replace(/&/g, "&amp;")

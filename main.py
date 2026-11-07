@@ -1805,6 +1805,10 @@ class Plugin:
         """Store-page-style review scores across every language (all time, the
         last 30 days, and Steam Deck players), plus the newest review texts in
         the user's language (English when that language has none)."""
+        try:
+            appid = int(appid)  # it goes into a URL path
+        except Exception:
+            return {"ok": False, "error": "invalid appid"}
         base = STEAM_REVIEWS_URL.format(appid=appid)
 
         def summary_url(extra: dict) -> str:
