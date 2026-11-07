@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.19.3
+
+> **Hotfix.** The reviews section disappeared from every game, review score
+> included. Update and it comes back. Nothing on your end was wrong, and no
+> settings are lost.
+
+- **Reviews load again.** Steam stopped answering at the address the plugin
+  fetched reviews from, sending every request to the store's front page
+  instead, so there was nothing to show. The plugin now uses the same source
+  Steam's own store page uses, which returns the same information: the score,
+  the counts, and the reviews themselves.
+- **Clearer error when Steam moves something.** If Steam answers with a web
+  page instead of data, the diagnostics now say so rather than showing a
+  cryptic parsing error.
+
 ## v0.19.2
 
 > **Hotfix.** Store content stopped loading for many Steam games, showing

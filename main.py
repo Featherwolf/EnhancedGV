@@ -45,6 +45,14 @@ IGDB_TOKEN_FILE = os.path.join(SETTINGS_DIR, "igdb_token.json")
 # choices into CACHE_DIR. scripts/check_credentials_survive.py fails the build
 # if this drifts.
 
+# Steam's user-review endpoint. The long-documented /appreviews/<appid> was, by
+# 2026-11-07, answering every request with a 302 to the store front page, so
+# both review calls failed to parse and the reviews section vanished. The store's
+# own review section loads from /ajaxappreviews/<appid>, which accepts the same
+# parameters and returns the same JSON (success, query_summary, reviews), so
+# that is what this uses. Both review requests build their URLs from here.
+STEAM_REVIEWS_URL = "https://store.steampowered.com/ajaxappreviews/{appid}?"
+
 # Bump when fetch/cache behavior changes so an update auto-clears stale cache
 # (e.g. old negative-cached SSL failures) instead of serving it after a fix.
 CACHE_VERSION = "0.15.0-lang"
@@ -261,9 +269,22 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
     req = urllib.request.Request(url, headers=hdrs)
     with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
         raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+        final = urllib.parse.urlsplit(resp.geturl())
     if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
         raise ValueError("response exceeds the size limit")
-    return json.loads(raw)
+    try:
+        return json.loads(raw)
+    except ValueError:
+        # A retired endpoint tends to redirect to an ordinary web page (Steam's
+        # /appreviews/ did), and json.loads then reports only "Expecting value:
+        # line 1 column 1". Say what actually happened, so the diagnostics point
+        # at the cause. Shared by Steam, Hasheous and GitHub calls, so name the
+        # host that answered. Scheme, host and path only: never a query string.
+        asked = urllib.parse.urlsplit(url)
+        moved = f" (redirected to {final.scheme}://{final.netloc}{final.path})" \
+            if (final.netloc, final.path) != (asked.netloc, asked.path) else ""
+        raise ValueError(f"{asked.netloc} sent a web page instead of data{moved}; "
+                         f"the endpoint may have moved") from None
 
 
 def _http_post_json(url: str, payload: dict) -> dict:
@@ -1765,11 +1786,14 @@ class Plugin:
         """Store-page-style reviews: ALL-TIME and RECENT (30d) scores computed
         across every language, review TEXTS in the user's language (falling back
         to English when the localized list is empty)."""
-        base = f"https://store.steampowered.com/appreviews/{appid}?"
+        base = STEAM_REVIEWS_URL.format(appid=appid)
 
         def summary_url(extra: dict) -> str:
+            # num_per_page 0 used to mean "summary only". The ajax endpoint
+            # ignores 0 and sends 20 reviews (~29 KB) we would throw away; 1 is
+            # honoured (~1.4 KB) and the query_summary is identical.
             q = {"json": 1, "language": "all", "purchase_type": "all",
-                 "num_per_page": 0, "filter": "all", "review_type": "all"}
+                 "num_per_page": 1, "filter": "all", "review_type": "all"}
             q.update(extra)
             return base + urllib.parse.urlencode(q)
 
@@ -1801,7 +1825,7 @@ class Plugin:
 
         alltime, recent, localized = await asyncio.gather(
             self._fetch("reviews_sum", str(appid), summary_url({}), norm_summary),
-            # NOTE: appreviews' day_range does NOT restrict query_summary (the
+            # NOTE: the reviews endpoint's day_range does NOT restrict query_summary (the
             # totals stay all-time — observed on-device as identical numbers),
             # so the 30-day score is computed by paginating recent reviews.
             self._recent_summary(appid),
@@ -1865,7 +1889,7 @@ class Plugin:
     async def _recent_summary(self, appid: int):
         """EXACT 30-day totals from appreviewhistogram — the endpoint the store
         page's own review graph uses (results.recent = 30 daily up/down buckets).
-        One request; no pagination/sampling. (appreviews' day_range does NOT
+        One request; no pagination/sampling. (The reviews endpoint's day_range does NOT
         window query_summary — verified: identical totals.)"""
 
         def norm(raw):
@@ -1899,7 +1923,7 @@ class Plugin:
             review_type = "all"
 
         def build(language: str) -> str:
-            return f"https://store.steampowered.com/appreviews/{appid}?" + urllib.parse.urlencode(
+            return STEAM_REVIEWS_URL.format(appid=appid) + urllib.parse.urlencode(
                 {"json": 1, "language": language, "purchase_type": "all",
                  "num_per_page": 30, "filter": "recent",
                  "review_type": review_type}

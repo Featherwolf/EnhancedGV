@@ -65,6 +65,13 @@ jobs:
       - name: Check appdetails is parsed by contents, not by key
         run: python3 scripts/check_appdetails_parse.py
 
+      # /appreviews/<appid>, the endpoint in Valve's own documentation, began
+      # redirecting every request to the store front page by 2026-11-07, which
+      # removed the reviews section from every game. The store page itself now
+      # loads reviews from /ajaxappreviews/<appid>; this keeps the plugin there.
+      - name: Check reviews use the endpoint Steam's store page uses
+        run: python3 scripts/check_reviews_endpoint.py
+
       - name: Install dependencies
         run: npm install
 
