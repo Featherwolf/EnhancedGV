@@ -2,26 +2,36 @@
 
 ## v0.20.0
 
-- **Steam Deck players' score.** The reviews section adds a row with the score
-  from people who played mostly on a Steam Deck. It can differ a lot from the
-  overall one: No Man's Sky is 94% positive on Deck, 85% overall.
-- **Steam Deck review filter.** A new chip next to All / Positive / Negative
-  shows only those players' reviews.
-- **More on each review.** Cards show when the review was posted, how many
-  people found it helpful, and how long the reviewer had played on Deck.
+- **Steam Deck players' score.** The reviews section adds the score from
+  people who played mostly on a Steam Deck, which can differ a lot from the
+  overall one (No Man's Sky: 94% on Deck, 85% overall). A new **Steam Deck**
+  filter shows just their reviews.
+- **More on each review:** when it was posted, how many people found it
+  helpful, and the reviewer's hours on Deck.
 - **Recent Reviews match the store page.** The 30-day score now comes from
-  Steam instead of being worked out by the plugin, which could call a single
-  review "Overwhelmingly Positive". Score rows also show the positive share.
-- **All shows the newest reviews**, like the other filters, instead of Steam's
-  most-helpful picks. Your language's row no longer shows English totals when
-  there are no reviews in your language.
+  Steam, so a single review is no longer called "Overwhelmingly Positive".
+  Scores show the positive share, and All lists the newest reviews like the
+  other filters.
+- **Update history reads properly.** Paragraphs, lists and images in Steam's
+  current patch notes show as written, labels like "[PC]" are no longer
+  deleted, long notes scroll with the D-pad, and press articles no longer
+  fill the list.
 - **Saving or removing IGDB credentials keeps your Steam data.** Both used to
-  clear every cached game, so pages reloaded from Steam all at once. Remove
-  still erases everything fetched with the credentials, and now says so if the
-  erase fails.
-- **"Store content unavailable" no longer sticks.** If Steam was busy when you
-  opened a game, the message stayed until Steam restarted. Opening the game
-  again a minute later now retries.
+  reload every game from Steam at once. Remove still erases everything fetched
+  with the credentials, and now says so if that fails.
+- **"Store content unavailable" no longer sticks** after a brief Steam
+  hiccup: opening the game again a minute later retries.
+- **Non-Steam games with Japanese, Chinese, Korean, Cyrillic or Greek titles**
+  no longer get another game's store page. If one already has, use
+  **Re-detect** in Quick Access.
+- **Clear (leave blank)** now hides the panel, as intended.
+- **Smaller fixes.** A slow connection says a section couldn't load instead
+  of "No reviews"; a Steam session left running picks up new update notes;
+  game descriptions show quotes instead of `&quot;`; Steam Deck notes read as
+  sentences and mark which checks passed; muting no longer restarts a paused
+  trailer; screenshots load lighter.
+- **Hardening.** Update and video links can't be pointed at another site with
+  a crafted address, and malformed store text can no longer stall the plugin.
 
 ## v0.19.3
 
