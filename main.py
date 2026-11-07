@@ -1323,6 +1323,9 @@ def _normalize_reviews(data: dict) -> dict:
             "timestamp": r.get("timestamp_created"),
             "votes_up": r.get("votes_up", 0),
             "steam_deck": bool(r.get("primarily_steam_deck")),
+            # Hours on a Steam Deck when the review was written (absent for
+            # reviewers who never played on one).
+            "deck_hours": round((author.get("deck_playtime_at_review") or 0) / 60, 1),
             "early_access": bool(r.get("written_during_early_access")),
         })
     return {
@@ -1783,9 +1786,9 @@ class Plugin:
         return await self._fetch("appdetails", f"{appid}_{lang}_{cc}", url, norm)
 
     async def get_reviews(self, appid: int, lang: str = "english"):
-        """Store-page-style reviews: ALL-TIME and RECENT (30d) scores computed
-        across every language, review TEXTS in the user's language (falling back
-        to English when the localized list is empty)."""
+        """Store-page-style review scores across every language (all time, the
+        last 30 days, and Steam Deck players), plus the newest review texts in
+        the user's language (English when that language has none)."""
         base = STEAM_REVIEWS_URL.format(appid=appid)
 
         def summary_url(extra: dict) -> str:
@@ -1796,12 +1799,6 @@ class Plugin:
                  "num_per_page": 1, "filter": "all", "review_type": "all"}
             q.update(extra)
             return base + urllib.parse.urlencode(q)
-
-        def list_url(language: str) -> str:
-            return base + urllib.parse.urlencode(
-                {"json": 1, "language": language, "purchase_type": "all",
-                 "num_per_page": 20, "filter": "all", "review_type": "all"}
-            )
 
         def norm_summary(raw):
             if not raw or raw.get("success") != 1:
@@ -1816,118 +1813,74 @@ class Plugin:
                 "total_reviews": qs.get("total_reviews", 0),
             }
 
-        def norm_list(raw):
-            if not raw or raw.get("success") != 1:
-                return {"ok": False, "error": "reviews unavailable"}
-            out = _normalize_reviews(raw)
-            out["ok"] = True
-            return out
+        # The store page's "Recent Reviews" row is this summary limited to the
+        # last 30 days. date_range_type=include does that, and Steam labels the
+        # result itself, including "3 user reviews" when there are too few to
+        # score. (day_range does not: it leaves the totals all-time.)
+        now = int(time.time())
+        last_30_days = {"date_range_type": "include",
+                        "start_date": now - 30 * 86400, "end_date": now}
 
-        alltime, recent, localized = await asyncio.gather(
+        parts = await asyncio.gather(
             self._fetch("reviews_sum", str(appid), summary_url({}), norm_summary),
-            # NOTE: the reviews endpoint's day_range does NOT restrict query_summary (the
-            # totals stay all-time — observed on-device as identical numbers),
-            # so the 30-day score is computed by paginating recent reviews.
-            self._recent_summary(appid),
-            self._fetch(f"reviews_list_{lang}", str(appid), list_url(lang), norm_list),
+            self._fetch("reviews_30d", str(appid), summary_url(last_30_days),
+                        norm_summary),
+            # Only reviews from people who played mostly on a Steam Deck.
+            self._fetch("reviews_deck", str(appid),
+                        summary_url({"playtime_type": "deck"}), norm_summary),
+            self.get_reviews_list(appid, "all", lang),
             return_exceptions=True,
         )
-        alltime = alltime if isinstance(alltime, dict) else {"ok": False}
-        recent = recent if isinstance(recent, dict) else {"ok": False}
-        localized = localized if isinstance(localized, dict) else {"ok": False}
+        alltime, recent, deck, texts = (
+            p if isinstance(p, dict) else {"ok": False} for p in parts)
 
-        # Fallback: no reviews written in the user's language -> English texts.
-        if lang != "english" and (not localized.get("ok") or not localized.get("list")):
-            fallback = await self._fetch(
-                "reviews_list_english", str(appid), list_url("english"), norm_list
-            )
-            if isinstance(fallback, dict) and fallback.get("ok") and fallback.get("list"):
-                localized = fallback
-
-        if not alltime.get("ok") and not localized.get("ok"):
+        if not alltime.get("ok") and not texts.get("ok"):
             return {"ok": False, "error": alltime.get("error", "reviews unavailable")}
+
+        def score(part):
+            if not part.get("ok"):
+                return None
+            return {k: v for k, v in part.items() if k != "ok"}
 
         return {
             "ok": True,
-            "summary": {
-                "desc": alltime.get("desc", ""),
-                "score": alltime.get("score", 0),
-                "total_positive": alltime.get("total_positive", 0),
-                "total_negative": alltime.get("total_negative", 0),
-                "total_reviews": alltime.get("total_reviews", 0),
+            "summary": score(alltime) or {
+                "desc": "", "score": 0, "total_positive": 0,
+                "total_negative": 0, "total_reviews": 0,
             },
-            "recent": recent if recent.get("ok") else {
-                "desc": "", "total_positive": 0, "total_negative": 0,
-                "total_reviews": 0, "capped": False,
-            },
-            # Language-filtered summary rides along free in the localized list
-            # response (query_summary respects the language param) — the store
-            # page's "ENGLISH REVIEWS (N)" row.
-            "lang_summary": (localized.get("summary")
-                             if localized.get("ok") else None),
+            "recent": score(recent),
+            "deck": score(deck),
+            # The store page's "ENGLISH REVIEWS (N)" row rides along free in the
+            # list reply (its query_summary respects the language). Only when
+            # the list really is in the user's language: after the English
+            # fallback it would put English totals under the user's language.
+            "lang_summary": (texts.get("summary")
+                             if texts.get("ok") and texts.get("lang") == lang
+                             else None),
             "lang": lang,
-            "list": localized.get("list", []),
+            "list": texts.get("list", []) if texts.get("ok") else [],
         }
-
-    @staticmethod
-    def _score_label(pos: int, total: int) -> str:
-        if total == 0:
-            return ""
-        pct = pos / total * 100
-        if pct >= 95:
-            return "Overwhelmingly Positive"
-        if pct >= 80:
-            return "Very Positive"
-        if pct >= 70:
-            return "Mostly Positive"
-        if pct >= 40:
-            return "Mixed"
-        if pct >= 20:
-            return "Mostly Negative"
-        return "Very Negative"
-
-    async def _recent_summary(self, appid: int):
-        """EXACT 30-day totals from appreviewhistogram — the endpoint the store
-        page's own review graph uses (results.recent = 30 daily up/down buckets).
-        One request; no pagination/sampling. (The reviews endpoint's day_range does NOT
-        window query_summary — verified: identical totals.)"""
-
-        def norm(raw):
-            results = (raw or {}).get("results") or {}
-            recent = results.get("recent")
-            if recent is None:
-                return {"ok": False, "error": "no histogram data"}
-            pos = sum(int(x.get("recommendations_up") or 0) for x in recent)
-            neg = sum(int(x.get("recommendations_down") or 0) for x in recent)
-            total = pos + neg
-            return {
-                "ok": True,
-                "desc": Plugin._score_label(pos, total),
-                "total_positive": pos,
-                "total_negative": neg,
-                "total_reviews": total,
-                "capped": False,
-            }
-
-        url = f"https://store.steampowered.com/appreviewhistogram/{appid}?l=english"
-        return await self._fetch("reviews_recent30", str(appid), url, norm)
 
     async def get_reviews_list(self, appid: int, review_type: str = "all",
                                lang: str = "english"):
-        """Filtered review texts, most recent first (QAM/panel filter chips)."""
+        """The newest reviews for one filter chip: all, positive, negative, or
+        deck (people who played mostly on a Steam Deck). In the user's
+        language, falling back to English when that language has none."""
         try:
             appid = int(appid)
         except Exception:
             return {"ok": False, "error": "invalid appid"}
-        if review_type not in ("all", "positive", "negative"):
+        if review_type not in ("all", "positive", "negative", "deck"):
             review_type = "all"
 
         def build(language: str) -> str:
-            return STEAM_REVIEWS_URL.format(appid=appid) + urllib.parse.urlencode(
-                {"json": 1, "language": language, "purchase_type": "all",
-                 "num_per_page": 30, "filter": "recent",
+            q = {"json": 1, "language": language, "purchase_type": "all",
+                 # The panel shows ten.
+                 "num_per_page": 10, "filter": "recent",
                  "review_type": review_type}
-            )
+            if review_type == "deck":
+                q.update(review_type="all", playtime_type="deck")
+            return STEAM_REVIEWS_URL.format(appid=appid) + urllib.parse.urlencode(q)
 
         def norm(raw):
             if not raw or raw.get("success") != 1:
@@ -1936,14 +1889,17 @@ class Plugin:
             out["ok"] = True
             return out
 
+        used = lang
         res = await self._fetch(
             f"reviews_list_{review_type}_{lang}", str(appid), build(lang), norm
         )
         if lang != "english" and (not res.get("ok") or not res.get("list")):
+            used = "english"
             res = await self._fetch(
                 f"reviews_list_{review_type}_english", str(appid), build("english"), norm
             )
-        return res
+        # A copy: _fetch can hand the same dict to every caller awaiting it.
+        return {**res, "lang": used}
 
     async def get_news(self, appid: int, count: int = 10):
         url = "https://api.steampowered.com/ISteamNews/GetNewsForApp/v2/?" + urllib.parse.urlencode(

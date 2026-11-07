@@ -81,35 +81,31 @@ export interface ReviewItem {
   timestamp: number;
   votes_up: number;
   steam_deck: boolean;
+  // Hours on a Steam Deck when the review was written; 0 if none.
+  deck_hours?: number;
   early_access: boolean;
+}
+
+// One score row as Steam reports it. `score` is Steam's 0-9 rating; 0 means
+// too few reviews to rate, and `desc` then reads like "3 user reviews".
+export interface ReviewScore {
+  desc: string;
+  score?: number;
+  total_positive: number;
+  total_negative: number;
+  total_reviews: number;
 }
 
 export interface Reviews {
   ok: boolean;
   error?: string;
-  summary: {
-    desc: string;
-    score: number;
-    total_positive: number;
-    total_negative: number;
-    total_reviews: number;
-  };
-  // 30-day window score (store-page "Recent Reviews"); absent on old caches.
-  recent?: {
-    desc: string;
-    total_positive: number;
-    total_negative: number;
-    total_reviews: number;
-    capped?: boolean; // sampled floor (fallback path only) -> display as "N+"
-  };
+  summary: ReviewScore;
+  // Last 30 days (store-page "Recent Reviews").
+  recent?: ReviewScore | null;
+  // Only people who played mostly on a Steam Deck.
+  deck?: ReviewScore | null;
   // Language-filtered summary (store-page "ENGLISH REVIEWS (N)" row).
-  lang_summary?: {
-    desc: string;
-    score?: number;
-    total_positive: number;
-    total_negative: number;
-    total_reviews: number;
-  } | null;
+  lang_summary?: ReviewScore | null;
   lang?: string;
   list: ReviewItem[];
 }
