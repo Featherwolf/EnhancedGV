@@ -112,11 +112,17 @@ jobs:
           cd dist_pkg
           zip -r "../$PLUGIN.zip" "$PLUGIN"
 
+      # GitHub always zips an artifact for download. Uploading EnhancedGV.zip
+      # made that a zip inside a zip, which Decky's Install Plugin from ZIP
+      # rejects ("No plugin.json found") until it's extracted by hand (#12).
+      # Uploading the folder instead gives a single EnhancedGV.zip with the same
+      # EnhancedGV/ layout as a release, which Decky installs as downloaded.
+      # Releases are unaffected: they attach the EnhancedGV.zip built above.
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EnhancedGV-plugin
-          path: EnhancedGV.zip
+          name: EnhancedGV
+          path: dist_pkg
           if-no-files-found: error
 
       - name: Attach to release (tags only)
