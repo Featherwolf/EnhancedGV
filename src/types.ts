@@ -33,11 +33,6 @@ export interface Tag {
   description: string;
 }
 
-export interface Requirements {
-  minimum: string;
-  recommended: string;
-}
-
 export interface AppDetails {
   ok: boolean;
   error?: string;
@@ -48,7 +43,6 @@ export interface AppDetails {
   type: string;
   short_description: string;
   about_html: string;
-  detailed_html: string;
   header_image: string;
   background: string;
   developers: string[];
@@ -72,7 +66,6 @@ export interface AppDetails {
   // Set by the backend when the IGDB pass added artwork/details on top of the
   // keyless Hasheous baseline (drives the source note in the panel).
   igdb_enriched?: boolean;
-  pc_requirements: Requirements | null;
   content_descriptor_notes: string | null;
 }
 

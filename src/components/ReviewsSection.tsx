@@ -175,7 +175,9 @@ export function ReviewsSection({
     withChipTimeout(getReviewsList(appid, chip, lang))
       .then((res) => {
         const list = res?.ok ? res.list : [];
-        filteredCache.set(key, list); // populate cache even if this view is stale
+        // Only a real answer: a failure (throttling, a timeout) would
+        // otherwise read "No reviews for this filter" until Steam restarts.
+        if (res?.ok) filteredCache.set(key, list); // even if this view is stale
         if (!cancelled) setFiltered(list);
       })
       .catch(() => {

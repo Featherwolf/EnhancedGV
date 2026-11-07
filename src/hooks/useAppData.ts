@@ -28,6 +28,13 @@ const coreInflight = new Map<string, Promise<AppData | null>>();
 const failureCache = new Map<string, { res: AppData; at: number }>();
 const FAILURE_TTL_MS = 60_000;
 
+// A good result is reused for this long, then refreshed in the background on
+// the next visit (stale-while-revalidate, like the backend; its own cache
+// decides whether that costs a Steam request). Without this, a Steam session
+// left running for days never showed a game's new update notes or reviews.
+const DATA_MAX_AGE_MS = 30 * 60_000;
+const fetchedAt = new WeakMap<AppData, number>();
+
 // A Decky callable against a dead/stale Python backend can hang FOREVER (neither
 // resolve nor reject) — observed on-device as the panel stuck on "loading" with no
 // error. Racing a timeout turns that silence into a visible, actionable message.
@@ -35,7 +42,11 @@ const FAILURE_TTL_MS = 60_000;
 // A dead/unstarted backend never answers, so a shorter frontend cap turns
 // "placeholder forever" into a visible error fast. get_settings (trivial, reads
 // a local file) uses a much shorter cap — if IT times out the backend is dead.
-const CALL_TIMEOUT_MS = 25_000;
+// Just above the backend's own 40 s cap on get_all, so this fires only when
+// the backend really isn't answering. At 25 s it fired on a merely slow
+// network too, threw away sections that had already arrived, and blamed a
+// dead backend.
+const CALL_TIMEOUT_MS = 45_000;
 const SETTINGS_TIMEOUT_MS = 6_000;
 // The first-paint call is a single HTTP request behind a disk cache; if it has
 // not answered well before get_all would, there is nothing to gain from it.
@@ -165,6 +176,10 @@ async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData
   const cached = dataCache.get(key);
   if (cached) {
     fetchInfo = { startedAt: 0, settledAt: Date.now(), note: `cache hit (${key})` };
+    if (Date.now() - (fetchedAt.get(cached) ?? 0) > DATA_MAX_AGE_MS) {
+      // Answer from memory now; the refresh lands in dataCache for next time.
+      void fetchFull(ref, settings, key).catch(() => null);
+    }
     return cached;
   }
 
@@ -173,7 +188,10 @@ async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData
     if (Date.now() - failed.at < FAILURE_TTL_MS) return failed.res;
     failureCache.delete(key); // TTL expired -> allow a retry
   }
+  return fetchFull(ref, settings, key);
+}
 
+function fetchFull(ref: DataRef, settings: PluginSettings, key: string): Promise<AppData> {
   let promise = inflight.get(key);
   if (!promise) {
     fetchInfo = { startedAt: Date.now(), settledAt: 0, note: `get_all(${key}) in flight` };
@@ -196,8 +214,10 @@ async function loadData(ref: DataRef, settings: PluginSettings): Promise<AppData
         // goes in failureCache like any failure, so a visit a minute later
         // tries again; a real "no store page" stays for the session (#11).
         const retryable = !!res?.ok && res.appdetails?.ok === false && !!res.appdetails.transient;
-        if (res && res.ok && !retryable) lruSet(dataCache, key, res);
-        else lruSet(failureCache, key, { res, at: Date.now() });
+        if (res && res.ok && !retryable) {
+          lruSet(dataCache, key, res);
+          fetchedAt.set(res, Date.now());
+        } else lruSet(failureCache, key, { res, at: Date.now() });
         return res;
       })
       .catch((e) => {
@@ -379,8 +399,14 @@ export function useAppData(ref: DataRef | null): UseAppData {
           setData(paint);
           setLoading(false);
         });
-        const res = await loadData(ref, s);
-        full = true;
+        let res: AppData;
+        try {
+          res = await loadData(ref, s);
+        } finally {
+          // Also on failure: a first paint landing after get_all has failed
+          // would otherwise leave its sections waiting forever.
+          full = true;
+        }
         if (cancelled) return;
         if (res && res.ok) {
           setData(res);

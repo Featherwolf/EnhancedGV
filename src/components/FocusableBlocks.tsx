@@ -95,6 +95,30 @@ function chunkHtml(html: string, targetPerStop: number): string[] {
       const el = n as HTMLElement;
       const frag = el.outerHTML;
       if (!frag.trim()) continue;
+      // A long list (patch notes are often one list of dozens of items) would
+      // be a single stop taller than the screen, so parts of it could never be
+      // brought into view. Split it into several lists of whole items; an <ol>
+      // keeps its numbering through start=. Only lists made purely of elements.
+      if (
+        /^(ul|ol)$/i.test(el.tagName) &&
+        Math.ceil(frag.length / 220) > targetPerStop &&
+        Array.from(el.childNodes).every((c) => c.nodeType === 1 || !(c.textContent ?? "").trim())
+      ) {
+        flush();
+        const tag = el.tagName.toLowerCase();
+        const items = Array.from(el.children);
+        let first = 1;
+        items.forEach((li, idx) => {
+          buf += li.outerHTML;
+          if (Math.ceil(buf.length / 220) >= targetPerStop || idx === items.length - 1) {
+            out.push(`<${tag}${tag === "ol" ? ` start="${first}"` : ""}>${buf}</${tag}>`);
+            first = idx + 2;
+            buf = "";
+          }
+        });
+        weight = 0;
+        continue;
+      }
       buf += frag;
       // Weight by rough visual height: media/headers count big, text by length.
       const tall = /^(img|h1|h2|h3|figure|table|ul|ol|picture|video)$/i.test(
