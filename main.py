@@ -383,6 +383,25 @@ def _write_negative(kind: str, key: str, res) -> None:
     _write_cache(kind, key, res, negative=True)
 
 
+def _purge_cache(kind: str = "") -> int:
+    """Delete cached store data: every entry, or only the entries of one kind
+    (as named by _cache_path). Returns how many files were removed."""
+    removed = 0
+    try:
+        names = os.listdir(CACHE_DIR)
+    except Exception as exc:
+        decky.logger.warning(f"cache purge: {exc}")
+        return 0
+    for name in names:
+        if name.endswith(".json") and (not kind or name.startswith(f"{kind}_")):
+            try:
+                os.remove(os.path.join(CACHE_DIR, name))
+                removed += 1
+            except Exception:
+                pass
+    return removed
+
+
 def _write_cache(kind: str, key: str, data, negative: bool = False) -> None:
     try:
         os.makedirs(CACHE_DIR, exist_ok=True)
@@ -1654,14 +1673,7 @@ class Plugin:
                 with open(marker, "r", encoding="utf-8") as fh:
                     old = fh.read().strip()
             if old != CACHE_VERSION:
-                removed = 0
-                for name in os.listdir(CACHE_DIR):
-                    if name.endswith(".json"):
-                        try:
-                            os.remove(os.path.join(CACHE_DIR, name))
-                            removed += 1
-                        except Exception:
-                            pass
+                removed = _purge_cache()
                 with open(marker, "w", encoding="utf-8") as fh:
                     fh.write(CACHE_VERSION)
                 decky.logger.info(
@@ -2692,15 +2704,7 @@ class Plugin:
         return {"ok": True, "existed": existed}
 
     async def clear_cache(self):
-        removed = 0
-        try:
-            for name in os.listdir(CACHE_DIR):
-                if name.endswith(".json"):
-                    os.remove(os.path.join(CACHE_DIR, name))
-                    removed += 1
-        except Exception as exc:
-            decky.logger.warning(f"clear_cache: {exc}")
-        return {"ok": True, "removed": removed}
+        return {"ok": True, "removed": _purge_cache()}
 
     async def get_backend_info(self):
         """Report which HTML sanitizer engine actually runs on THIS device, plus
@@ -2803,8 +2807,10 @@ class Plugin:
             from the pair — is overwritten and deleted.
           * a half-written .tmp from an interrupted save is removed; it can hold
             a full copy of both values.
-          * store data cached while IGDB was in use is dropped, so nothing
-            fetched with those credentials outlives them.
+          * IGDB data cached with them is dropped, so nothing fetched with
+            those credentials outlives them. Steam and Hasheous data stay:
+            neither was fetched with them, and dropping Steam's would make
+            every game refetch at once from its most rate-limited endpoint.
 
         Nothing else holds them: they are read from the file on demand rather
         than cached in memory, and no code path logs or reports either value.
@@ -2862,14 +2868,7 @@ class Plugin:
             token_removed = _secure_delete(IGDB_TOKEN_FILE)
 
             # Artwork and descriptions fetched with those credentials.
-            cached = 0
-            try:
-                for name in os.listdir(CACHE_DIR):
-                    if name.endswith(".json"):
-                        os.remove(os.path.join(CACHE_DIR, name))
-                        cached += 1
-            except Exception as exc:
-                decky.logger.warning(f"clear_igdb_credentials: cache purge: {exc}")
+            cached = _purge_cache("igdb")
 
             return {"ok": True, "hadCredentials": had, "tokenRemoved": token_removed,
                     "staleTempRemoved": stale_removed, "cachedFilesRemoved": cached}
