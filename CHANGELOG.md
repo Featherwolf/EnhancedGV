@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.20.0
+
+- **Steam Deck players' score.** The reviews section adds a row with the score
+  from people who played mostly on a Steam Deck. It can differ a lot from the
+  overall one: No Man's Sky is 94% positive on Deck, 85% overall.
+- **Steam Deck review filter.** A new chip next to All / Positive / Negative
+  shows only those players' reviews.
+- **More on each review.** Cards show when the review was posted, how many
+  people found it helpful, and how long the reviewer had played on Deck.
+- **Recent Reviews match the store page.** The 30-day score now comes from
+  Steam instead of being worked out by the plugin, which could call a single
+  review "Overwhelmingly Positive". Score rows also show the positive share.
+- **All shows the newest reviews**, like the other filters, instead of Steam's
+  most-helpful picks. Your language's row no longer shows English totals when
+  there are no reviews in your language.
+- **Saving or removing IGDB credentials keeps your Steam data.** Both used to
+  clear every cached game, so pages reloaded from Steam all at once. Remove
+  still erases everything fetched with the credentials, and now says so if the
+  erase fails.
+- **"Store content unavailable" no longer sticks.** If Steam was busy when you
+  opened a game, the message stayed until Steam restarted. Opening the game
+  again a minute later now retries.
+
 ## v0.19.3
 
 > **Hotfix.** The reviews section disappeared from every game, review score
