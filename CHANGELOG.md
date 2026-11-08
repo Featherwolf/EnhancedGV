@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.20.0
+
+- **Steam Deck players' score.** The reviews section adds the score from
+  people who played mostly on a Steam Deck, which can differ a lot from the
+  overall one (No Man's Sky: 94% on Deck, 85% overall). A new **Steam Deck**
+  filter shows just their reviews.
+- **More on each review:** when it was posted, how many people found it
+  helpful, and the reviewer's hours on Deck.
+- **Recent Reviews match the store page.** The 30-day score now comes from
+  Steam, so a single review is no longer called "Overwhelmingly Positive".
+  Scores show the positive share, and All lists the newest reviews like the
+  other filters.
+- **Update history reads properly.** Paragraphs, lists and images in Steam's
+  current patch notes show as written, labels like "[PC]" are no longer
+  deleted, long notes scroll with the D-pad, and press articles no longer
+  fill the list.
+- **Saving or removing IGDB credentials keeps your Steam data.** Both used to
+  reload every game from Steam at once. Remove still erases everything fetched
+  with the credentials, and now says so if that fails.
+- **"Store content unavailable" no longer sticks** after a brief Steam
+  hiccup: opening the game again a minute later retries.
+- **Non-Steam games with Japanese, Chinese, Korean, Cyrillic or Greek titles**
+  no longer get another game's store page. If one already has, use
+  **Re-detect** in Quick Access.
+- **Clear (leave blank)** now hides the panel, as intended.
+- **Smaller fixes.** A slow connection says a section couldn't load instead
+  of "No reviews"; a Steam session left running picks up new update notes;
+  game descriptions show quotes instead of `&quot;`; Steam Deck notes read as
+  sentences and mark which checks passed; muting no longer restarts a paused
+  trailer; screenshots load lighter.
+- **Hardening.** Update and video links can't be pointed at another site with
+  a crafted address, and malformed store text can no longer stall the plugin.
+
+## v0.19.3
+
+> **Hotfix.** The reviews section disappeared from every game, review score
+> included. Update and it comes back. Nothing on your end was wrong, and no
+> settings are lost.
+
+- **Reviews load again.** Steam stopped answering at the address the plugin
+  fetched reviews from, sending every request to the store's front page
+  instead, so there was nothing to show. The plugin now uses the same source
+  Steam's own store page uses, which returns the same information: the score,
+  the counts, and the reviews themselves.
+- **Clearer error when Steam moves something.** If Steam answers with a web
+  page instead of data, the diagnostics now say so rather than showing a
+  cryptic parsing error.
+
 ## v0.19.2
 
 > **Hotfix.** Store content stopped loading for many Steam games, showing

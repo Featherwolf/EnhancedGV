@@ -65,6 +65,20 @@ jobs:
       - name: Check appdetails is parsed by contents, not by key
         run: python3 scripts/check_appdetails_parse.py
 
+      # /appreviews/<appid>, the endpoint in Valve's own documentation, began
+      # redirecting every request to the store front page by 2026-11-07, which
+      # removed the reviews section from every game. The store page itself now
+      # loads reviews from /ajaxappreviews/<appid>; this keeps the plugin there.
+      - name: Check reviews use the endpoint Steam's store page uses
+        run: python3 scripts/check_reviews_endpoint.py
+
+      # Steam news is the most varied text the panel renders, and its converter
+      # had silently fallen behind Steam's current format (run-on paragraphs, a
+      # literal "[/*]" after every list item, missing images, deleted labels).
+      # Also pins the safety of everything remote text passes through.
+      - name: Check news renders as written and remote content stays inert
+        run: python3 scripts/check_remote_content.py
+
       - name: Install dependencies
         run: npm install
 
@@ -105,11 +119,17 @@ jobs:
           cd dist_pkg
           zip -r "../$PLUGIN.zip" "$PLUGIN"
 
+      # GitHub always zips an artifact for download. Uploading EnhancedGV.zip
+      # made that a zip inside a zip, which Decky's Install Plugin from ZIP
+      # rejects ("No plugin.json found") until it's extracted by hand (#12).
+      # Uploading the folder instead gives a single EnhancedGV.zip with the same
+      # EnhancedGV/ layout as a release, which Decky installs as downloaded.
+      # Releases are unaffected: they attach the EnhancedGV.zip built above.
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: EnhancedGV-plugin
-          path: EnhancedGV.zip
+          name: EnhancedGV
+          path: dist_pkg
           if-no-files-found: error
 
       - name: Attach to release (tags only)

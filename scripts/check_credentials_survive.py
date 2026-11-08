@@ -116,8 +116,13 @@ run(P.set_settings({"igdbClientId": CID, "igdbClientSecret": SECRET, "nonSteamSo
 with open(main.IGDB_TOKEN_FILE, "w", encoding="utf-8") as fh:
     json.dump({"client_id": CID, "access_token": "tok-abc", "expires_at": 9e9}, fh)
 os.makedirs(main.CACHE_DIR, exist_ok=True)
-with open(os.path.join(main.CACHE_DIR, "igdb-1103.json"), "w", encoding="utf-8") as fh:
-    json.dump({"fetched": "with those credentials"}, fh)
+main._write_cache("igdb", "1103", {"fetched": "with those credentials"})
+# Data that was never fetched with them. Steam's must survive (#10): wiping it
+# made every game refetch at once from Steam's most rate-limited endpoint.
+UNRELATED = {("appdetails", "275850_english_us"), ("reviews_sum", "275850"),
+             ("news", "275850"), ("hasheous", "4242")}
+for kind, key in UNRELATED:
+    main._write_cache(kind, key, {"ok": True, "kind": kind})
 with open(main.SETTINGS_FILE + ".tmp", "w", encoding="utf-8") as fh:
     json.dump({"igdbClientId": CID, "igdbClientSecret": SECRET}, fh)
 
@@ -128,7 +133,11 @@ check("both halves are gone", main._igdb_creds() == ("", ""), main._igdb_creds()
 check("IGDB reports unconfigured", main._igdb_configured() is False)
 check("the token is gone", not os.path.exists(main.IGDB_TOKEN_FILE))
 check("a half-written save is gone", not os.path.exists(main.SETTINGS_FILE + ".tmp"))
-check("data cached with them is gone", res.get("cachedFilesRemoved", 0) >= 1, res)
+check("data cached with them is gone",
+      not os.path.exists(main._cache_path("igdb", "1103")) and res.get("cachedFilesRemoved") == 1, res)
+for kind, key in sorted(UNRELATED):
+    check(f"{kind} data, never fetched with them, is kept",
+          os.path.exists(main._cache_path(kind, key)))
 
 # Blanking is not erasing: a leftover "igdbClientSecret": "" is still a record
 # that a secret was configured here.

@@ -67,6 +67,10 @@ export function MediaHero({ movies, screenshots }: Props) {
   // ready stuck at 1 on-device even though the CDN serves 206 ranges fine).
   const [srcIdx, setSrcIdx] = useState(0);
   const [muted, setMuted] = useState(true);
+  // The autoplay effect reads this instead of depending on `muted`: toggling
+  // mute with X re-ran it, and its play() restarted a trailer paused with A.
+  const mutedRef = useRef(muted);
+  mutedRef.current = muted;
   const [fullscreen, setFullscreen] = useState(false);
   const [heroFocused, setHeroFocused] = useState(false);
   // Steam keeps left-behind pages mounted but hidden, and the user scrolls the
@@ -248,8 +252,8 @@ export function MediaHero({ movies, screenshots }: Props) {
       // Never touch a detached/replaced element (unmount or carousel move mid-
       // retry would otherwise resurrect a background-decoding <video>).
       if (disposed || videoRef.current !== v || !v.isConnected) return;
-      v.muted = muted;
-      (v as HTMLVideoElement & { defaultMuted?: boolean }).defaultMuted = muted;
+      v.muted = mutedRef.current;
+      (v as HTMLVideoElement & { defaultMuted?: boolean }).defaultMuted = mutedRef.current;
       const p = v.play();
       if (p && typeof p.then === "function") {
         p.then(() => {
@@ -269,7 +273,7 @@ export function MediaHero({ movies, screenshots }: Props) {
       disposed = true;
       if (retry) clearTimeout(retry);
     };
-  }, [cur?.id, srcIdx, curIsPlayableVideo, visible, muted]);
+  }, [cur?.id, srcIdx, curIsPlayableVideo, visible]);
 
   // Dwell/advance is for STILLS only (screenshots + failed videos). A playing
   // video is NEVER advanced past by a timer — it moves on solely via 'ended'
@@ -327,6 +331,9 @@ export function MediaHero({ movies, screenshots }: Props) {
     if (!visible) return;
     const strip = stripRef.current;
     const el = strip?.children?.[idx] as HTMLElement | undefined;
+    // The user is browsing the strip with the D-pad: auto-advance must not
+    // slide it away from the thumbnail they're on.
+    if (strip?.contains(strip.ownerDocument.activeElement)) return;
     if (strip && el && typeof strip.scrollTo === "function") {
       strip.scrollTo({
         left: el.offsetLeft - (strip.clientWidth - el.offsetWidth) / 2,
@@ -445,6 +452,16 @@ export function MediaHero({ movies, screenshots }: Props) {
             <img
               key={cur?.id}
               src={cur?.kind === "shot" ? cur.shot.full : cur?.thumb}
+              // The inline hero is about 490 px wide on the Deck's screen, so
+              // the 600 px thumbnail (already loaded by the strip) is enough;
+              // the 1920 px original is fetched only when the screen needs it
+              // (fullscreen, or a docked high-resolution display).
+              srcSet={
+                cur?.kind === "shot" && cur.shot.thumb && cur.shot.full
+                  ? `${cur.shot.thumb} 600w, ${cur.shot.full} 1920w`
+                  : undefined
+              }
+              sizes={fullscreen ? "100vw" : "61vh"}
               style={fullscreen ? { ...HERO_MEDIA_STYLE, maxHeight: "100vh", height: "100%" } : HERO_MEDIA_STYLE}
             />
           )}
@@ -583,6 +600,8 @@ function Thumb({
     >
       <img
         src={src}
+        loading="lazy"
+        decoding="async"
         style={{ width: "100%", height: "100%", objectFit: "cover" }}
       />
       {isVideo && (

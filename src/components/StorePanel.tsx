@@ -276,6 +276,10 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
     );
   }
 
+  // "Clear (leave blank)" in Quick Access: the user asked for no panel on this
+  // game, so show none rather than the "isn't matched yet" banner.
+  if (resolved.status === "unmatched" && resolved.reason === "cleared") return null;
+
   if (resolved.status === "unmatched") {
     // A non-Steam game with no Steam store match (auto-search missed, or it's not
     // on Steam). Managed entirely from the QAM — no in-page matcher.
@@ -318,6 +322,12 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // sections show a shimmer rather than their empty state, and their subtitle
   // (review count, news count, Deck rating) fills in when the data lands.
   const pending = !!data.partial;
+  // get_all failed after the store details painted: these sections never
+  // arrived, which is not the same as the game having none. (The cause is in
+  // Quick Access → Advanced.)
+  const failed = error ? (
+    <div style={{ opacity: 0.6, fontSize: 13 }}>Couldn’t load this section. Try again in a minute.</div>
+  ) : null;
   // Non-Steam content is worth attributing: the panel otherwise looks like a
   // Steam store page, and which database supplied it changes what to expect
   // (no reviews, no Deck rating, and artwork only when IGDB enrichment ran).
@@ -355,7 +365,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       title: "Steam Deck",
       subtitle: data.deck?.ok ? data.deck.label : pending ? "…" : undefined,
       defaultOpen: expanded.deck,
-      node: pending ? <SectionLoading lines={2} /> : <DeckCompatDetails deck={data.deck} />,
+      node: pending ? <SectionLoading lines={2} /> : failed ?? <DeckCompatDetails deck={data.deck} />,
     });
   if (sec.reviews)
     sections.push({
@@ -369,6 +379,8 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       defaultOpen: expanded.reviews,
       node: pending ? (
         <SectionLoading lines={4} />
+      ) : failed ? (
+        failed
       ) : (
         <ReviewsSection
           reviews={data.reviews}
@@ -383,7 +395,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       title: "Update history",
       subtitle: data.news?.ok ? `${data.news.items.length}` : pending ? "…" : undefined,
       defaultOpen: expanded.news,
-      node: pending ? <SectionLoading lines={3} /> : <NewsSection news={data.news} />,
+      node: pending ? <SectionLoading lines={3} /> : failed ?? <NewsSection news={data.news} />,
     });
 
   const header = (

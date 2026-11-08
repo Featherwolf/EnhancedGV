@@ -7,6 +7,7 @@ import {
 import type { News, NewsItem } from "../types";
 import { openExternal } from "../nav";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
+import { FocusableBlocks } from "./FocusableBlocks";
 
 function fmtDate(unix: number): string {
   try {
@@ -41,16 +42,12 @@ function NewsModal({
         <div style={{ fontSize: 12, opacity: 0.6 }}>
           {item.feedlabel} · {fmtDate(item.date)}
         </div>
-        <div
-          className="ssp-news"
-          style={{
-            fontSize: 13.5,
-            lineHeight: 1.5,
-            maxHeight: "60vh",
-            overflowY: "auto",
-          }}
-          dangerouslySetInnerHTML={{ __html: item.html }}
-        />
+        {/* Focus stops through the body, as in the review and patch-notes
+            popups: a plain scrolling div gave the D-pad nothing to land on,
+            so only the first screenful was readable with a controller. */}
+        <div style={{ fontSize: 13.5, lineHeight: 1.5, maxHeight: "60vh", overflowY: "auto" }}>
+          <FocusableBlocks html={item.html} blockClass="ssp-news" targetPerStop={6} />
+        </div>
         {item.url && (
           <DialogButton
             onClick={() => openExternal(item.url)}

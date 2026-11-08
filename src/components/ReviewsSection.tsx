@@ -3,9 +3,9 @@ import { DialogButton, Focusable, showModal } from "@decky/ui";
 import { FaThumbsUp, FaThumbsDown } from "react-icons/fa";
 import { getReviewsList } from "../api";
 import { registerCacheClearer } from "../hooks/useAppData";
-import type { Reviews, ReviewItem, PluginSettings } from "../types";
+import type { Reviews, ReviewItem, ReviewScore, PluginSettings } from "../types";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
-import { ReviewModal } from "./ReviewModal";
+import { ReviewModal, deckNote, postedDate, helpfulText } from "./ReviewModal";
 import { resolveLanguage } from "../lang";
 
 // A single review: a real focus stop (has onActivate) so the D-pad can land on
@@ -13,6 +13,9 @@ import { resolveLanguage } from "../lang";
 // 5-line clamp so it stays skimmable.
 function ReviewCard({ review }: { review: ReviewItem }) {
   const [focused, setFocused] = useState(false);
+  const deck = deckNote(review);
+  const posted = postedDate(review);
+  const helpful = helpfulText(review);
   return (
     <Focusable
       {...CENTER_ON_FOCUS}
@@ -34,6 +37,7 @@ function ReviewCard({ review }: { review: ReviewItem }) {
         style={{
           display: "flex",
           alignItems: "center",
+          flexWrap: "wrap",
           gap: 8,
           fontSize: 12,
           opacity: 0.75,
@@ -48,8 +52,9 @@ function ReviewCard({ review }: { review: ReviewItem }) {
         <span>{review.voted_up ? "Recommended" : "Not recommended"}</span>
         <span>·</span>
         <span>{review.playtime_hours}h played</span>
-        {review.steam_deck && <span>· 🎮 on Deck</span>}
+        {deck && <span>· {deck}</span>}
         {review.early_access && <span>· Early Access</span>}
+        {posted && <span style={{ marginLeft: "auto" }}>{posted}</span>}
       </div>
       <div
         style={{
@@ -63,6 +68,9 @@ function ReviewCard({ review }: { review: ReviewItem }) {
       >
         {review.text}
       </div>
+      {helpful && (
+        <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{helpful}</div>
+      )}
       {focused && (
         <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>▸ Press A to read the full review</div>
       )}
@@ -75,13 +83,45 @@ function pct(pos: number, total: number): number {
   return Math.round((pos / total) * 100);
 }
 
-// No "Recent" chip: the list is only ~30 most-recent reviews anyway, so a
-// 30-day sub-filter just shows a near-identical subset (user feedback).
-type Chip = "all" | "positive" | "negative";
+// One store-page-style score row. When Steam rates the reviews (score 1-9) the
+// row adds the positive share and count; with too few to rate, Steam's own
+// text ("3 user reviews") already carries the count.
+function ScoreRow({ label, s }: { label: string; s: ReviewScore }) {
+  return (
+    <div style={{ display: "flex", gap: 8, fontSize: 14 }}>
+      <span style={{ opacity: 0.6, minWidth: 150 }}>{label}</span>
+      <span style={{ fontWeight: 600 }}>{s.desc || "No score"}</span>
+      {(s.score ?? 0) > 0 && (
+        <span style={{ opacity: 0.6 }}>
+          ({pct(s.total_positive, s.total_reviews)}% of{" "}
+          {s.total_reviews.toLocaleString()})
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Steam's language codes that don't read as names once capitalized.
+const LANG_NAMES: Record<string, string> = {
+  schinese: "Simplified Chinese",
+  tchinese: "Traditional Chinese",
+  koreana: "Korean",
+  latam: "Latin American Spanish",
+  brazilian: "Brazilian Portuguese",
+};
+
+function langName(code: string): string {
+  return LANG_NAMES[code] ?? code.charAt(0).toUpperCase() + code.slice(1);
+}
+
+// No "Recent" chip: every list is the newest reviews already, so a 30-day
+// sub-filter would show a near-identical subset (user feedback).
+type Chip = "all" | "positive" | "negative" | "deck";
 const CHIPS: { key: Chip; label: string }[] = [
   { key: "all", label: "All" },
   { key: "positive", label: "Positive" },
   { key: "negative", label: "Negative" },
+  { key: "deck", label: "Steam Deck" },
 ];
 
 // Module cache: filtered lists per appid so chip flips are instant on revisits.
@@ -135,7 +175,9 @@ export function ReviewsSection({
     withChipTimeout(getReviewsList(appid, chip, lang))
       .then((res) => {
         const list = res?.ok ? res.list : [];
-        filteredCache.set(key, list); // populate cache even if this view is stale
+        // Only a real answer: a failure (throttling, a timeout) would
+        // otherwise read "No reviews for this filter" until Steam restarts.
+        if (res?.ok) filteredCache.set(key, list); // even if this view is stale
         if (!cancelled) setFiltered(list);
       })
       .catch(() => {
@@ -161,46 +203,20 @@ export function ReviewsSection({
 
   const s = reviews.summary;
   const r = reviews.recent;
+  const d = reviews.deck;
+  const ls = reviews.lang_summary;
   const positivePct = pct(s.total_positive, s.total_reviews);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-      {/* Store-page style score rows: all-time + recent */}
+      {/* Store-page style score rows */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <div style={{ display: "flex", gap: 8, fontSize: 14 }}>
-          <span style={{ opacity: 0.6, minWidth: 110 }}>All Reviews:</span>
-          <span style={{ fontWeight: 600 }}>{s.desc || "No score"}</span>
-          <span style={{ opacity: 0.6 }}>
-            ({s.total_reviews.toLocaleString()})
-          </span>
-        </div>
-        {r && r.total_reviews > 0 && (
-          <div style={{ display: "flex", gap: 8, fontSize: 14 }}>
-            <span style={{ opacity: 0.6, minWidth: 110 }}>Recent Reviews:</span>
-            <span style={{ fontWeight: 600 }}>{r.desc || "—"}</span>
-            <span style={{ opacity: 0.6 }}>
-              ({r.total_reviews.toLocaleString()}
-              {r.capped ? "+" : ""})
-            </span>
-          </div>
+        <ScoreRow label="All Reviews:" s={s} />
+        {r && r.total_reviews > 0 && <ScoreRow label="Recent Reviews:" s={r} />}
+        {d && d.total_reviews > 0 && <ScoreRow label="Steam Deck Players:" s={d} />}
+        {ls && ls.total_reviews > 0 && ls.total_reviews !== s.total_reviews && (
+          <ScoreRow label={`${langName(reviews.lang ?? "english")} Reviews:`} s={ls} />
         )}
-        {reviews.lang_summary &&
-          reviews.lang_summary.total_reviews > 0 &&
-          reviews.lang_summary.total_reviews !== s.total_reviews && (
-            <div style={{ display: "flex", gap: 8, fontSize: 14 }}>
-              <span style={{ opacity: 0.6, minWidth: 110 }}>
-                {(reviews.lang ?? "english").charAt(0).toUpperCase() +
-                  (reviews.lang ?? "english").slice(1)}{" "}
-                Reviews:
-              </span>
-              <span style={{ fontWeight: 600 }}>
-                {reviews.lang_summary.desc || "—"}
-              </span>
-              <span style={{ opacity: 0.6 }}>
-                ({reviews.lang_summary.total_reviews.toLocaleString()})
-              </span>
-            </div>
-          )}
         {s.total_reviews > 0 && (
           <div
             style={{
@@ -216,13 +232,13 @@ export function ReviewsSection({
         )}
         {s.total_reviews > 0 && (
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            {positivePct}% positive · {s.total_positive.toLocaleString()} up /{" "}
-            {s.total_negative.toLocaleString()} down
+            {s.total_positive.toLocaleString()} up / {s.total_negative.toLocaleString()}{" "}
+            down
           </div>
         )}
       </div>
 
-      {/* Filter chips: which reviews to show, always most recent first */}
+      {/* Filter chips: which reviews to show, always newest first */}
       <Focusable
         // @ts-ignore Decky flow hint for horizontal gamepad navigation.
         flow-children="horizontal"
@@ -251,7 +267,7 @@ export function ReviewsSection({
         ))}
       </Focusable>
 
-      {/* Review cards, most recent first */}
+      {/* Review cards, newest first */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {loadingChip && (
           <div style={{ opacity: 0.6, fontSize: 13 }}>Loading reviews…</div>

@@ -41,6 +41,16 @@ export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
   );
 }
 
+// How Steam rates each test result (display_type): 4 passed, 3 caution,
+// 2 failed, anything else informational. Plain bullets made a failed check
+// look the same as a passed one.
+const RESULT_MARK: Record<number, { mark: string; color: string }> = {
+  4: { mark: "✓", color: "#59bf40" },
+  3: { mark: "⚠", color: "#e5b143" },
+  2: { mark: "✗", color: "#c15b58" },
+};
+const INFO_MARK = { mark: "ⓘ", color: "#8f98a0" };
+
 export function DeckCompatDetails({ deck }: { deck: DeckCompat }) {
   if (!deck || !deck.ok) {
     return (
@@ -54,10 +64,16 @@ export function DeckCompatDetails({ deck }: { deck: DeckCompat }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <DeckCompatBadge deck={deck} />
       {notes.length > 0 && (
-        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, lineHeight: 1.6 }}>
-          {notes.map((n, i) => (
-            <li key={i}>{n.text}</li>
-          ))}
+        <ul style={{ margin: 0, paddingLeft: 0, listStyle: "none", fontSize: 13, lineHeight: 1.6 }}>
+          {notes.map((n, i) => {
+            const m = RESULT_MARK[n.display_type] ?? INFO_MARK;
+            return (
+              <li key={i} style={{ display: "flex", gap: 6 }}>
+                <span style={{ color: m.color, flex: "0 0 auto" }}>{m.mark}</span>
+                <span>{n.text}</span>
+              </li>
+            );
+          })}
         </ul>
       )}
     </div>

@@ -26,7 +26,7 @@ Injected into the scrollable content area beneath the hero/Play button:
 | **About this game** | `appdetails` | Full description (sanitized HTML, with images and animated clips), expandable |
 | **Features & details** | `appdetails` | Genres/categories, developer, publisher, release date, platforms, controller support, Metacritic, price, languages |
 | **Steam Deck compatibility** | deck report | Verified/Playable/Unsupported + reviewer notes |
-| **Reviews** | `appreviews` | All-time / recent / localized scores, positive %, filter chips, selectable review cards (A to read in full) |
+| **Reviews** | `ajaxappreviews` | All-time / recent / Steam Deck players' / localized scores, positive %, filter chips (All, Positive, Negative, Steam Deck), selectable review cards (A to read in full) |
 | **Update history** | `ISteamNews` | Recent patch notes / announcements (tap to read) |
 
 Everything is gamepad-navigable, each section is collapsible, and store content
@@ -74,7 +74,7 @@ Access** panel.
   never puts you back on the loading placeholder.
 
 Data sources (no API key required): store **appdetails**, reviews
-(**appreviews** + **appreviewhistogram**), store **search** (`storesearch`, for
+(**ajaxappreviews**, what the store page itself uses), store **search** (`storesearch`, for
 matching non-Steam games), news (**ISteamNews**), and the Steam Deck
 **compatibility report** — plus a read-only GitHub Releases check for update
 notifications. Per-game matches are stored locally and never leave your device.

@@ -286,9 +286,10 @@ function IgdbCredentialsRow() {
       setSaved(!!(id && secret));
       setStored(!!(id || secret));
       setNote("Credentials saved.");
-      // Cached non-Steam payloads were built without artwork; drop them so the
-      // next visit refetches with IGDB in play.
-      await clearCache().catch(() => undefined);
+      // Panels already shown for non-Steam games were built without IGDB
+      // artwork; drop the in-memory copies so the next visit asks again. The
+      // backend cache stays: it never holds a merged result, and wiping it
+      // would refetch every Steam game at once (#10).
       clearFrontendCache();
     } catch (e) {
       setNote(`Could not save: ${String(e)}`);
@@ -351,7 +352,13 @@ function IgdbCredentialsRow() {
                 setClientId("");
                 setClientSecret("");
                 try {
-                  await clearIgdbCredentials();
+                  const res = await clearIgdbCredentials();
+                  // It reports failure in its result rather than throwing, and
+                  // this note must never claim an erase that didn't happen.
+                  if (!res?.ok) {
+                    setNote(`Could not erase credentials: ${res?.error ?? "unknown error"}`);
+                    return;
+                  }
                   const cur = await getSettings();
                   primeSettings(cur as PluginSettings);
                   setSaved(false);
@@ -359,7 +366,8 @@ function IgdbCredentialsRow() {
                   setNote(
                     "Credentials erased — the id, the secret and the cached access token are gone from this device. Regenerate the secret at dev.twitch.tv to revoke it everywhere."
                   );
-                  await clearCache().catch(() => undefined);
+                  // clearIgdbCredentials already dropped the IGDB data cached
+                  // with them; this just repaints without it.
                   clearFrontendCache();
                 } catch (e) {
                   setNote(`Could not clear: ${String(e)}`);
