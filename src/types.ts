@@ -198,6 +198,9 @@ export interface PluginSettings {
   igdbClientSecret?: string;
   /** Backend-reported: a secret is stored. The secret itself is never sent. */
   igdbClientSecretSet?: boolean;
+  // Whether this build carries EnhancedGV's Hasheous app key (never the key):
+  // with it, IGDB artwork needs no credentials of the user's own.
+  hasheousAppKey?: boolean;
   // Opt in to pulling metadata for non-Steam / emulated games from external
   // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
   // as before (Steam title-search only, then "unmatched").

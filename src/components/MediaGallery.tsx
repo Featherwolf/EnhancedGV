@@ -34,6 +34,26 @@ const HERO_MEDIA_STYLE: CSSProperties = {
   background: "#000",
 };
 
+// On Windows, Big Picture is itself a fullscreen window, and leaving the
+// browser's fullscreen (Element.requestFullscreen / document.exitFullscreen)
+// takes that window out of fullscreen too: Big Picture drops to a normal
+// window until it's restarted (#16). There, "fullscreen" is an in-page layer
+// filling the window instead, which leaves Big Picture's window alone. The
+// Deck runs under gamescope, where the native API has no such side effect,
+// and keeps it.
+const IN_PAGE_FULLSCREEN =
+  typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent ?? "");
+
+const IN_PAGE_FULLSCREEN_STYLE: CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 10000,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  background: "#000",
+};
+
 // Big store-style hero: shows the current item large, autoplays trailers muted,
 // and carousels through everything (video: on ended; screenshot: after a dwell).
 // Thumbnails select directly; inline controls handle mute and fullscreen — no
@@ -318,12 +338,25 @@ export function MediaHero({ movies, screenshots }: Props) {
 
   // Track fullscreen state from the UI document (works for B/Esc exits too).
   useEffect(() => {
+    if (IN_PAGE_FULLSCREEN) return; // state-only there; see IN_PAGE_FULLSCREEN
     const doc = heroBoxRef.current?.ownerDocument;
     if (!doc) return;
     const onFs = () => setFullscreen(doc.fullscreenElement != null);
     doc.addEventListener("fullscreenchange", onFs);
     return () => doc.removeEventListener("fullscreenchange", onFs);
   }, []);
+
+  // The in-page layer has no browser-provided Esc exit, so give it one.
+  useEffect(() => {
+    if (!IN_PAGE_FULLSCREEN || !fullscreen) return;
+    const doc = heroBoxRef.current?.ownerDocument;
+    if (!doc) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setFullscreen(false);
+    };
+    doc.addEventListener("keydown", onKey);
+    return () => doc.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
 
   // Keep the selected thumbnail centered — scrolling ONLY the strip
   // horizontally (scrollIntoView would yank the page's vertical scroll).
@@ -347,6 +380,10 @@ export function MediaHero({ movies, screenshots }: Props) {
   }
 
   const toggleFullscreen = () => {
+    if (IN_PAGE_FULLSCREEN) {
+      setFullscreen((f) => !f);
+      return;
+    }
     const box = heroBoxRef.current;
     const doc = box?.ownerDocument;
     if (!box || !doc) return;
@@ -430,7 +467,12 @@ export function MediaHero({ movies, screenshots }: Props) {
           outlineOffset: -2,
         }}
       >
-        <div ref={heroBoxRef} style={{ background: "#000" }}>
+        <div
+          ref={heroBoxRef}
+          style={
+            IN_PAGE_FULLSCREEN && fullscreen ? IN_PAGE_FULLSCREEN_STYLE : { background: "#000" }
+          }
+        >
           {visible && curIsPlayableVideo && cur.kind === "movie" && (curSrc || curStreaming) ? (
             <video
               key={`${cur.id}:${curStreaming ? "stream" : srcIdx}`}

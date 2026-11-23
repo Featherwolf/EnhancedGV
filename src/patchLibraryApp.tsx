@@ -61,6 +61,17 @@ const token = (mod: AnyEl, key: string): string | undefined => {
   return typeof v === "string" && v.length ? v : undefined;
 };
 
+// Steam's 2026-11-19 beta moved its UI build from Webpack to Vite, and most CSS
+// class names no longer survive in the JS maps @decky/ui reads. Without this
+// one there is no way to find where the panel goes, and guessing a new spot
+// risks covering the Play button. So the panel stays off and says why
+// (Quick Access shows this) instead of failing silently.
+export const LAYOUT_MISSING =
+  "Steam's page layout class (AppDetailsContainer) isn't available on this Steam version";
+export function layoutClassMissing(): boolean {
+  return !token(basicAppDetailsSectionStylerClasses, "AppDetailsContainer");
+}
+
 // The VISIBLE app-details container (Steam keeps left-behind pages mounted but
 // display:none'd, so gate on offsetParent). Our host is inserted before this.
 function findVisibleContainer(doc: Document): HTMLElement | null {
@@ -236,6 +247,9 @@ function RestorePortalHost() {
       const doc = probeRef.current?.ownerDocument ?? getPanelDoc();
       if (!doc) return false;
       const target = findVisibleContainer(doc);
+      if (!target && appidFromLocation() != null && layoutClassMissing()) {
+        markInjectMiss(LAYOUT_MISSING);
+      }
       if (!target) {
         // Not on an app-details page -> tear our panel down and clear state.
         if (host.current) {

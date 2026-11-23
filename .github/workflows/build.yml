@@ -79,6 +79,22 @@ jobs:
       - name: Check news renders as written and remote content stays inert
         run: python3 scripts/check_remote_content.py
 
+      # EnhancedGV's Hasheous app key unlocks IGDB artwork for every user. It
+      # may go only to hasheous.org, in its header, never redirected, logged,
+      # cached or handed to the panel.
+      - name: Check the Hasheous app key is used safely
+        run: python3 scripts/check_hasheous_proxy.py
+
+      # The same, against the real proxy with the real key. Secrets reach only
+      # this repository's own runs (never a fork's PR), the script never prints
+      # the key, and a Hasheous outage must not block a release, so this step
+      # reports without gating.
+      - name: Probe Hasheous' IGDB proxy with the app key
+        continue-on-error: true
+        env:
+          HASHEOUS_CLIENT_API_KEY: ${{ secrets.HASHEOUS_CLIENT_API_KEY }}
+        run: python3 scripts/check_hasheous_proxy.py --live
+
       - name: Install dependencies
         run: npm install
 
@@ -89,6 +105,10 @@ jobs:
         run: npm run build
 
       - name: Package plugin
+        env:
+          # See HASHEOUS_KEY_FILE in main.py. Empty for a fork's PR and for
+          # local builds, which then use the keyless baseline.
+          HASHEOUS_CLIENT_API_KEY: ${{ secrets.HASHEOUS_CLIENT_API_KEY }}
         run: |
           # This name is load-bearing and must never change. Decky unzips the
           # archive straight into ~/homebrew/plugins, so the ZIP's top-level
@@ -103,6 +123,12 @@ jobs:
           mkdir -p "dist_pkg/$PLUGIN"
           cp -r dist "dist_pkg/$PLUGIN/dist"
           cp main.py plugin.json package.json decky.pyi LICENSE README.md CHANGELOG.md "dist_pkg/$PLUGIN/"
+          if [ -n "${HASHEOUS_CLIENT_API_KEY}" ]; then
+            printf '%s' "${HASHEOUS_CLIENT_API_KEY}" > "dist_pkg/$PLUGIN/hasheous_client_key"
+            echo "Bundled the Hasheous app key"
+          else
+            echo "No Hasheous app key in this build (keyless baseline)"
+          fi
           # A tag build stamps the FULL tag version into the packaged manifests
           # (zip only — git stays at the bare X.Y.Z). So a beta installs as
           # "0.19.0-beta": Decky displays it, and the in-plugin updater can tell

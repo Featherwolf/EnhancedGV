@@ -8,10 +8,9 @@ description, features, reviews, Steam Deck compatibility and update history —
 onto the game's **library details page**, rendered *below* the header so it never
 covers or blocks the **Play** button. It works on **non-Steam games** too, by
 matching them to a Steam store page automatically — and for emulated titles that
-have no Steam page at all, it can pull metadata from
-[Hasheous](#metadata-and-artwork-for-emulated--non-steam-games) with no account
-needed, plus cover art and screenshots once you add free
-[IGDB credentials](#igdb-credentials-for-cover-art-and-screenshots).
+have no Steam page at all, it can pull metadata, cover art and screenshots
+through [Hasheous](#metadata-and-artwork-for-emulated--non-steam-games) with no
+account needed. Free [IGDB credentials](#igdb-credentials-optional) are optional.
 
 ![EnhancedGV on the library game-detail page](screenshots/01-game-detail-summary.jpg)
 
@@ -65,8 +64,9 @@ Access** panel.
   APIs (bypassing the browser's CORS restrictions), **normalizes and
   allowlist-sanitizes** the HTML/JSON, converts news BBCODE → safe HTML, resolves
   non-Steam games to a store appid by title search, enriches non-Steam matches
-  with IGDB artwork when IGDB credentials are set (one expanded query against
-  IGDB's own API; images from its public CDN in display sizes), and caches responses to disk
+  with IGDB artwork (through Hasheous' IGDB proxy with EnhancedGV's app key, or
+  straight from IGDB's API when the user saved IGDB credentials; images from
+  IGDB's public CDN in display sizes), and caches responses to disk
   (`DECKY_PLUGIN_RUNTIME_DIR`) with per-kind TTLs plus negative caching and
   in-flight de-duplication to stay well under Steam's rate limits. Expired
   entries are served **stale-while-revalidate** — the last known-good copy is
@@ -185,22 +185,27 @@ Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individu
 shortcuts) fall back to **Hasheous**, a free community game database. Turn on
 **Quick Access → EnhancedGV → Non-Steam games (experimental)**.
 
-Without credentials this is the *keyless baseline*: title, description, genres,
-developer/publisher, platform and a logo. To also get **cover art, screenshots,
-genres and developers** from IGDB, add free IGDB credentials.
+Hasheous matches the shortcut's title to a game, and that half needs no key.
+Release builds also carry **EnhancedGV's own Hasheous application key**, which
+unlocks Hasheous' IGDB proxy: matched games get IGDB's **cover art, screenshots,
+genres, developers and release date**, with nothing to set up. A build without
+the key (a local build or a fork) shows the *keyless baseline*: title,
+description, genres, developer/publisher, platform and a logo.
 
-> **Why not a Hasheous key?** Hasheous does proxy IGDB, but every metadata
-> endpoint there requires a *client API key*, and those are issued per registered
-> application — creating one is restricted to Hasheous admins and moderators, so
-> on a normal account the **New** button silently does nothing. Only three
-> applications exist service-wide, all official integrations. EnhancedGV talks to
-> IGDB directly instead, which anyone can sign up for. Hasheous is still what
-> matches your ROM to a game, and that half needs no key at all.
+> **About the key.** Like any key shipped inside an app, it can be read out of
+> the plugin's files. It identifies EnhancedGV to Hasheous, not you, and is sent
+> only to hasheous.org, in its own header, never logged and never followed
+> across a redirect. It is not in this repository: CI writes it into release
+> builds from a repository secret. Hasheous can rotate it at any time.
 
-### IGDB credentials for cover art and screenshots
+### IGDB credentials (optional)
 
-Optional, free and self-serve; about five minutes. IGDB is owned by Twitch and
-uses Twitch developer accounts, so the signup happens there.
+Not needed for artwork in release builds. Your own credentials add **IGDB's
+title search**, which finds modern console games Hasheous doesn't list (Hasheous
+indexes ROM dumps, so Breath of the Wild or Animal Crossing come back empty or as
+rom hacks), and fetch artwork straight from IGDB. When saved, they're used in
+place of the app key. Free and self-serve; about five minutes. IGDB is owned by
+Twitch and uses Twitch developer accounts, so the signup happens there.
 
 *On a computer:*
 
@@ -222,13 +227,13 @@ anything this plugin does.
 
 1. **Quick Access → EnhancedGV → Non-Steam games (experimental)** — make sure it's on.
 2. Paste the **Client ID** and **Client Secret**, then press **Save credentials**.
-   The secret field is masked, and saving clears cached store data so games you've
-   already opened refetch with artwork.
+   The secret field is masked, and saving refreshes the panels of games you've
+   already opened.
 3. **Remove credentials** reverts to the keyless baseline at any time, and
    erases rather than merely forgets: both fields are deleted outright, the
    file's previous contents are overwritten before it is rewritten, the cached
-   access token is overwritten and deleted, and store data cached while IGDB was
-   in use is dropped. Do this *before* uninstalling if you want the secret off
+   access token is overwritten and deleted, and IGDB data cached with them is
+   dropped (Steam data stays cached). Do this *before* uninstalling if you want the secret off
    the device: Decky removes a plugin's own folder but keeps every plugin's
    settings folder, so the credentials outlive an uninstall (which is also why
    they survive updates).
@@ -245,10 +250,10 @@ which part broke:
 | Row | ✖ means |
 | --- | --- |
 | Non-Steam sources enabled | The feature toggle above is off. |
-| Credentials present | One or both fields are empty — the row names which. |
+| Credentials present | One or both fields are empty — the row names which. Shows as **IGDB access** instead when this build's Hasheous app key is in use. |
 | Access token from Twitch | Twitch rejected the pair. Most often the Client Type wasn't **Confidential**, or the secret was regenerated after you saved it. |
 | This game maps to IGDB | Hasheous has no IGDB link for *this* title. Not fatal: the credentials are then tested against a known game, so the rows below still tell you if they work. |
-| IGDB game fetched | `401`/`403` = token or client id rejected. `429` = over the 4 requests/second limit. |
+| IGDB game fetched | `401`/`403` = token or client id rejected (with the app key: Hasheous rejected it). `429` = over the rate limit. |
 | Screenshots listed | Credentials work, but IGDB has no screenshots for that title. |
 | Image address resolved | Screenshots exist but carried no image id — worth reporting. |
 
@@ -307,6 +312,14 @@ which part broke:
   locally.
 
 ## Troubleshooting — the panel doesn't appear
+
+**On Steam's beta channel (from the 2026-11-19 beta):** Steam rebuilt its
+interface with a different toolchain (Vite instead of Webpack), and the page
+layout class EnhancedGV uses to find where its panel goes isn't available there.
+The panel stays off rather than guessing a spot that could cover the Play
+button, and Quick Access shows a notice at the top saying so. Steam's Stable
+channel is unaffected; switch to it, and keep Decky Loader updated, until
+EnhancedGV supports the new interface.
 
 The store content is injected into Steam's app-details page, whose internal React
 tree is closed-source and shifts between client builds. If nothing shows up, open

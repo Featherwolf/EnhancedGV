@@ -119,6 +119,47 @@ function chunkHtml(html: string, targetPerStop: number): string[] {
         weight = 0;
         continue;
       }
+      // Likewise a paragraph much taller than a stop (Steam's notes now arrive
+      // as <p> paragraphs). Split it at child boundaries into several <p>,
+      // cutting only plain-text runs and only at spaces, so links and bold
+      // text inside it stay whole.
+      if (
+        el.tagName === "P" &&
+        (el.textContent ?? "").length > maxTextChars &&
+        !el.querySelector("p,div,ul,ol,table,h1,h2,h3,h4,blockquote,img,video,picture")
+      ) {
+        flush();
+        let piece = "";
+        let len = 0;
+        const emit = () => {
+          if (piece.trim()) out.push(`<p>${piece}</p>`);
+          piece = "";
+          len = 0;
+        };
+        for (const c of Array.from(el.childNodes)) {
+          if (c.nodeType === 3) {
+            let text = c.textContent ?? "";
+            while (text.length) {
+              const room = Math.max(1, maxTextChars - len);
+              let cut = text.length;
+              if (text.length > room) {
+                const sp = text.lastIndexOf(" ", room);
+                cut = sp > 0 ? sp : room;
+              }
+              piece += escapeText(text.slice(0, cut)); // textContent was decoded
+              len += cut;
+              text = text.slice(cut);
+              if (len >= maxTextChars) emit();
+            }
+          } else if (c.nodeType === 1) {
+            piece += (c as HTMLElement).outerHTML;
+            len += (c.textContent ?? "").length;
+            if (len >= maxTextChars) emit();
+          }
+        }
+        emit();
+        continue;
+      }
       buf += frag;
       // Weight by rough visual height: media/headers count big, text by length.
       const tall = /^(img|h1|h2|h3|figure|table|ul|ol|picture|video)$/i.test(

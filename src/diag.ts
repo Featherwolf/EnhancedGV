@@ -95,6 +95,7 @@ let lastApplyAt = 0;
 let lastMountAt = 0;
 let lastUnmountAt = 0;
 export function markRouteRender(): void {
+  fFires++;
   lastRouteRenderAt = Date.now();
 }
 // Mount/unmount tallies keyed by `${slot}:${appid}`. BOTH dimensions matter:
@@ -103,9 +104,6 @@ export function markRouteRender(): void {
 // mask a dead panel on game B (the page the user is actually looking at).
 const panelMounts: Record<string, number> = {};
 const panelUnmounts: Record<string, number> = {};
-export function markFFire(): void {
-  fFires++;
-}
 // Lifecycle flight recorder. MUST be console.warn: on-device cef_log.txt captures
 // only WARNING+ console messages — a 3.3MB log spanning months contained zero of
 // our console.log lines while other plugins' warns/errors all appeared.
@@ -119,8 +117,10 @@ export function markInjectApply(): void {
 }
 export function markInjectMiss(reason: string): void {
   injectMisses++;
+  // Logged only when the reason changes: the resync heartbeat repeats a miss
+  // every 2 s, which was ~1,800 identical lines an hour in Steam's CEF log.
+  if (reason !== lastMissReason) clog("inject MISS", reason);
   lastMissReason = reason;
-  clog("inject MISS", reason);
 }
 export function markPanelMount(slot: string, appid: number): void {
   const k = `${slot}:${appid}`;

@@ -9,7 +9,7 @@ import {
   showModal,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
-import { getCurrentAppid } from "../patchLibraryApp";
+import { getCurrentAppid, layoutClassMissing } from "../patchLibraryApp";
 import { FullStoreModal } from "./FullStoreModal";
 import {
   getSettings,
@@ -77,6 +77,10 @@ const SECTION_LABELS: { key: keyof SectionToggles; label: string }[] = [
   { key: "reviews", label: "Reviews" },
   { key: "news", label: "Update history" },
 ];
+
+// The last successful update check, shared by every mount of the panel.
+const UPDATE_REUSE_MS = 30 * 60_000;
+let lastUpdateCheck: { at: number; beta: boolean; info: UpdateInfo } | null = null;
 
 function DiagRow({ label, value }: { label: string; value: string }) {
   return (
@@ -257,6 +261,7 @@ function IgdbCredentialsRow() {
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<IgdbStep[] | null>(null);
   const [note, setNote] = useState<string>("");
+  const [appKey, setAppKey] = useState<boolean>(false);
 
   useEffect(() => {
     let alive = true;
@@ -268,6 +273,7 @@ function IgdbCredentialsRow() {
         setSaved(!!(st.igdbClientId && st.igdbClientSecretSet));
         setStored(!!(st.igdbClientId || st.igdbClientSecretSet));
         setClientId(st.igdbClientId ?? "");
+        setAppKey(!!st.hasheousAppKey);
       })
       .catch(() => undefined);
     return () => {
@@ -319,7 +325,9 @@ function IgdbCredentialsRow() {
           description={
             saved
               ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description. They stay saved across plugin updates and reinstalls, and uninstalling the plugin does not remove them — press Remove credentials first if you want them off the device."
-              : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
+              : appKey
+                ? "Optional. Covers, screenshots and genres already come through EnhancedGV's Hasheous app, no setup needed. Your own IGDB credentials add IGDB's title search, which finds modern console games Hasheous doesn't list. Free: a Twitch account with two-factor and an application at dev.twitch.tv/console (Client Type: Confidential); steps in the README."
+                : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
           }
           value={clientId}
           onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
@@ -452,7 +460,15 @@ export function QuickAccessSettings() {
   // Monotonic request id: the channel can flip while a check is in flight,
   // and the OLDER response must not land on top of the newer one.
   const updateReq = useRef(0);
-  const runUpdateCheck = async (beta: boolean = !!settings.beta) => {
+  const runUpdateCheck = async (beta: boolean = !!settings.beta, force = false) => {
+    // Opening Quick Access re-runs this, and GitHub allows 60 unauthenticated
+    // requests an hour per address, so an automatic check reuses a recent
+    // answer for the same channel. The "Check for updates" button always asks.
+    const recent = lastUpdateCheck;
+    if (!force && recent && recent.beta === beta && Date.now() - recent.at < UPDATE_REUSE_MS) {
+      setUpdate(recent.info);
+      return;
+    }
     // Beta builds are published as GitHub PRE-RELEASES: excluded from
     // /releases/latest (so stable users never see them) but visible to the
     // beta channel, which opts in here.
@@ -460,6 +476,7 @@ export function QuickAccessSettings() {
     const info = await checkUpdate(beta).catch(
       (e) => ({ ok: false, error: String(e), current: "?" }) as UpdateInfo
     );
+    if (info?.ok) lastUpdateCheck = { at: Date.now(), beta, info };
     if (id === updateReq.current) setUpdate(info);
   };
 
@@ -550,6 +567,17 @@ export function QuickAccessSettings() {
 
   return (
     <>
+      {layoutClassMissing() && (
+        <PanelSection>
+          <PanelSectionRow>
+            <div style={{ fontSize: 12, lineHeight: 1.45, color: "#e5b143" }}>
+              EnhancedGV can't find where to place its panel on this Steam version.
+              Steam's newest beta changed how its interface is built. Update Decky
+              Loader, or switch Steam to the Stable channel, until EnhancedGV is updated.
+            </div>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
       <PanelSection>
         <PanelSectionRow>
           <ButtonItem
@@ -657,7 +685,7 @@ export function QuickAccessSettings() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void runUpdateCheck()}>
+          <ButtonItem layout="below" onClick={() => void runUpdateCheck(!!settings.beta, true)}>
             Check for updates
           </ButtonItem>
         </PanelSectionRow>

@@ -15,6 +15,7 @@ import sys
 import ssl
 import json
 import time
+import datetime
 import html
 import asyncio
 import functools
@@ -175,6 +176,21 @@ HASHEOUS_BASE = "https://hasheous.org/api/v1"
 HASHEOUS_IMAGE = HASHEOUS_BASE + "/Images/"  # + {image_hash}
 # sha1("") — Hasheous stores this as a placeholder/empty Logo; never use it.
 _HASHEOUS_EMPTY_IMG = "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"
+
+# EnhancedGV's own Hasheous application key. It unlocks Hasheous' IGDB proxy,
+# so non-Steam games get IGDB's cover art, screenshots and genres without the
+# user setting up IGDB credentials. It is never in git: release builds get it
+# from a repository secret, which CI writes into this file inside the package.
+# Like any key shipped in an app it can be read out of the zip by anyone who
+# looks; it identifies the app, not a user, and Hasheous can rotate it. It is
+# sent only to hasheous.org, in the X-Client-API-Key header, and never logged.
+HASHEOUS_KEY_FILE = os.path.join(decky.DECKY_PLUGIN_DIR, "hasheous_client_key")
+HASHEOUS_PROXY_IGDB = HASHEOUS_BASE + "/MetadataProxy/IGDB"
+_HASHEOUS_KEY_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{8,512}$")
+# The proxy expands one level only, so companies come back as bare ids and
+# each name costs a request; a few at most (developers first).
+HASHEOUS_IGDB_EXPAND = "cover,screenshots,artworks,genres,platforms,involved_companies"
+HASHEOUS_MAX_COMPANIES = 4
 
 
 # --------------------------------------------------------------------------- #
@@ -600,6 +616,60 @@ def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
     if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
         raise ValueError("IGDB response exceeds the size limit")
     return json.loads(raw)
+
+
+def _hasheous_app_key() -> str:
+    """This build's Hasheous app key, or "" when it has none (a local or fork
+    build, or a file that doesn't look like a key)."""
+    try:
+        with open(HASHEOUS_KEY_FILE, "r", encoding="utf-8") as fh:
+            key = fh.read(1024).strip()
+    except Exception:
+        return ""
+    return key if _HASHEOUS_KEY_RE.match(key) else ""
+
+
+def _hasheous_proxy_get_sync(endpoint: str, params: dict, key: str):
+    """One keyed GET against Hasheous' IGDB proxy (`endpoint` is "Game" or
+    "Company"). The key goes only to hasheous.org, only in its header, over
+    verified TLS, and never across a redirect: this is the same no-redirect
+    opener the IGDB credentials use, so a 3xx raises instead of forwarding the
+    header to wherever Location points."""
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send the Hasheous app key: TLS certificate verification "
+            "is unavailable on this device (no usable CA bundle)")
+    url = f"{HASHEOUS_PROXY_IGDB}/{endpoint}?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/json",
+        "X-Client-API-Key": key})
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("Hasheous response exceeds the size limit")
+    return json.loads(raw) if raw.strip() else None
+
+
+def _from_hasheous_proxy(game: dict) -> dict:
+    """A record from Hasheous' IGDB proxy, in the shape IGDB's own API answers
+    with, which is what the parsers below read. The proxy expands a list
+    reference into {"<id>": {...}, ...} rather than [...], and may serialize
+    dates as ISO strings instead of unix seconds."""
+    out = {}
+    for k, v in game.items():
+        if isinstance(v, dict) and v and all(str(x).isdigit() for x in v):
+            v = [x for x in v.values() if isinstance(x, dict)]
+        out[k] = v
+    ts = _igdb_pick(out, "first_release_date")
+    if isinstance(ts, str) and not ts.strip().isdigit():
+        try:
+            dt = datetime.datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            out["first_release_date"] = int(dt.timestamp())
+        except Exception:
+            pass
+    return out
 
 
 def _igdb_img(image_hash: str, size: str) -> str:
@@ -2207,6 +2277,64 @@ class Plugin:
             return got[0]
         return None
 
+    async def _hasheous_igdb_game(self, igdb_id: int, key: str):
+        """IGDB's record for a game through Hasheous, in IGDB's own shape."""
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(
+            None, _hasheous_proxy_get_sync, "Game",
+            {"Id": int(igdb_id), "expandColumns": HASHEOUS_IGDB_EXPAND}, key)
+        if not isinstance(got, dict) or not got:
+            return None
+        game = _from_hasheous_proxy(got)
+        # Companies arrive as bare ids. Name the developers and publishers,
+        # developers first, within a small budget; the rest are dropped rather
+        # than shown as numbers.
+        ics = [ic for ic in (_igdb_pick(game, "involved_companies") or [])
+               if isinstance(ic, dict)
+               and (_igdb_pick(ic, "developer") or _igdb_pick(ic, "publisher"))]
+        ics.sort(key=lambda ic: not _igdb_pick(ic, "developer"))
+        named = []
+        for ic in ics[:HASHEOUS_MAX_COMPANIES]:
+            comp = _igdb_pick(ic, "company")
+            if not isinstance(comp, dict):
+                try:
+                    comp = await loop.run_in_executor(
+                        None, _hasheous_proxy_get_sync, "Company",
+                        {"Id": int(comp)}, key)
+                except Exception:
+                    continue
+            name = _igdb_pick(comp, "name") if isinstance(comp, dict) else None
+            if name:
+                named.append({**ic, "company": {"name": str(name)}})
+        game["involved_companies"] = named
+        return game
+
+    async def _igdb_game_by_id(self, igdb_id: int):
+        """IGDB's record for one game: from IGDB itself with the user's own
+        credentials when they saved some, else through Hasheous with
+        EnhancedGV's app key. None when neither is available or both fail."""
+        cid, token = await self._igdb_ready()
+        if cid:
+            try:
+                game = await self._igdb_game(int(igdb_id), cid, token)
+                if isinstance(game, dict):
+                    return game
+            except urllib.error.HTTPError as exc:
+                # 401/403 = rejected credentials, 429 = over the 4 req/s limit.
+                # Logged without the credentials themselves.
+                decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
+            except Exception as exc:
+                decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
+        key = _hasheous_app_key()
+        if key:
+            try:
+                return await self._hasheous_igdb_game(int(igdb_id), key)
+            except urllib.error.HTTPError as exc:
+                decky.logger.error(f"hasheous igdb proxy: HTTP {exc.code} for game {igdb_id}")
+            except Exception as exc:
+                decky.logger.error(f"hasheous igdb proxy: game {igdb_id} failed: {exc}")
+        return None
+
     async def _igdb_ready(self):
         """(client_id, token) when IGDB is usable, else (None, None)."""
         cid, secret = _igdb_creds()
@@ -2242,27 +2370,23 @@ class Plugin:
             return []
         return got if isinstance(got, list) else []
 
-    async def _igdb_delta(self, igdb_id: int, client_id: str, token: str) -> dict:
-        """Fetch the IGDB-derived fields for a game. CACHED ON ITS OWN — never
-        cache the merged result: the merge depends on what the Hasheous baseline
-        already had, so a cached merge made against one baseline would be served
-        over a different one. Returns {} on any failure."""
+    async def _igdb_delta(self, igdb_id: int) -> dict:
+        """Fetch the IGDB-derived fields for a game, from whichever source is
+        available (see _igdb_game_by_id). CACHED ON ITS OWN — never cache the
+        merged result: the merge depends on what the Hasheous baseline already
+        had, so a cached merge made against one baseline would be served over a
+        different one. Also carries the name and the "Features & details" facts,
+        so a game matched straight to IGDB needs no second request for them.
+        Returns {} when nothing could be fetched."""
         cached = _read_cache_entry("igdb", str(igdb_id))[0]
-        if isinstance(cached, dict):
+        # A delta cached before 0.21 has no name: fetch once more to add it,
+        # falling back to the old copy if that fails.
+        if isinstance(cached, dict) and cached.get("name"):
             return cached
 
-        try:
-            game = await self._igdb_game(int(igdb_id), client_id, token)
-        except urllib.error.HTTPError as exc:
-            # 401/403 = rejected credentials, 429 = over the 4 req/s limit.
-            # Logged without the credentials themselves.
-            decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
-            return {}
-        except Exception as exc:
-            decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
-            return {}
+        game = await self._igdb_game_by_id(int(igdb_id))
         if not isinstance(game, dict):
-            return {}
+            return cached if isinstance(cached, dict) else {}
 
         delta = {}
 
@@ -2320,6 +2444,11 @@ class Plugin:
         if url_:
             delta["website"] = _safe_url(url_)
 
+        name = _igdb_pick(game, "name")
+        if name:
+            delta["name"] = str(name)
+        delta.update(_igdb_facts(game))
+
         if delta:
             _write_cache("igdb", str(igdb_id), delta)
         return delta
@@ -2332,15 +2461,9 @@ class Plugin:
         data WINS wherever it has some — IGDB only fills what was empty. The one
         exception is `screenshots`, which the baseline can never populate.
         """
-        client_id, client_secret = _igdb_creds()
-        if not (client_id and client_secret and igdb_id):
+        if not igdb_id:
             return base
-        try:
-            token = await self._igdb_token(client_id, client_secret)
-        except Exception as exc:
-            decky.logger.error(f"igdb: could not obtain an access token: {exc}")
-            return base
-        delta = await self._igdb_delta(int(igdb_id), client_id, token)
+        delta = await self._igdb_delta(int(igdb_id))
         if not delta:
             return base
 
@@ -2378,39 +2501,31 @@ class Plugin:
             return {"ok": False, "error": "invalid provider id"}
 
         if provider == "igdb":
-            # Reuses _igdb_delta wholesale — it already produces cover,
-            # screenshots, genres, developers, publishers and summary in
-            # AppDetails shape. Only the name has to be added on top.
-            cid, token = await self._igdb_ready()
-            if not cid:
-                appdetails = {"ok": False, "error": "IGDB credentials not set"}
+            # Reuses _igdb_delta wholesale: it already produces the name, cover,
+            # screenshots, genres, developers, publishers, summary and facts, from
+            # the user's IGDB credentials or EnhancedGV's Hasheous app key.
+            delta = await self._igdb_delta(gid)
+            if not delta:
+                appdetails = {"ok": False, "error": (
+                    "no IGDB data for that id"
+                    if _igdb_configured() or _hasheous_app_key()
+                    else "IGDB credentials not set")}
             else:
-                delta = await self._igdb_delta(gid, cid, token)
-                if delta:
-                    try:
-                        game = await self._igdb_game(gid, cid, token)
-                    except Exception:
-                        game = None
-                    # On the full contract, never a bare delta: the delta only
-                    # carries the fields IGDB happened to have, and a missing
-                    # `movies` list crashed the panel.
-                    appdetails = _empty_appdetails(
-                        str(_igdb_pick(game or {}, "name") or ""))
-                    appdetails.update(delta)
-                    # _igdb_delta is an OVERLAY for Hasheous baselines, so it
-                    # names its prose summary_html/summary_text — keys the panel
-                    # never reads. Standing alone as a provider, it has to be
-                    # translated into the AppDetails contract or the description
-                    # and "Features & details" render empty.
-                    appdetails["about_html"] = delta.get("summary_html", "")
-                    appdetails["short_description"] = delta.get("summary_text", "")
-                    appdetails.pop("summary_html", None)
-                    appdetails.pop("summary_text", None)
-                    appdetails.update(_igdb_facts(game or {}))
-                    appdetails["igdb_id"] = gid
-                    appdetails["igdb_enriched"] = True
-                else:
-                    appdetails = {"ok": False, "error": "no IGDB data for that id"}
+                # On the full contract, never a bare delta: the delta only
+                # carries the fields IGDB happened to have, and a missing
+                # `movies` list crashed the panel.
+                appdetails = _empty_appdetails(str(delta.get("name") or ""))
+                appdetails.update(delta)
+                # _igdb_delta is an OVERLAY for Hasheous baselines, so it names
+                # its prose summary_html/summary_text, keys the panel never
+                # reads. Standing alone as a provider, it has to be translated
+                # into the AppDetails contract or the description renders empty.
+                appdetails["about_html"] = delta.get("summary_html", "")
+                appdetails["short_description"] = delta.get("summary_text", "")
+                appdetails.pop("summary_html", None)
+                appdetails.pop("summary_text", None)
+                appdetails["igdb_id"] = gid
+                appdetails["igdb_enriched"] = True
             return {
                 "ok": True, "appid": gid, "appdetails": appdetails,
                 "reviews": {"ok": False, "error": "reviews are Steam-only"},
@@ -2460,26 +2575,35 @@ class Plugin:
 
         step("Non-Steam sources enabled", _feature_non_steam(),
              "on" if _feature_non_steam() else "turn it on above")
-        step("Credentials present", bool(client_id and client_secret),
-             ("client id + secret saved" if client_id and client_secret else
-              "missing " + (" and ".join(
-                  ([] if client_id else ["Client ID"])
-                  + ([] if client_secret else ["Client Secret"])))))
-        if not (client_id and client_secret):
+        creds = bool(client_id and client_secret)
+        app_key = "" if creds else _hasheous_app_key()
+        if creds:
+            step("Credentials present", True, "client id + secret saved")
+        elif app_key:
+            # Users' own credentials win when saved; without them, IGDB data
+            # comes through Hasheous with EnhancedGV's app key.
+            step("IGDB access", True, "through EnhancedGV's Hasheous app, no setup needed")
+        else:
+            step("Credentials present", False,
+                 "missing " + (" and ".join(
+                     ([] if client_id else ["Client ID"])
+                     + ([] if client_secret else ["Client Secret"]))))
             return {"ok": False, "steps": steps, "error": "no IGDB credentials"}
 
-        try:
-            token = await self._igdb_token(client_id, client_secret)
-            step("Access token from Twitch", bool(token), "token obtained")
-        except urllib.error.HTTPError as exc:
-            detail = f"HTTP {exc.code}"
-            if exc.code in (400, 401, 403):
-                detail += " — Twitch rejected the client id/secret pair"
-            step("Access token from Twitch", False, detail)
-            return {"ok": False, "steps": steps, "error": detail}
-        except Exception as exc:
-            step("Access token from Twitch", False, str(exc))
-            return {"ok": False, "steps": steps, "error": str(exc)}
+        token = ""
+        if creds:
+            try:
+                token = await self._igdb_token(client_id, client_secret)
+                step("Access token from Twitch", bool(token), "token obtained")
+            except urllib.error.HTTPError as exc:
+                detail = f"HTTP {exc.code}"
+                if exc.code in (400, 401, 403):
+                    detail += " — Twitch rejected the client id/secret pair"
+                step("Access token from Twitch", False, detail)
+                return {"ok": False, "steps": steps, "error": detail}
+            except Exception as exc:
+                step("Access token from Twitch", False, str(exc))
+                return {"ok": False, "steps": steps, "error": str(exc)}
 
         # Which game? The one on screen if it resolves to Hasheous, else a known
         # public mapping (Super Metroid) so the key itself can still be tested.
@@ -2504,19 +2628,22 @@ class Plugin:
         else:
             igdb_id, label = 1103, "Super Metroid (fallback probe)"
             step("This game maps to IGDB", False,
-                 "no IGDB mapping for this game; testing the credentials against a known title")
+                 "no IGDB mapping for this game; testing against a known title")
 
         try:
-            game = await self._igdb_game(igdb_id, client_id, token)
+            game = (await self._igdb_game(igdb_id, client_id, token) if creds
+                    else await self._hasheous_igdb_game(igdb_id, app_key))
             step("IGDB game fetched", isinstance(game, dict),
                  _igdb_pick(game, "name") if isinstance(game, dict)
                  else "no game returned for that id")
         except urllib.error.HTTPError as exc:
             detail = f"HTTP {exc.code}"
             if exc.code in (401, 403):
-                detail += " — IGDB rejected the token or client id"
+                detail += (" — IGDB rejected the token or client id" if creds
+                           else " — Hasheous rejected EnhancedGV's app key")
             elif exc.code == 429:
-                detail += " — over the 4 requests/second limit"
+                detail += (" — over the 4 requests/second limit" if creds
+                           else " — Hasheous is rate limiting; try again shortly")
             step("IGDB game fetched", False, detail)
             return {"ok": False, "steps": steps, "error": detail}
         except Exception as exc:
@@ -2704,14 +2831,9 @@ class Plugin:
                 return {"ok": True, "provider": "igdb", "appid": found["id"],
                         "name": found.get("name", ""), "year": found.get("year", ""),
                         "platform": found.get("platform", "")}
-            cid, token = await self._igdb_ready()
-            if not cid:
+            if not (_igdb_configured() or _hasheous_app_key()):
                 return {"ok": False, "error": "IGDB credentials not set."}
-            try:
-                game = await self._igdb_game(int(ref), cid, token)
-            except Exception as exc:
-                return {"ok": False, "error": f"IGDB lookup failed: {exc}"}
-            name = _igdb_pick(game or {}, "name")
+            name = (await self._igdb_delta(int(ref))).get("name")
             if not name:
                 return {"ok": False, "error": "No IGDB game with that id."}
             return {"ok": True, "provider": "igdb", "appid": int(ref),
@@ -2866,6 +2988,8 @@ class Plugin:
         # whether one is stored, and it never prefills the field.
         defaults.pop(SECRET_KEY, None)
         defaults["igdbClientSecretSet"] = bool(_igdb_creds()[1])
+        # Whether this build carries EnhancedGV's Hasheous app key. Never the key.
+        defaults["hasheousAppKey"] = bool(_hasheous_app_key())
         return defaults
 
     async def clear_igdb_credentials(self):
@@ -2997,6 +3121,7 @@ class Plugin:
             if not str(merged.get(SECRET_KEY, "") or "").strip() and kept_secret:
                 merged[SECRET_KEY] = kept_secret
             merged.pop("igdbClientSecretSet", None)  # a report, not a setting
+            merged.pop("hasheousAppKey", None)       # likewise
             tmp = SETTINGS_FILE + ".tmp"
             # 0600 from the moment of creation. open(tmp, "w") would have used
             # 0666 & ~umask = 0644, and os.replace carries that mode onto the
