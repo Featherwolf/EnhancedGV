@@ -276,7 +276,8 @@ export const en = {
 
   // Update history (news)
   "news.none": "No recent updates.",
-  "news.viewOnSteam": "View on Steam",
+  "news.viewOnline": "View online",
+  "news.readFullArticle": "Read the full article on {site}",
 
   // Media gallery (button glyphs A/B/X and arrows are literal gamepad
   // hardware, kept as-is in every language — only the words are translated)

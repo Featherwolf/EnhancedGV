@@ -37,25 +37,27 @@ function NewsModal({
 }) {
   const { t } = useTranslation();
   return (
-    <ModalRoot onCancel={closeModal} onEscKeypress={closeModal}>
+    <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>
       <style>{NEWS_HTML_STYLE}</style>
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{ fontSize: 18, fontWeight: 700 }}>{item.title}</div>
-        <div style={{ fontSize: 12, opacity: 0.6 }}>
+      <div style={{ maxHeight: "80vh", overflowY: "auto", padding: "6px 10px" }}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 4 }}>{item.title}</div>
+        <div style={{ fontSize: 12, opacity: 0.6, marginBottom: 10 }}>
           {item.feedlabel} · {fmtDate(item.date)}
         </div>
-        {/* Focus stops through the body, as in the review and patch-notes
-            popups: a plain scrolling div gave the D-pad nothing to land on,
-            so only the first screenful was readable with a controller. */}
-        <div style={{ fontSize: 13.5, lineHeight: 1.5, maxHeight: "60vh", overflowY: "auto" }}>
-          <FocusableBlocks html={item.html} blockClass="ssp-news" targetPerStop={6} />
-        </div>
+        <FocusableBlocks html={item.html} blockClass="ssp-news" targetPerStop={6} />
         {item.url && (
-          <DialogButton
-            onClick={() => openExternal(item.url)}
-          >
-            {t("news.viewOnSteam")}
-          </DialogButton>
+          <div style={{ marginTop: 10 }}>
+            <DialogButton
+              onClick={() => {
+                /* Close first: the external page opens behind an otherwise
+                   still-open dialog, which reads as if nothing happened. */
+                closeModal?.();
+                openExternal(item.url);
+              }}
+            >
+              {t("news.viewOnline")}
+            </DialogButton>
+          </div>
         )}
       </div>
     </ModalRoot>
