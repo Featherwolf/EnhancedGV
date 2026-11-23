@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { openExternal } from "../nav";
 import {
   PanelSection,
@@ -31,6 +32,9 @@ import type { UpdateInfo } from "../types";
 import { getGameIdentity } from "../identity";
 import { providerLabel } from "../providers";
 import { PatchNotesModal } from "./PatchNotesModal";
+import { VersionPickerModal } from "./VersionPickerModal";
+import { SectionsModal, sectionSummary } from "./SectionsModal";
+import { canInstallInPlace, installRelease } from "../updater";
 import { onMatchChanged, emitMatchChanged } from "../matches";
 import { resolveLanguage, resolveCountry, languageDiag } from "../lang";
 import { primeSettings, clearFrontendCache, getFetchInfo } from "../hooks/useAppData";
@@ -44,7 +48,7 @@ import {
 } from "../diag";
 import type { DiagState } from "../diag";
 import { DEFAULT_EXPANDED } from "../types";
-import type { PluginSettings, SectionToggles, ExpandedToggles } from "../types";
+import type { PluginSettings } from "../types";
 
 const DEFAULTS: PluginSettings = {
   sections: {
@@ -61,22 +65,9 @@ const DEFAULTS: PluginSettings = {
   nonSteamSources: false,
 };
 
-const EXPANDED_LABELS: { key: keyof ExpandedToggles; label: string }[] = [
-  { key: "about", label: "About / description" },
-  { key: "features", label: "Features & details" },
-  { key: "deck", label: "Steam Deck compatibility" },
-  { key: "reviews", label: "Reviews" },
-  { key: "news", label: "Update history" },
-];
-
-const SECTION_LABELS: { key: keyof SectionToggles; label: string }[] = [
-  { key: "media", label: "Media (videos & screenshots)" },
-  { key: "about", label: "About / description" },
-  { key: "features", label: "Features & details" },
-  { key: "deck", label: "Steam Deck compatibility" },
-  { key: "reviews", label: "Reviews" },
-  { key: "news", label: "Update history" },
-];
+const ACCENT = "#66c0f4";
+const WARN = "#e5b143";
+const RELEASES_PAGE = "https://github.com/Featherwolf/EnhancedGV/releases";
 
 // The last successful update check, shared by every mount of the panel.
 const UPDATE_REUSE_MS = 30 * 60_000;
@@ -87,6 +78,32 @@ function DiagRow({ label, value }: { label: string; value: string }) {
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
       <span style={{ opacity: 0.6 }}>{label}</span>
       <span style={{ textAlign: "right", wordBreak: "break-word" }}>{value}</span>
+    </div>
+  );
+}
+
+function Rows({ children }: { children: ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "2px 0" }}>
+      {children}
+    </div>
+  );
+}
+
+// A line of small print: a hint, a result, or a warning when given a colour.
+function Hint({ children, color }: { children: ReactNode; color?: string }) {
+  return (
+    <div
+      style={{
+        fontSize: 12,
+        lineHeight: 1.45,
+        padding: "2px 0",
+        color,
+        opacity: color ? 1 : 0.7,
+        whiteSpace: "pre-wrap",
+      }}
+    >
+      {children}
     </div>
   );
 }
@@ -120,16 +137,18 @@ function describeFetch(): string {
   return f.note;
 }
 
-// Per-game store matching. Shows the Steam App ID the panel is pulling content
-// for (always editable), plus the matched "Title (Year)" so the user can eyeball
-// that the right store page loaded. Editing the ID (a number or a pasted store
-// URL) sets a sticky manual match; Clear re-runs auto-detection. Works for Steam
-// games too — most people only need it for non-Steam apps, but it's there.
-function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; cc: string }) {
+// The open game: its store view, and which store page or listing it is matched
+// to. The match editor stays folded away until asked for. Saving an ID (a
+// number or a pasted store URL) sets a sticky manual match; "Detect again"
+// re-runs auto-detection; "Leave unmatched" keeps the game blank, which hides
+// the panel for it.
+function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: string }) {
   const [info, setInfo] = useState<ResolveResult | null>(null);
+  const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const identity = getGameIdentity(appid);
 
   useEffect(() => {
@@ -144,6 +163,7 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
       const r = await resolveGame(appid, id.isShortcut, id.title, lang, cc).catch(() => null);
       if (!alive || myGen !== gen) return;
       setInfo(r);
+      setLoaded(true);
       setInput(r?.store_appid ? String(r.store_appid) : "");
     };
     setMsg("");
@@ -173,8 +193,8 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
     emitMatchChanged(appid); // re-resolve the open game page + reload this section
     setMsg(
       provider === "steam"
-        ? `Set to ${look.name} (${look.year || "—"})`
-        : `Set to ${look.name} (${look.year || "—"}) · via ${providerLabel(provider)}`,
+        ? `Matched to ${look.name} (${look.year || "—"})`
+        : `Matched to ${look.name} (${look.year || "—"}) · via ${providerLabel(provider)}`,
     );
     setBusy(false);
   };
@@ -183,7 +203,7 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
   // auto-matched again (sticky). Use this to hide the store panel for a game.
   const clear = async () => {
     setBusy(true);
-    setMsg("Cleared — left blank. Enter an ID above to match it, or Re-detect.");
+    setMsg("Left unmatched, so no store panel shows for this game. Enter an ID to match it, or choose Detect again.");
     await blankMatch(appid).catch(() => {});
     emitMatchChanged(appid);
     setBusy(false);
@@ -192,64 +212,81 @@ function StoreSourceSection({ appid, lang, cc }: { appid: number; lang: string; 
   // Delete the record so auto-matching runs again on this game.
   const redetect = async () => {
     setBusy(true);
-    setMsg("Re-detecting…");
+    setMsg("Detecting…");
     await clearMatch(appid).catch(() => {});
     emitMatchChanged(appid);
     setBusy(false);
   };
 
   const matched = info?.store_appid
-    ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? " · manual" : ""}`
+    ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? " · set by you" : ""}`
     : info?.provider && info.provider !== "steam" && info.provider_id != null
     ? `${info.name || "?"} (${info.year || "—"}) · via ${providerLabel(info.provider)}`
-    : "not identified";
+    : loaded
+    ? "Not matched"
+    : "…";
 
   return (
-    <PanelSection title="Store data source">
+    <PanelSection title="This game">
       <PanelSectionRow>
-        <DiagRow label="Game" value={identity.title || String(appid)} />
+        <ButtonItem layout="below" onClick={() => showModal(<FullStoreModal appid={appid} />)}>
+          Open store view
+        </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
-        <TextField
-          label="Source ID or URL"
-          description="A Steam app ID or store URL, or igdb:12345 / hasheous:12345 to point at a non-Steam listing. Useful when a retro game matched the wrong platform, or a modern console game found nothing."
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-        />
+        <Rows>
+          {identity.isShortcut && <DiagRow label="Shortcut" value={identity.title || String(appid)} />}
+          <DiagRow label="Store page" value={matched} />
+        </Rows>
       </PanelSectionRow>
       <PanelSectionRow>
-        <DiagRow label="Matched" value={matched} />
+        <ButtonItem layout="below" onClick={() => setEditing((e) => !e)}>
+          {editing ? "Done" : "Change match"}
+        </ButtonItem>
       </PanelSectionRow>
+      {editing && (
+        <>
+          <PanelSectionRow>
+            <TextField
+              label="Match to"
+              description="A Steam app ID or store link, or igdb:ID / hasheous:ID for a game Steam doesn't sell."
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy || !input.trim()} onClick={save}>
+              Save match
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy} onClick={redetect}>
+              Detect again
+            </ButtonItem>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem layout="below" disabled={busy} onClick={clear}>
+              Leave unmatched
+            </ButtonItem>
+          </PanelSectionRow>
+        </>
+      )}
       {msg && (
         <PanelSectionRow>
-          <div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div>
+          <Hint>{msg}</Hint>
         </PanelSectionRow>
       )}
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy || !input.trim()} onClick={save}>
-          Save ID
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={clear}>
-          Clear (leave blank)
-        </ButtonItem>
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem layout="below" disabled={busy} onClick={redetect}>
-          Re-detect automatically
-        </ButtonItem>
-      </PanelSectionRow>
     </PanelSection>
   );
 }
 
-// Artwork upgrade for non-Steam games: paste a Twitch application's Client ID
-// and Secret and the backend layers IGDB covers/screenshots/genres/developers
-// over the keyless baseline. The pair lives in the plugin's local settings file
-// and the secret goes only to id.twitch.tv — the test below never echoes it
-// back, and the backend never returns it over RPC.
-function IgdbCredentialsRow() {
+// Artwork for non-Steam games. With EnhancedGV's Hasheous app key in the build,
+// covers and screenshots need nothing from the user. Their own IGDB (Twitch
+// application) credentials are optional and add IGDB's title search. The pair
+// lives in the plugin's local settings file and the secret goes only to
+// id.twitch.tv: the test below never echoes it back, and the backend never
+// returns it over RPC.
+function NonSteamArtwork() {
   const [clientId, setClientId] = useState<string>("");
   const [clientSecret, setClientSecret] = useState<string>("");
   const [saved, setSaved] = useState<boolean>(false);
@@ -258,6 +295,7 @@ function IgdbCredentialsRow() {
   // Remove button gated on `saved` was then hidden from exactly the people who
   // had a secret on disk to remove.
   const [stored, setStored] = useState<boolean>(false);
+  const [open, setOpen] = useState<boolean>(false);
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<IgdbStep[] | null>(null);
   const [note, setNote] = useState<string>("");
@@ -302,6 +340,32 @@ function IgdbCredentialsRow() {
     }
   };
 
+  const remove = async () => {
+    setClientId("");
+    setClientSecret("");
+    try {
+      const res = await clearIgdbCredentials();
+      // It reports failure in its result rather than throwing, and this note
+      // must never claim an erase that didn't happen.
+      if (!res?.ok) {
+        setNote(`Could not erase credentials: ${res?.error ?? "unknown error"}`);
+        return;
+      }
+      const cur = await getSettings();
+      primeSettings(cur as PluginSettings);
+      setSaved(false);
+      setStored(false);
+      setNote(
+        "Credentials erased: the ID, the secret and the cached access token are gone from this device. Regenerate the secret at dev.twitch.tv to revoke it everywhere.",
+      );
+      // clearIgdbCredentials already dropped the IGDB data cached with them;
+      // this just repaints without it.
+      clearFrontendCache();
+    } catch (e) {
+      setNote(`Could not clear: ${String(e)}`);
+    }
+  };
+
   const runTest = async () => {
     setBusy(true);
     setSteps(null);
@@ -317,89 +381,91 @@ function IgdbCredentialsRow() {
     }
   };
 
+  const source = saved
+    ? "Your IGDB account"
+    : appKey
+    ? "EnhancedGV's Hasheous app"
+    : "Hasheous (description and logo)";
+
   return (
     <>
       <PanelSectionRow>
-        <TextField
-          label="IGDB Client ID (optional)"
-          description={
-            saved
-              ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description. They stay saved across plugin updates and reinstalls, and uninstalling the plugin does not remove them — press Remove credentials first if you want them off the device."
-              : appKey
-                ? "Optional. Covers, screenshots and genres already come through EnhancedGV's Hasheous app, no setup needed. Your own IGDB credentials add IGDB's title search, which finds modern console games Hasheous doesn't list. Free: a Twitch account with two-factor and an application at dev.twitch.tv/console (Client Type: Confidential); steps in the README."
-                : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
-          }
-          value={clientId}
-          onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
-        />
+        <Rows>
+          <DiagRow label="Artwork from" value={source} />
+        </Rows>
       </PanelSectionRow>
-      <PanelSectionRow>
-        <TextField
-          label="IGDB Client Secret"
-          description="Generated with [New Secret] on that same Twitch application page. Stored on this device and sent only to id.twitch.tv to mint an access token."
-          value={clientSecret}
-          bIsPassword
-          onChange={(e: { target: { value: string } }) => setClientSecret(e.target.value)}
-        />
-      </PanelSectionRow>
-      <PanelSectionRow>
-        <ButtonItem
-          layout="below"
-          onClick={() => save(clientId.trim(), clientSecret.trim())}
-          disabled={!clientId.trim() || !clientSecret.trim()}
-        >
-          Save credentials
-        </ButtonItem>
-      </PanelSectionRow>
-      {stored && (
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            onClick={() => {
-              void (async () => {
-                setClientId("");
-                setClientSecret("");
-                try {
-                  const res = await clearIgdbCredentials();
-                  // It reports failure in its result rather than throwing, and
-                  // this note must never claim an erase that didn't happen.
-                  if (!res?.ok) {
-                    setNote(`Could not erase credentials: ${res?.error ?? "unknown error"}`);
-                    return;
-                  }
-                  const cur = await getSettings();
-                  primeSettings(cur as PluginSettings);
-                  setSaved(false);
-                  setStored(false);
-                  setNote(
-                    "Credentials erased — the id, the secret and the cached access token are gone from this device. Regenerate the secret at dev.twitch.tv to revoke it everywhere."
-                  );
-                  // clearIgdbCredentials already dropped the IGDB data cached
-                  // with them; this just repaints without it.
-                  clearFrontendCache();
-                } catch (e) {
-                  setNote(`Could not clear: ${String(e)}`);
-                }
-              })();
-            }}
-          >
-            Remove credentials
-          </ButtonItem>
-        </PanelSectionRow>
-      )}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={runTest} disabled={busy}>
           {busy ? "Testing…" : "Test artwork lookup"}
         </ButtonItem>
       </PanelSectionRow>
-      {steps?.map((st) => (
-        <DiagRow key={st.name} label={st.name} value={`${st.ok ? "✔" : "✖"} ${st.detail}`} />
-      ))}
-      {!!note && <DiagRow label="Result" value={note} />}
+      {steps && steps.length > 0 && (
+        <PanelSectionRow>
+          <Rows>
+            {steps.map((st) => (
+              <DiagRow key={st.name} label={st.name} value={`${st.ok ? "✔" : "✖"} ${st.detail}`} />
+            ))}
+          </Rows>
+        </PanelSectionRow>
+      )}
+      <PanelSectionRow>
+        <ButtonItem layout="below" onClick={() => setOpen((o) => !o)}>
+          {open ? "Hide IGDB account" : saved ? "IGDB account (saved)" : "Use my own IGDB account"}
+        </ButtonItem>
+      </PanelSectionRow>
+      {open && (
+        <>
+          <PanelSectionRow>
+            <Hint>
+              {saved
+                ? "Saved credentials stay through updates and reinstalls. Uninstalling the plugin doesn't remove them, so press Remove credentials first if you want them off this device."
+                : appKey
+                ? "Optional. Your own credentials add IGDB's title search, which finds console games Hasheous doesn't list. They're free from dev.twitch.tv; the README has the steps."
+                : "Optional. Without them you get Hasheous' description and logo. They're free from dev.twitch.tv; the README has the steps."}
+            </Hint>
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <TextField
+              label="IGDB Client ID"
+              value={clientId}
+              onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <TextField
+              label="IGDB Client Secret"
+              description="Stored on this device and sent only to id.twitch.tv."
+              value={clientSecret}
+              bIsPassword
+              onChange={(e: { target: { value: string } }) => setClientSecret(e.target.value)}
+            />
+          </PanelSectionRow>
+          <PanelSectionRow>
+            <ButtonItem
+              layout="below"
+              onClick={() => save(clientId.trim(), clientSecret.trim())}
+              disabled={!clientId.trim() || !clientSecret.trim()}
+            >
+              Save credentials
+            </ButtonItem>
+          </PanelSectionRow>
+          {stored && (
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => void remove()}>
+                Remove credentials
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+        </>
+      )}
+      {!!note && (
+        <PanelSectionRow>
+          <Hint>{note}</Hint>
+        </PanelSectionRow>
+      )}
     </>
   );
 }
-
 
 export function QuickAccessSettings() {
   const [settings, setLocal] = useState<PluginSettings>(DEFAULTS);
@@ -412,8 +478,10 @@ export function QuickAccessSettings() {
   const [probes, setProbes] = useState(getProbeCounters());
   const [videoNote, setVideoNoteState] = useState(getVideoNote());
   const [navBridge, setNavBridge] = useState(getNavBridgeNote());
-  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [showDiag, setShowDiag] = useState(false);
   const [update, setUpdate] = useState<UpdateInfo | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [installNote, setInstallNote] = useState("");
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [backendInfo, setBackendInfo] = useState<BackendInfo | null>(null);
   const qamVisible = useQuickAccessVisible();
@@ -480,6 +548,16 @@ export function QuickAccessSettings() {
     if (id === updateReq.current) setUpdate(info);
   };
 
+  // Hands the release to Decky's installer, which asks for confirmation in its
+  // own dialog and reloads the plugin when it's done (see updater.ts).
+  const install = async (tag?: string) => {
+    if (!tag) return;
+    setInstalling(true);
+    setInstallNote("");
+    const res = await installRelease(tag);
+    setInstalling(false);
+    if (!res.ok) setInstallNote(res.error ?? "The install didn't start.");
+  };
 
   useEffect(() => {
     let settled = false;
@@ -514,9 +592,6 @@ export function QuickAccessSettings() {
     };
   }, []);
 
-  // Poll the synchronous probes ONLY while the QAM is actually visible —
-  // otherwise a hidden panel re-renders twice a second forever after the
-  // overlay closes (thousands of orphan renders + timer churn on battery).
   // The automatic update check must wait for the SAVED settings: running it
   // from the initial DEFAULTS closure checked the stable channel even when the
   // user had the beta channel on, and nothing re-ran it once settings loaded.
@@ -526,8 +601,11 @@ export function QuickAccessSettings() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [qamVisible, settingsLoaded, settings.beta]);
 
+  // Poll the synchronous probes ONLY while their rows are on screen: a hidden
+  // panel that re-rendered twice a second kept doing so forever after the
+  // overlay closed (thousands of orphan renders + timer churn on battery).
   useEffect(() => {
-    if (!qamVisible) return;
+    if (!qamVisible || !showDiag) return;
     const iv = setInterval(() => {
       setStoreRenders(getStoreRenders());
       setFetch(describeFetch());
@@ -536,13 +614,12 @@ export function QuickAccessSettings() {
       setNavBridge(getNavBridgeNote());
     }, 500);
     return () => clearInterval(iv);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [qamVisible]);
+  }, [qamVisible, showDiag]);
 
   const persist = async (next: PluginSettings) => {
     setLocal(next);
     primeSettings(next); // update shared cache + live-update any open game page
-    // The IGDB pair is owned by the credentials row and the backend, never by
+    // The IGDB pair is owned by the credentials rows and the backend, never by
     // this object — which is loaded once when the panel mounts and is stale the
     // moment credentials are saved or removed. Sending it back is how flipping
     // a switch used to erase a just-saved Client ID, and how a removed one could
@@ -551,51 +628,95 @@ export function QuickAccessSettings() {
     await setSettings(withoutCreds).catch(() => {});
   };
 
-  const toggleSection = (key: keyof SectionToggles, value: boolean) =>
-    persist({ ...settings, sections: { ...settings.sections, [key]: value } });
-
-  const toggleExpanded = (key: keyof ExpandedToggles, value: boolean) =>
-    persist({
-      ...settings,
-      expanded: { ...DEFAULT_EXPANDED, ...settings.expanded, [key]: value },
-    });
-
-  const toggleNonSteam = (value: boolean) =>
-    persist({ ...settings, nonSteamSources: value });
-
   const modalAppid = getCurrentAppid();
+  const inPlace = canInstallInPlace();
+  const offerInstall = !!(update?.ok && update.has_update);
+  const status =
+    backend !== "ok"
+      ? backend
+      : diag.panelError
+      ? "Backend OK · last game page had an error"
+      : "Backend OK";
 
   return (
     <>
       {layoutClassMissing() && (
         <PanelSection>
           <PanelSectionRow>
-            <div style={{ fontSize: 12, lineHeight: 1.45, color: "#e5b143" }}>
+            <Hint color={WARN}>
               EnhancedGV can't find where to place its panel on this Steam version.
               Steam's newest beta changed how its interface is built. Update Decky
               Loader, or switch Steam to the Stable channel, until EnhancedGV is updated.
-            </div>
+            </Hint>
           </PanelSectionRow>
         </PanelSection>
       )}
-      <PanelSection>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            disabled={modalAppid == null}
-            onClick={() => {
-              if (modalAppid != null) showModal(<FullStoreModal appid={modalAppid} />);
-            }}
-          >
-            Open store view (fully controller-navigable)
-          </ButtonItem>
-        </PanelSectionRow>
-      </PanelSection>
+
+      {offerInstall && update && (
+        <PanelSection>
+          <PanelSectionRow>
+            <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, padding: "2px 0" }}>
+              Update available: v{update.latest}
+              {update.prerelease ? " (beta)" : ""}
+            </div>
+          </PanelSectionRow>
+          {inPlace && update.installable && update.tag ? (
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                disabled={installing}
+                onClick={() => void install(update.tag)}
+              >
+                {installing ? "Downloading…" : `Update to v${update.latest}`}
+              </ButtonItem>
+            </PanelSectionRow>
+          ) : (
+            <>
+              <PanelSectionRow>
+                <Hint>
+                  Download EnhancedGV.zip from the release, then choose Decky → Developer →
+                  Install Plugin from ZIP.
+                </Hint>
+              </PanelSectionRow>
+              {update.url && (
+                <PanelSectionRow>
+                  <ButtonItem layout="below" onClick={() => openExternal(update.url)}>
+                    Open the release page
+                  </ButtonItem>
+                </PanelSectionRow>
+              )}
+            </>
+          )}
+          {update.notes && (
+            <PanelSectionRow>
+              <ButtonItem
+                layout="below"
+                onClick={() =>
+                  showModal(
+                    <PatchNotesModal
+                      version={update.latest}
+                      // The release page's install footer means nothing here.
+                      notes={(update.notes ?? "").split(/\r?\n---\r?\n/)[0]}
+                    />,
+                  )
+                }
+              >
+                What's new
+              </ButtonItem>
+            </PanelSectionRow>
+          )}
+          {installNote && (
+            <PanelSectionRow>
+              <Hint color={WARN}>{installNote}</Hint>
+            </PanelSectionRow>
+          )}
+        </PanelSection>
+      )}
 
       {modalAppid != null && (
         // key per game: a game change remounts a fresh section so a stale
         // in-flight load from the previous game can't land on the new one.
-        <StoreSourceSection
+        <GameSection
           key={modalAppid}
           appid={modalAppid}
           lang={resolveLanguage(settings.language)}
@@ -603,43 +724,94 @@ export function QuickAccessSettings() {
         />
       )}
 
-      <PanelSection title="Non-Steam games (experimental)">
+      <PanelSection title="Game page">
+        <PanelSectionRow>
+          <Hint>{sectionSummary(settings)}</Hint>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() =>
+              showModal(<SectionsModal initial={settings} onSave={(next) => void persist(next)} />)
+            }
+          >
+            Choose sections
+          </ButtonItem>
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title="Non-Steam games">
         <PanelSectionRow>
           <ToggleField
-            label="Metadata for emulated / non-Steam games"
-            description="When a non-Steam game has no Steam store page, pull a description, artwork and details from Hasheous (a free, keyless community database). Off by default. Works best for games added as their own Steam shortcut (e.g. via Steam ROM Manager)."
+            label="Look up emulated games"
+            description="Details, cover art and screenshots from Hasheous for games Steam doesn't sell, such as ROMs added with Steam ROM Manager. Sends the game's name to hasheous.org."
             checked={!!settings.nonSteamSources}
-            onChange={toggleNonSteam}
+            onChange={(value: boolean) => persist({ ...settings, nonSteamSources: value })}
           />
         </PanelSectionRow>
-        {!!settings.nonSteamSources && <IgdbCredentialsRow />}
+        {!!settings.nonSteamSources && <NonSteamArtwork />}
       </PanelSection>
 
-      <PanelSection title="Sections shown on the game page">
-        {SECTION_LABELS.map(({ key, label }) => (
-          <PanelSectionRow key={key}>
-            <ToggleField
-              label={label}
-              checked={settings.sections[key]}
-              onChange={(v: boolean) => toggleSection(key, v)}
-            />
-          </PanelSectionRow>
-        ))}
+      <PanelSection title="Updates">
+        <PanelSectionRow>
+          <Rows>
+            <DiagRow label="Installed" value={update?.current ? `v${update.current}` : "…"} />
+            {update?.ok && (
+              <DiagRow
+                label={update.channel === "beta" ? "Latest, with betas" : "Latest"}
+                value={`v${update.latest ?? "?"}${update.prerelease ? " (beta)" : ""}${
+                  update.has_update ? "" : " · up to date"
+                }`}
+              />
+            )}
+            {update && !update.ok && (
+              <DiagRow label="Update check" value={update.error ?? "failed"} />
+            )}
+          </Rows>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem layout="below" onClick={() => void runUpdateCheck(!!settings.beta, true)}>
+            Check for updates
+          </ButtonItem>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Beta channel"
+            description="Also offer test builds of the next release."
+            checked={!!settings.beta}
+            // Persisting flips settings.beta, which re-runs the update check
+            // for the newly chosen channel via the effect above.
+            onChange={(v: boolean) => persist({ ...settings, beta: v })}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          {inPlace ? (
+            <ButtonItem layout="below" onClick={() => showModal(<VersionPickerModal />)}>
+              Install another version
+            </ButtonItem>
+          ) : (
+            <ButtonItem layout="below" onClick={() => openExternal(RELEASES_PAGE)}>
+              Open the releases page
+            </ButtonItem>
+          )}
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ButtonItem
+            layout="below"
+            onClick={() => showModal(<PatchNotesModal version={update?.current} />)}
+          >
+            Patch notes for this version
+          </ButtonItem>
+        </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Expanded by default">
-        {EXPANDED_LABELS.map(({ key, label }) => (
-          <PanelSectionRow key={key}>
-            <ToggleField
-              label={label}
-              checked={(settings.expanded ?? DEFAULT_EXPANDED)[key]}
-              onChange={(v: boolean) => toggleExpanded(key, v)}
-            />
-          </PanelSectionRow>
-        ))}
-      </PanelSection>
-
-      <PanelSection title="Cache">
+      <PanelSection title="Troubleshooting">
+        <PanelSectionRow>
+          <Rows>
+            <DiagRow label="Status" value={status} />
+            {diag.panelError && <DiagRow label="Last error" value={diag.panelError} />}
+          </Rows>
+        </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
             layout="below"
@@ -657,168 +829,75 @@ export function QuickAccessSettings() {
             Clear cached store data
           </ButtonItem>
         </PanelSectionRow>
-      </PanelSection>
-
-      <PanelSection title="Updates">
         <PanelSectionRow>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "2px 0" }}>
-            <DiagRow label="Installed version" value={update?.current ?? "…"} />
-            {update?.ok && (
-              <DiagRow
-                label={update.channel === "beta" ? "Latest (beta channel)" : "Latest release"}
-                value={`${update.latest ?? "?"}${update.prerelease ? " (beta)" : ""}${
-                  update.has_update ? " — update available!" : " — up to date"
-                }`}
-              />
-            )}
-            {update && !update.ok && (
-              <DiagRow label="Update check" value={update.error ?? "failed"} />
-            )}
-          </div>
+          <ToggleField label="Show diagnostics" checked={showDiag} onChange={setShowDiag} />
         </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem
-            layout="below"
-            onClick={() => showModal(<PatchNotesModal version={update?.current} />)}
-          >
-            View patch notes (this version)
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void runUpdateCheck(!!settings.beta, true)}>
-            Check for updates
-          </ButtonItem>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ToggleField
-            label="Beta channel (test builds)"
-            description="Include pre-release test builds in the update check. Off by default. A beta carries the version number it will become, and you'll be offered the final release when it ships."
-            checked={!!settings.beta}
-            // Persisting flips settings.beta, which re-runs the update check
-            // for the newly chosen channel via the effect above.
-            onChange={(v: boolean) => persist({ ...settings, beta: v })}
-          />
-        </PanelSectionRow>
-        {update?.ok && update.has_update && (
+        {showDiag && (
           <>
             <PanelSectionRow>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: "#66c0f4", padding: "2px 0" }}>
-                Update available: v{update.latest}
-                {update.prerelease ? " (beta)" : ""}
-              </div>
+              <Rows>
+                <DiagRow label="Backend" value={backend} />
+                <DiagRow label="Integration" value={diag.path ?? "—"} />
+                <DiagRow label="Nav bridge" value={navBridge.split(" · ")[0]} />
+                <DiagRow label="Video" value={videoNote} />
+                <DiagRow label="Codecs" value={CODEC_SUPPORT} />
+                <DiagRow label="Store language" value={languageDiag(settings.language, settings.country)} />
+                <DiagRow label="Fetch" value={fetch} />
+                <DiagRow
+                  label="Data (details/reviews/news/deck)"
+                  value={
+                    diag.dataOk
+                      ? `${diag.dataOk.appdetails ? "✓" : "✗"}/${diag.dataOk.reviews ? "✓" : "✗"}/${diag.dataOk.news ? "✓" : "✗"}/${diag.dataOk.deck ? "✓" : "✗"}`
+                      : "—"
+                  }
+                />
+                <DiagRow
+                  label="Sanitizer"
+                  value={
+                    backendInfo
+                      ? `${backendInfo.engine} (html.parser: ${backendInfo.html_parser ? "yes" : "NO"}) · self-test b/br/img ${backendInfo.selftest_tags.b}/${backendInfo.selftest_tags.br}/${backendInfo.selftest_tags.img} · py ${backendInfo.python}`
+                      : "—"
+                  }
+                />
+                <DiagRow label="Layout class" value={diag.installClass ?? "MISSING"} />
+                <DiagRow label="renderFunc" value={tri(diag.renderFuncFound)} />
+                <DiagRow label="appid" value={diag.appid != null ? String(diag.appid) : tri(diag.overviewFound)} />
+                <DiagRow label="Note" value={diag.note} />
+                <DiagRow label="Panel renders" value={String(storeRenders)} />
+                <DiagRow label="Panel state" value={diag.panelState ?? "—"} />
+                <DiagRow
+                  label="Route / attach / miss"
+                  value={`${probes.fFires} / ${probes.injectApplies} / ${probes.injectMisses}`}
+                />
+                <DiagRow label="Mounts (in/out)" value={probes.mounts} />
+                <DiagRow label="Ages" value={probes.ages} />
+                <DiagRow label="Nav bridge (full)" value={navBridge} />
+                {probes.lastMissReason && (
+                  <DiagRow label="Last miss" value={probes.lastMissReason} />
+                )}
+                <DiagRow
+                  label="Panel box (w×h @top)"
+                  value={
+                    diag.panelRect
+                      ? `${diag.panelRect.w}×${diag.panelRect.h} @${diag.panelRect.top} (vh ${diag.panelRect.vh})`
+                      : "—"
+                  }
+                />
+              </Rows>
             </PanelSectionRow>
             <PanelSectionRow>
-              <div style={{ fontSize: 11.5, opacity: 0.85 }}>
-                Download <b>EnhancedGV.zip</b> from the GitHub release, then in Decky
-                choose <b>Developer → Install Plugin from ZIP</b> and restart Steam.
-              </div>
+              <ButtonItem layout="below" onClick={runVideoTest}>
+                Test trailer connectivity
+              </ButtonItem>
             </PanelSectionRow>
-            {update.url && (
+            {videoTest && (
               <PanelSectionRow>
-                <ButtonItem
-                  layout="below"
-                  onClick={() => openExternal(update.url)}
-                >
-                  Open the release page
-                </ButtonItem>
-              </PanelSectionRow>
-            )}
-            {update.notes && (
-              <PanelSectionRow>
-                <div
-                  style={{
-                    fontSize: 11.5,
-                    opacity: 0.75,
-                    whiteSpace: "pre-wrap",
-                    maxHeight: 160,
-                    overflowY: "auto",
-                  }}
-                >
-                  {update.notes}
+                <div style={{ fontSize: 11, whiteSpace: "pre-wrap", opacity: 0.85 }}>
+                  {videoTest}
                 </div>
               </PanelSectionRow>
             )}
           </>
-        )}
-      </PanelSection>
-
-      <PanelSection title="Status">
-        <PanelSectionRow>
-          <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "2px 0" }}>
-            <DiagRow label="Backend" value={backend} />
-            <DiagRow label="Integration" value={diag.path ?? "—"} />
-            <DiagRow label="Nav bridge" value={navBridge.split(" · ")[0]} />
-            <DiagRow label="Video" value={videoNote} />
-            <DiagRow label="Codecs" value={CODEC_SUPPORT} />
-            <DiagRow label="Store language" value={languageDiag(settings.language, settings.country)} />
-            <DiagRow label="Fetch" value={fetch} />
-            <DiagRow
-              label="Data (details/reviews/news/deck)"
-              value={
-                diag.dataOk
-                  ? `${diag.dataOk.appdetails ? "✓" : "✗"}/${diag.dataOk.reviews ? "✓" : "✗"}/${diag.dataOk.news ? "✓" : "✗"}/${diag.dataOk.deck ? "✓" : "✗"}`
-                  : "—"
-              }
-            />
-            {diag.panelError && <DiagRow label="Data error" value={diag.panelError} />}
-          </div>
-        </PanelSectionRow>
-        <PanelSectionRow>
-          <ButtonItem layout="below" onClick={runVideoTest}>
-            Test trailer connectivity (current game)
-          </ButtonItem>
-        </PanelSectionRow>
-        {videoTest && (
-          <PanelSectionRow>
-            <div style={{ fontSize: 11, whiteSpace: "pre-wrap", opacity: 0.85 }}>
-              {videoTest}
-            </div>
-          </PanelSectionRow>
-        )}
-        <PanelSectionRow>
-          <ToggleField
-            label="Advanced diagnostics"
-            checked={showAdvanced}
-            onChange={setShowAdvanced}
-          />
-        </PanelSectionRow>
-        {showAdvanced && (
-          <PanelSectionRow>
-            <div style={{ display: "flex", flexDirection: "column", gap: 3, padding: "2px 0" }}>
-              <DiagRow
-                label="Sanitizer"
-                value={
-                  backendInfo
-                    ? `${backendInfo.engine} (html.parser: ${backendInfo.html_parser ? "yes" : "NO"}) · self-test b/br/img ${backendInfo.selftest_tags.b}/${backendInfo.selftest_tags.br}/${backendInfo.selftest_tags.img} · py ${backendInfo.python}`
-                    : "—"
-                }
-              />
-              <DiagRow label="Layout class" value={diag.installClass ?? "MISSING"} />
-              <DiagRow label="renderFunc" value={tri(diag.renderFuncFound)} />
-              <DiagRow label="appid" value={diag.appid != null ? String(diag.appid) : tri(diag.overviewFound)} />
-              <DiagRow label="Note" value={diag.note} />
-              <DiagRow label="Panel renders" value={String(storeRenders)} />
-              <DiagRow label="Panel state" value={diag.panelState ?? "—"} />
-              <DiagRow
-                label="Route / attach / miss"
-                value={`${probes.fFires} / ${probes.injectApplies} / ${probes.injectMisses}`}
-              />
-              <DiagRow label="Mounts (in/out)" value={probes.mounts} />
-              <DiagRow label="Ages" value={probes.ages} />
-              <DiagRow label="Nav bridge (full)" value={navBridge} />
-              {probes.lastMissReason && (
-                <DiagRow label="Last miss" value={probes.lastMissReason} />
-              )}
-              <DiagRow
-                label="Panel box (w×h @top)"
-                value={
-                  diag.panelRect
-                    ? `${diag.panelRect.w}×${diag.panelRect.h} @${diag.panelRect.top} (vh ${diag.panelRect.vh})`
-                    : "—"
-                }
-              />
-            </div>
-          </PanelSectionRow>
         )}
       </PanelSection>
     </>

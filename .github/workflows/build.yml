@@ -95,6 +95,13 @@ jobs:
           HASHEOUS_CLIENT_API_KEY: ${{ secrets.HASHEOUS_CLIENT_API_KEY }}
         run: python3 scripts/check_hasheous_proxy.py --live
 
+      # Quick Access installs releases through Decky's installer, which runs
+      # as root. Only this repository's own release zips may get there: pinned
+      # URL and redirects, GitHub's SHA-256, and a package check before Decky
+      # sees anything.
+      - name: Check the in-plugin updater installs only checked releases
+        run: python3 scripts/check_update_install.py
+
       - name: Install dependencies
         run: npm install
 
@@ -176,7 +183,7 @@ jobs:
           import os, re
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
           base = tag.split("-")[0]
-          foot = "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
+          foot = "\n\n---\nIf Quick Access → EnhancedGV offers an Update button, use that. Otherwise download EnhancedGV.zip below and use Decky → Developer → Install Plugin from ZIP."
           text = open("CHANGELOG.md", encoding="utf-8").read()
           m = (re.search(rf"^## v{re.escape(tag)}\s*$\n(.*?)(?=^## |\Z)", text, re.S | re.M)
                or re.search(rf"^## v{re.escape(base)}\s*$\n(.*?)(?=^## |\Z)", text, re.S | re.M))

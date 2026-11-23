@@ -5,6 +5,8 @@ import type {
   DataProvider,
   PatchNotes,
   PluginSettings,
+  PreparedUpdate,
+  ReleaseList,
   Reviews,
   UpdateInfo,
 } from "./types";
@@ -46,6 +48,10 @@ export const getReviewsList = callable<
 >("get_reviews_list");
 
 export const checkUpdate = callable<[beta: boolean], UpdateInfo>("check_update");
+
+export const listReleases = callable<[], ReleaseList>("list_releases");
+
+export const prepareUpdate = callable<[tag: string], PreparedUpdate>("prepare_update");
 
 export const getPatchNotes = callable<[version: string], PatchNotes>("get_patch_notes");
 

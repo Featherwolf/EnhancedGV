@@ -20,6 +20,8 @@ import html
 import asyncio
 import functools
 import hashlib
+import io
+import zipfile
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -110,22 +112,21 @@ DECK_LOC_TOKENS = {
 # followed by a leading "/" in the content, so no trailing slash here.
 CLAN_IMAGE_BASE = "https://clan.akamai.steamstatic.com/images"
 
-# --- Hasheous: keyless metadata for non-Steam / emulated games ---------------- #
-# Public community instance. Keyless pipeline (no API key, no ROM file needed):
+# --- Hasheous: metadata for non-Steam / emulated games ----------------------- #
+# Public community instance. The matching pipeline needs no key and no ROM file:
 #   MCP hasheous_search_games (clean title match, returns reference ROM hashes)
 #   -> Lookup/ByHash (bridges to the stable Hasheous game/DataObject id)
 #   -> DataObjects/Game/{id} (name, AIDescription, Logo, Tags, publisher, IGDB id)
-# The rich IGDB proxy (cover/screenshots/genres) is key-gated (a later, opt-in
-# phase); this baseline is entirely keyless and works with the feature toggled on.
-# --- IGDB enrichment (opt-in, needs free IGDB/Twitch credentials) ----------- #
-# We talk to IGDB DIRECTLY, not through Hasheous' proxy. Hasheous does proxy IGDB
-# at /MetadataProxy/IGDB/*, but every metadata endpoint there is declared
-# `security: [Client API Key]`, and those client keys are issued per REGISTERED
-# APPLICATION — creating one is restricted to Hasheous admins/moderators (three
-# applications exist service-wide, all official integrations). So that route is
-# closed to ordinary users, however free it looks.
+# Off until the user turns on non-Steam lookups, since it sends the game's name.
+# --- IGDB artwork ------------------------------------------------------------ #
+# Hasheous proxies IGDB at /MetadataProxy/IGDB/*, behind a client key issued to
+# a REGISTERED APPLICATION (only Hasheous admins can create one). EnhancedGV has
+# its own: CI writes it into release builds, and _hasheous_app_key reads it, so
+# every user of a release build gets covers and screenshots with no setup.
 #
-# IGDB's own API is free and genuinely self-serve: a Twitch account with 2FA,
+# A user's own IGDB credentials, when saved, are used instead and talk to IGDB
+# DIRECTLY; they also add IGDB's title search. IGDB's own API is free and
+# genuinely self-serve: a Twitch account with 2FA,
 # an application registered in the Twitch Developer Portal (Client Type
 # "Confidential"), and a generated Client Secret. Verified against the live
 # services:
@@ -850,6 +851,187 @@ def _github_url(u) -> str:
     if parts.scheme != "https" or parts.hostname is None:
         return ""
     return s if parts.hostname.lower() in _GITHUB_HOSTS else ""
+
+
+# --------------------------------------------------------------------------- #
+# In-plugin installs
+# --------------------------------------------------------------------------- #
+# EnhancedGV installs its releases through Decky Loader's own installer, the one
+# Decky's store uses: Decky asks the user to confirm in its own dialog, swaps the
+# plugin in place and reloads it. Nobody downloads a zip by hand.
+#
+# Decky checks the zip's SHA-256 only AFTER it has removed the installed copy, so
+# a download that fails that check leaves no plugin at all. So the backend fetches
+# the release itself first, checks it against the SHA-256 GitHub recorded when CI
+# uploaded it, checks it is an EnhancedGV package of the version asked for, and
+# hands Decky that local file with the same hash. Decky reads a file:// artifact
+# into memory before it uninstalls anything.
+RELEASES_API = "https://api.github.com/repos/Featherwolf/EnhancedGV/releases"
+RELEASE_DOWNLOAD_PREFIX = "https://github.com/Featherwolf/EnhancedGV/releases/download/"
+PLUGIN_NAME = "EnhancedGV"
+RELEASE_ASSET = "EnhancedGV.zip"
+_RELEASE_TAG_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)\.\d{1,4})?")
+_SHA256_DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})")
+# github.com answers a release download with a redirect to its asset storage.
+_RELEASE_STORAGE_HOSTS = frozenset((
+    "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+))
+RELEASE_ZIP_MAX_BYTES = 32 * 1024 * 1024
+RELEASE_UNPACKED_MAX_BYTES = 128 * 1024 * 1024
+RELEASE_MAX_ENTRIES = 2000
+# Older builds call the review endpoint Steam retired (see
+# check_reviews_endpoint.py), so they are not offered.
+RELEASE_MIN_INSTALLABLE = "0.20.0"
+# The first build with this installer. Going back past it means the next
+# update is a manual one again, and the version list says so.
+RELEASE_FIRST_SELF_UPDATE = "0.21.0-beta.2"
+UPDATE_DIR = os.path.join(CACHE_DIR, "update")
+# Decky Loader's PluginInstallType.
+INSTALL_REINSTALL, INSTALL_UPDATE, INSTALL_DOWNGRADE = 1, 2, 3
+
+
+def _release_zip_url(tag: str) -> str:
+    return f"{RELEASE_DOWNLOAD_PREFIX}{tag}/{RELEASE_ASSET}"
+
+
+def _is_release_storage_url(u) -> bool:
+    """Whether u is GitHub's asset storage over plain https: the only place a
+    release download may be redirected to."""
+    s = _plain_url(u)
+    try:
+        parts = urllib.parse.urlsplit(s)
+        port = parts.port
+    except Exception:
+        return False
+    return (parts.scheme == "https" and port in (None, 443)
+            and not parts.username and not parts.password
+            and (parts.hostname or "").lower() in _RELEASE_STORAGE_HOSTS)
+
+
+class _ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a release download only into GitHub's asset storage."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_release_storage_url(newurl):
+            raise ValueError("GitHub redirected the download somewhere unexpected")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_RELEASE_OPENER = urllib.request.build_opener(
+    _ReleaseRedirect, urllib.request.HTTPSHandler(context=_SSL_CTX))
+
+
+def _release_asset(rel, tag: str):
+    """(download URL, sha256 hex) of a release's EnhancedGV.zip, or None unless
+    it is exactly this repository's asset for this tag with a recorded digest."""
+    if not isinstance(rel, dict) or rel.get("draft") or rel.get("tag_name") != tag:
+        return None
+    for a in rel.get("assets") or []:
+        if not isinstance(a, dict) or a.get("name") != RELEASE_ASSET:
+            continue
+        if a.get("state", "uploaded") != "uploaded":
+            return None
+        url = str(a.get("browser_download_url") or "")
+        m = _SHA256_DIGEST_RE.fullmatch(str(a.get("digest") or ""))
+        size = a.get("size")
+        if url != _release_zip_url(tag) or not m:
+            return None
+        if isinstance(size, int) and size > RELEASE_ZIP_MAX_BYTES:
+            return None
+        return url, m.group(1)
+    return None
+
+
+def _download_release(url: str) -> bytes:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "application/octet-stream"})
+    with _RELEASE_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        final = resp.geturl()
+        if final != url and not _is_release_storage_url(final):
+            raise ValueError("the download ended somewhere other than GitHub")
+        data = resp.read(RELEASE_ZIP_MAX_BYTES + 1)
+    if len(data) > RELEASE_ZIP_MAX_BYTES:
+        raise ValueError("the download is larger than any EnhancedGV release")
+    return data
+
+
+def _release_zip_problem(data: bytes, version: str) -> str:
+    """"" when data is an installable EnhancedGV package of this version, else
+    what is wrong with it. Decky unzips into its plugins folder as root, so every
+    path must sit inside one EnhancedGV/ folder."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        infos = zf.infolist()
+    except Exception:
+        return "the download isn't a zip file"
+    if not infos or len(infos) > RELEASE_MAX_ENTRIES:
+        return "the zip doesn't look like an EnhancedGV package"
+    prefix = PLUGIN_NAME + "/"
+    for info in infos:
+        name = info.filename
+        if (not name.startswith(prefix) or "\\" in name or "\x00" in name
+                or ".." in name.split("/")):
+            return "the zip holds a file outside the EnhancedGV folder"
+    if sum(i.file_size for i in infos) > RELEASE_UNPACKED_MAX_BYTES:
+        return "the zip unpacks larger than any EnhancedGV release"
+    names = {i.filename for i in infos}
+    for need in ("plugin.json", "main.py", "dist/index.js"):
+        if prefix + need not in names:
+            return f"the zip has no {need}"
+    try:
+        meta = json.loads(zf.read(prefix + "plugin.json").decode("utf-8"))
+    except Exception:
+        return "the zip's plugin.json can't be read"
+    if not isinstance(meta, dict) or meta.get("name") != PLUGIN_NAME:
+        return "the zip isn't EnhancedGV"
+    if str(meta.get("version", "")).lstrip("v") != version:
+        return "the zip's version doesn't match the release"
+    return ""
+
+
+def _clear_staged_releases() -> int:
+    removed = 0
+    try:
+        names = os.listdir(UPDATE_DIR)
+    except OSError:
+        return 0
+    for name in names:
+        if name.startswith(PLUGIN_NAME + "-") and name.endswith((".zip", ".zip.part")):
+            try:
+                os.remove(os.path.join(UPDATE_DIR, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _prepare_release_sync(tag: str) -> dict:
+    """Fetch and check one release, and stage it for Decky's installer."""
+    if not _ssl_verifies():
+        return {"ok": False, "error": "This device can't verify GitHub's certificate, "
+                                      "so EnhancedGV won't install from here. Install "
+                                      "the zip by hand instead."}
+    # One preparation at a time: whatever an earlier one staged is dropped, so
+    # a refused download never leaves an older file behind for Decky.
+    _clear_staged_releases()
+    asset = _release_asset(_http_get_json(f"{RELEASES_API}/tags/{tag}"), tag)
+    if asset is None:
+        return {"ok": False, "error": f"{tag} has no installable EnhancedGV.zip"}
+    url, digest = asset
+    data = _download_release(url)
+    if hashlib.sha256(data).hexdigest() != digest:
+        return {"ok": False, "error": "The download doesn't match the checksum GitHub "
+                                      "recorded for it. Nothing was installed."}
+    version = tag[1:]
+    problem = _release_zip_problem(data, version)
+    if problem:
+        return {"ok": False, "error": f"Not installing {tag}: {problem}."}
+    os.makedirs(UPDATE_DIR, exist_ok=True)
+    path = os.path.join(UPDATE_DIR, f"{PLUGIN_NAME}-{version}.zip")
+    with open(path + ".part", "wb") as fh:
+        fh.write(data)
+    os.replace(path + ".part", path)
+    return {"ok": True, "path": path, "version": version, "hash": digest}
 
 
 _SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
@@ -1778,6 +1960,9 @@ class Plugin:
         self._inflight = {}
         os.makedirs(CACHE_DIR, exist_ok=True)
         self._purge_stale_cache()
+        # A release staged for Decky's installer has done its job once any
+        # build starts: either it is now installed, or the user said no.
+        _clear_staged_releases()
         decky.logger.info("EnhancedGV backend started (TLS verification: %s)",
                           "on" if _ssl_verifies() else "OFF - no usable CA bundle")
 
@@ -3251,15 +3436,19 @@ class Plugin:
                 rels = await loop.run_in_executor(
                     None, _http_get_json,
                     "https://api.github.com/repos/Featherwolf/EnhancedGV/releases?per_page=20")
+                # Only tags this plugin knows how to read and install: an
+                # oddly named pre-release must not become "the latest beta".
                 cands = [r for r in (rels if isinstance(rels, list) else [])
-                         if isinstance(r, dict) and not r.get("draft")]
+                         if isinstance(r, dict) and not r.get("draft")
+                         and _RELEASE_TAG_RE.fullmatch(str(r.get("tag_name", "")))]
                 raw = max(cands, key=lambda r: self._ver_tuple(str(r.get("tag_name", ""))),
                           default={})
             else:
                 raw = await loop.run_in_executor(
                     None, _http_get_json,
                     "https://api.github.com/repos/Featherwolf/EnhancedGV/releases/latest")
-            latest = str(raw.get("tag_name", "")).lstrip("v")
+            tag = str(raw.get("tag_name", ""))
+            latest = tag.lstrip("v")
             zip_url = ""
             for a in raw.get("assets") or []:
                 if a.get("name") == "EnhancedGV.zip":
@@ -3269,6 +3458,8 @@ class Plugin:
                 "ok": True,
                 "current": current,
                 "latest": latest,
+                "tag": tag,
+                "installable": self._installable(raw, tag),
                 "notes": raw.get("body") or "",
                 "has_update": bool(latest) and self._ver_tuple(latest) > self._ver_tuple(current),
                 "prerelease": bool(raw.get("prerelease")),
@@ -3280,6 +3471,79 @@ class Plugin:
             decky.logger.error(f"check_update failed: {exc}")
             return {"ok": False, "error": str(exc), "current": current,
                     "channel": "beta" if beta else "stable"}
+
+    def _installable(self, rel, tag: str) -> bool:
+        return (bool(_RELEASE_TAG_RE.fullmatch(tag))
+                and self._ver_tuple(tag) >= self._ver_tuple(RELEASE_MIN_INSTALLABLE)
+                and _release_asset(rel, tag) is not None)
+
+    async def list_releases(self):
+        """Every published release this panel can install, newest first: the
+        current stable, any beta, and the stable builds before them."""
+        current = self._installed_version()
+        try:
+            loop = asyncio.get_running_loop()
+            rels = await loop.run_in_executor(
+                None, _http_get_json, f"{RELEASES_API}?per_page=30")
+        except Exception as exc:
+            decky.logger.error(f"list_releases failed: {exc}")
+            return {"ok": False, "error": str(exc), "current": current, "releases": []}
+        out = []
+        for rel in rels if isinstance(rels, list) else []:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = str(rel.get("tag_name") or "")
+            if not _RELEASE_TAG_RE.fullmatch(tag):
+                continue
+            version = tag[1:]
+            if self._ver_tuple(version) < self._ver_tuple(RELEASE_MIN_INSTALLABLE):
+                continue
+            out.append({
+                "tag": tag,
+                "version": version,
+                "prerelease": bool(rel.get("prerelease")),
+                "published": str(rel.get("published_at") or "")[:10],
+                "url": _github_url(rel.get("html_url", "")),
+                "installable": self._installable(rel, tag),
+                "installed": self._ver_tuple(version) == self._ver_tuple(current),
+                "newer": self._ver_tuple(version) > self._ver_tuple(current),
+                "self_update": self._ver_tuple(version) >= self._ver_tuple(RELEASE_FIRST_SELF_UPDATE),
+            })
+        out.sort(key=lambda r: self._ver_tuple(r["version"]), reverse=True)
+        return {"ok": True, "current": current, "releases": out[:12]}
+
+    async def prepare_update(self, tag: str = ""):
+        """Download and check one release, then return what the frontend hands
+        to Decky's installer: a local file, its SHA-256 and the install type.
+        Decky then asks the user to confirm before it changes anything."""
+        tag = str(tag or "").strip()
+        if not _RELEASE_TAG_RE.fullmatch(tag):
+            return {"ok": False, "error": "That isn't an EnhancedGV release tag."}
+        version = tag[1:]
+        if self._ver_tuple(version) < self._ver_tuple(RELEASE_MIN_INSTALLABLE):
+            return {"ok": False, "error": f"Versions before {RELEASE_MIN_INSTALLABLE} "
+                                          "no longer work with Steam's store."}
+        try:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _prepare_release_sync, tag)
+        except urllib.error.HTTPError as exc:
+            decky.logger.error(f"prepare_update {tag}: HTTP {exc.code}")
+            if exc.code == 404:
+                return {"ok": False, "error": f"{tag} isn't a published release."}
+            return {"ok": False, "error": f"GitHub answered HTTP {exc.code}; try again shortly."}
+        except Exception as exc:
+            decky.logger.error(f"prepare_update {tag} failed: {exc}")
+            return {"ok": False, "error": f"Couldn't download {tag}: {exc}"}
+        if not res.get("ok"):
+            decky.logger.warning(f"prepare_update {tag}: {res.get('error')}")
+            return res
+        current = self._ver_tuple(self._installed_version())
+        wanted = self._ver_tuple(version)
+        kind = (INSTALL_UPDATE if wanted > current
+                else INSTALL_DOWNGRADE if wanted < current else INSTALL_REINSTALL)
+        decky.logger.info(f"prepared {tag} for Decky's installer (type {kind})")
+        return {"ok": True, "artifact": "file://" + res["path"], "name": PLUGIN_NAME,
+                "version": version, "hash": res["hash"], "install_type": kind}
 
     async def get_patch_notes(self, version: str = ""):
         """Return the CHANGELOG section for a version (default: the installed one).

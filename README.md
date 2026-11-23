@@ -90,8 +90,8 @@ installed. The zip/dev flows below need Decky **Developer mode** enabled
 Download **`EnhancedGV.zip`** from the [latest release](https://github.com/Featherwolf/EnhancedGV/releases/latest),
 then in Decky choose **Developer → Install Plugin from ZIP** and pick the file.
 Restart Steam, open any game in your library, and the store panel appears below
-the Play button. The plugin can also check for updates from its Quick Access
-panel (download + reinstall to update).
+the Play button. From then on, updates install from the plugin's Quick Access
+panel with one press (see [Updates](#updates)).
 
 ### Option A — copy the folder (dev)
 
@@ -144,16 +144,35 @@ game first so the game-specific options appear.
 
 ### After installing
 
-- **Sections shown on the game page** — turn Media, About, Features & details,
-  Steam Deck, Reviews, and Update history on or off.
-- **Expanded by default** — choose which sections start open vs. collapsed.
+- **Game page → Choose sections** — set each section (videos & screenshots,
+  About, Features & details, Steam Deck, Reviews, Update history) to Hidden,
+  Collapsed or Expanded.
 - **Store language** follows your Steam client language automatically (there's no
-  in-app language picker); the Status row shows the language it detected.
-- **Clear cached store data** forces a fresh fetch if anything looks stale.
-- **Updates → Beta channel (test builds)** opts in to pre-release builds. Betas
-  are GitHub pre-releases tagged `vX.Y.Z-beta.N` (a new number per cut) —
-  excluded from the stable update check, and retired when the `vX.Y.Z` release
-  ships.
+  in-app language picker); **Troubleshooting → Show diagnostics** shows the
+  language it detected.
+- **Troubleshooting → Clear cached store data** forces a fresh fetch if anything
+  looks stale.
+
+### Updates
+
+When a new release is out, an **Update to vX** button appears at the top of
+the panel. Press it, confirm in Decky's own dialog, and the plugin reloads; Steam
+needs no restart. Your settings and saved IGDB credentials are kept.
+
+- **Beta channel** also offers test builds of the next release. Betas are
+  GitHub pre-releases tagged `vX.Y.Z-beta.N` (a new number per cut), excluded
+  from the stable update check, and retired when the `vX.Y.Z` release ships.
+- **Install another version** lists every release from 0.20.0 on, stable and
+  beta, so you can switch channels or go back to an earlier build.
+- **Only this repository's releases are installed.** The plugin downloads the
+  release's `EnhancedGV.zip` from GitHub, checks it against the SHA-256 checksum
+  GitHub recorded when it was published, and checks that it is an EnhancedGV
+  package of that version before Decky sees it. Decky checks the checksum again
+  before installing.
+- This needs Decky Loader 3.0 or later. With an older loader, or on a device
+  that can't verify GitHub's certificate, the panel shows the manual steps
+  instead. Versions before 0.21.0-beta.2 don't have the button, so update those
+  by hand once.
 
 ### Matching non-Steam games
 
@@ -162,18 +181,18 @@ Steam store page of their own, so EnhancedGV finds one for you. The first time y
 open one, it searches the Steam store by the game's title and uses the best match
 — no action needed — and remembers it so it only happens once.
 
-To check or fix a match, open **Quick Access → EnhancedGV → Store data source**
-while viewing the game:
+To check or fix a match, open **Quick Access → EnhancedGV → This game** while
+viewing the game:
 
-- The **Steam App ID** field shows which store page the content comes from, and
-  the **`Title (Year)`** below it lets you confirm it's the right game.
-- **Wrong match?** Type the correct **App ID**, or paste the game's
-  `store.steampowered.com/app/…` URL, and press **Save ID**. Your choice is sticky
-  and never gets overwritten automatically.
-- **Clear (leave blank)** removes the match and keeps the game unmatched — use it
-  to hide the store panel for a game you don't want it on.
-- **Re-detect automatically** discards the current match and runs the title search
-  again.
+- **Store page** shows which store page the content comes from, as
+  `Title (Year)`, so you can confirm it's the right game.
+- **Wrong match?** Press **Change match**, type the correct **App ID** (or paste
+  the game's `store.steampowered.com/app/…` URL, or `igdb:ID` / `hasheous:ID` for
+  a game Steam doesn't sell), and press **Save match**. Your choice is sticky and
+  never gets overwritten automatically.
+- **Leave unmatched** removes the match and keeps the game unmatched. Use it to
+  hide the store panel for a game you don't want it on.
+- **Detect again** discards the current match and runs the title search again.
 
 This works for regular Steam games too — you'll rarely need it, but you can point
 any game at a different store page the same way.
@@ -183,7 +202,10 @@ any game at a different store page the same way.
 
 Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individual
 shortcuts) fall back to **Hasheous**, a free community game database. Turn on
-**Quick Access → EnhancedGV → Non-Steam games (experimental)**.
+**Quick Access → EnhancedGV → Non-Steam games → Look up emulated games**. That is
+the only setup: no account and no key. It's off by default because it sends the
+name of each non-Steam game you open to hasheous.org. Each game needs its own
+Steam shortcut with a recognisable name, which is what Steam ROM Manager makes.
 
 Hasheous matches the shortcut's title to a game, and that half needs no key.
 Release builds also carry **EnhancedGV's own Hasheous application key**, which
@@ -225,8 +247,10 @@ anything this plugin does.
 
 *Entering them on the Deck:*
 
-1. **Quick Access → EnhancedGV → Non-Steam games (experimental)** — make sure it's on.
-2. Paste the **Client ID** and **Client Secret**, then press **Save credentials**.
+1. **Quick Access → EnhancedGV → Non-Steam games** — make sure **Look up emulated
+   games** is on.
+2. Press **Use my own IGDB account**, paste the **Client ID** and **Client
+   Secret**, then press **Save credentials**.
    The secret field is masked, and saving refreshes the panels of games you've
    already opened.
 3. **Remove credentials** reverts to the keyless baseline at any time, and
@@ -302,13 +326,15 @@ which part broke:
   always reliable.
 - **Non-Steam games** are matched to a Steam store page by title automatically,
   and you can correct or clear the match from the QAM (see **Setup & tips**).
-  Games with no Steam counterpart stay cleanly "not identified".
+  Games with no Steam counterpart stay cleanly unmatched.
 - **Reviews and Deck compatibility** reflect the *Steam* version of a matched
   non-Steam game.
 - **Rate limits.** The store endpoints are unofficial and throttle roughly
   ~200 req / 5 min per IP; the disk cache + de-dup keep normal use far below that.
-- **Privacy.** Requests go directly from your device to Steam's public APIs for
-  the appid you're viewing. No API key, no third-party servers; matches are stored
+- **Privacy.** Requests go directly from your device to Steam's public store
+  APIs for the game you're viewing, and update checks go to GitHub. Only if you
+  turn on non-Steam lookups does a game's name go to hasheous.org (and to IGDB,
+  if you add your own credentials). No account is needed, and matches are stored
   locally.
 
 ## Troubleshooting — the panel doesn't appear
@@ -323,8 +349,9 @@ EnhancedGV supports the new interface.
 
 The store content is injected into Steam's app-details page, whose internal React
 tree is closed-source and shifts between client builds. If nothing shows up, open
-**Quick Access menu → EnhancedGV** after viewing a game and check the **Status**
-block:
+**Quick Access menu → EnhancedGV** after viewing a game. Under **Troubleshooting**,
+**Status** says whether the backend answers; turn on **Show diagnostics** for the
+full readout:
 
 - **Backend** — `ok`, or `NOT RESPONDING` (Decky didn't start the Python backend;
   a full Steam restart usually fixes it).
@@ -334,9 +361,9 @@ block:
 - **Fetch** / **Data (details/reviews/news/deck)** — whether the backend calls
   succeeded.
 
-Toggle **Advanced diagnostics** for the deep readout (**appid**, **Panel state** =
-rendered/loading/hidden, **Sanitizer**, etc.); the first failing row pinpoints the
-hop that broke. Key
+Further down the same readout are **appid**, **Panel state** (rendered, loading or
+hidden), **Sanitizer** and more; the first failing row pinpoints the hop that
+broke. Key
 events are also mirrored to the Decky console log as `[EnhancedGV]` lines.
 
 ## Project layout
