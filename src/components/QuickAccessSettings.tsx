@@ -78,6 +78,10 @@ const SECTION_LABELS: { key: keyof SectionToggles; label: string }[] = [
   { key: "news", label: "Update history" },
 ];
 
+// The last successful update check, shared by every mount of the panel.
+const UPDATE_REUSE_MS = 30 * 60_000;
+let lastUpdateCheck: { at: number; beta: boolean; info: UpdateInfo } | null = null;
+
 function DiagRow({ label, value }: { label: string; value: string }) {
   return (
     <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontSize: 12 }}>
@@ -456,7 +460,15 @@ export function QuickAccessSettings() {
   // Monotonic request id: the channel can flip while a check is in flight,
   // and the OLDER response must not land on top of the newer one.
   const updateReq = useRef(0);
-  const runUpdateCheck = async (beta: boolean = !!settings.beta) => {
+  const runUpdateCheck = async (beta: boolean = !!settings.beta, force = false) => {
+    // Opening Quick Access re-runs this, and GitHub allows 60 unauthenticated
+    // requests an hour per address, so an automatic check reuses a recent
+    // answer for the same channel. The "Check for updates" button always asks.
+    const recent = lastUpdateCheck;
+    if (!force && recent && recent.beta === beta && Date.now() - recent.at < UPDATE_REUSE_MS) {
+      setUpdate(recent.info);
+      return;
+    }
     // Beta builds are published as GitHub PRE-RELEASES: excluded from
     // /releases/latest (so stable users never see them) but visible to the
     // beta channel, which opts in here.
@@ -464,6 +476,7 @@ export function QuickAccessSettings() {
     const info = await checkUpdate(beta).catch(
       (e) => ({ ok: false, error: String(e), current: "?" }) as UpdateInfo
     );
+    if (info?.ok) lastUpdateCheck = { at: Date.now(), beta, info };
     if (id === updateReq.current) setUpdate(info);
   };
 
@@ -672,7 +685,7 @@ export function QuickAccessSettings() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void runUpdateCheck()}>
+          <ButtonItem layout="below" onClick={() => void runUpdateCheck(!!settings.beta, true)}>
             Check for updates
           </ButtonItem>
         </PanelSectionRow>
