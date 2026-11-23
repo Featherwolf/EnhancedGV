@@ -25,16 +25,21 @@ function notesToSafeHtml(notes: string): string {
 
 export function PatchNotesModal({
   version,
+  notes: given,
   closeModal,
 }: {
   version?: string;
+  // A release's own notes from GitHub, for a version that isn't installed yet
+  // and so isn't in the bundled CHANGELOG.
+  notes?: string;
   closeModal?: () => void;
 }) {
-  const [notes, setNotes] = useState<string | null>(null);
+  const [notes, setNotes] = useState<string | null>(given ?? null);
   const [ver, setVer] = useState<string>(version ?? "");
   const [err, setErr] = useState<string>("");
 
   useEffect(() => {
+    if (given !== undefined) return;
     let cancelled = false;
     getPatchNotes(version ?? "")
       .then((r) => {
@@ -49,7 +54,7 @@ export function PatchNotesModal({
     return () => {
       cancelled = true;
     };
-  }, [version]);
+  }, [version, given]);
 
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal} bAllowFullSize>

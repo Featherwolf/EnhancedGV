@@ -7,6 +7,15 @@
   release dates through EnhancedGV's own Hasheous app. IGDB credentials are now
   optional: they add IGDB's title search, which finds modern console games
   Hasheous doesn't list.
+- **Updates from Quick Access.** When a new version is out, press **Update**
+  in Quick Access and confirm in Decky's dialog. The plugin reloads without a
+  Steam restart. **Install another version** offers every release from 0.20.0
+  on, stable or beta. Each download is checked against the checksum GitHub
+  recorded for it before Decky installs anything. Needs Decky Loader 3.0 or
+  later.
+- **A tidier Quick Access panel.** It's much shorter. Section choices and older
+  versions open in their own dialogs. The match editor and IGDB account fold
+  away until you need them. Diagnostics sit behind one switch.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is
