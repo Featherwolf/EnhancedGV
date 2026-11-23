@@ -11,6 +11,10 @@
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is
   unaffected.
+- **Fullscreen trailers on Windows no longer break Big Picture.** Leaving a
+  fullscreen trailer or screenshot used to drop Big Picture into a normal
+  window until it was restarted. On Windows, fullscreen media now fills Big
+  Picture's own window instead. The Steam Deck is unchanged.
 - **Smaller fixes.** Very long paragraphs in update history scroll with the
   D-pad; Quick Access no longer asks GitHub for updates every time it opens;
   games matched straight to IGDB load with one request instead of two.
