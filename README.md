@@ -313,6 +313,14 @@ which part broke:
 
 ## Troubleshooting — the panel doesn't appear
 
+**On Steam's beta channel (from the 2026-11-19 beta):** Steam rebuilt its
+interface with a different toolchain (Vite instead of Webpack), and the page
+layout class EnhancedGV uses to find where its panel goes isn't available there.
+The panel stays off rather than guessing a spot that could cover the Play
+button, and Quick Access shows a notice at the top saying so. Steam's Stable
+channel is unaffected; switch to it, and keep Decky Loader updated, until
+EnhancedGV supports the new interface.
+
 The store content is injected into Steam's app-details page, whose internal React
 tree is closed-source and shifts between client builds. If nothing shows up, open
 **Quick Access menu → EnhancedGV** after viewing a game and check the **Status**

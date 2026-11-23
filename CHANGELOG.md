@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.21.0
+
+- **Artwork for non-Steam games, with no setup.** Games matched through
+  Hasheous now get IGDB's cover art, screenshots, genres, developers and
+  release dates through EnhancedGV's own Hasheous app. IGDB credentials are now
+  optional: they add IGDB's title search, which finds modern console games
+  Hasheous doesn't list.
+- **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
+  EnhancedGV can't yet find where to place its panel there. Instead of quietly
+  showing nothing, Quick Access now says so. Steam's Stable channel is
+  unaffected.
+- **Smaller fixes.** Very long paragraphs in update history scroll with the
+  D-pad; Quick Access no longer asks GitHub for updates every time it opens;
+  games matched straight to IGDB load with one request instead of two.
+
 ## v0.20.0
 
 - **Steam Deck players' score.** The reviews section adds the score from
