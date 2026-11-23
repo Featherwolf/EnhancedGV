@@ -1,32 +1,5 @@
 # Changelog
 
-## v0.21.0
-
-- **The plugin's own interface can be shown in Portuguese (Brazil).** A new
-  **Language** dropdown in the Quick Access panel offers Automatic / English /
-  Portugues (Brasil); Automatic follows the same Steam-locale detection the
-  store-content language already uses. This is separate from that store
-  language setting — it only affects the plugin's OWN text (section titles,
-  buttons, empty states, the Status/Advanced diagnostics readout, review and
-  Steam Deck compatibility labels) and falls back to English for any string a
-  translation doesn't cover.
-- **Update history now works for Nintendo Switch games.** Non-Steam Switch
-  titles (matched via Hasheous/IGDB) pull real update notes instead of always
-  showing nothing: perfectly-nintendo.com's hand-maintained "all the updates"
-  article (full version-by-version patch notes) is tried first; Nintendo's own
-  eShop "related news" is used only when that article doesn't exist for the
-  title. Handles accented titles, bundled/combo articles, version-suffixed
-  URLs, and perfectly-nintendo.com's intermittent TLS timeouts (up to 3
-  retries). Only triggers for a game recognized as Switch; other emulated
-  platforms are unaffected, and coverage depends on Nintendo's/the site's own
-  licensing, not a plugin bug.
-- **Long update-history paragraphs no longer get clipped.** perfectly-
-  nintendo.com/eShop's HTML wraps long paragraphs in real `<p>` tags, which
-  the D-pad-scroll mechanism kept as one unsplittable focus stop — a
-  paragraph taller than the dialog had no way to scroll past it. Long
-  paragraphs in that dialog are now split the same way plain text already
-  was; patch notes and review popups are unaffected.
-
 ## v0.20.0
 
 - **Steam Deck players' score.** The reviews section adds the score from
