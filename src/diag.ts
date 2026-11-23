@@ -119,8 +119,10 @@ export function markInjectApply(): void {
 }
 export function markInjectMiss(reason: string): void {
   injectMisses++;
+  // Logged only when the reason changes: the resync heartbeat repeats a miss
+  // every 2 s, which was ~1,800 identical lines an hour in Steam's CEF log.
+  if (reason !== lastMissReason) clog("inject MISS", reason);
   lastMissReason = reason;
-  clog("inject MISS", reason);
 }
 export function markPanelMount(slot: string, appid: number): void {
   const k = `${slot}:${appid}`;

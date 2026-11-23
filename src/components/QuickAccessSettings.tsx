@@ -9,7 +9,7 @@ import {
   showModal,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
-import { getCurrentAppid } from "../patchLibraryApp";
+import { getCurrentAppid, layoutClassMissing } from "../patchLibraryApp";
 import { FullStoreModal } from "./FullStoreModal";
 import {
   getSettings,
@@ -554,6 +554,17 @@ export function QuickAccessSettings() {
 
   return (
     <>
+      {layoutClassMissing() && (
+        <PanelSection>
+          <PanelSectionRow>
+            <div style={{ fontSize: 12, lineHeight: 1.45, color: "#e5b143" }}>
+              EnhancedGV can't find where to place its panel on this Steam version.
+              Steam's newest beta changed how its interface is built. Update Decky
+              Loader, or switch Steam to the Stable channel, until EnhancedGV is updated.
+            </div>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
       <PanelSection>
         <PanelSectionRow>
           <ButtonItem
