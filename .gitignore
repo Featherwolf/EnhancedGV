@@ -9,3 +9,5 @@ dist_pkg/
 tsconfig.tsbuildinfo
 __pycache__/
 *.pyc
+# EnhancedGV's Hasheous app key: CI writes it into the package from a secret.
+hasheous_client_key

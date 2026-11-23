@@ -257,6 +257,7 @@ function IgdbCredentialsRow() {
   const [busy, setBusy] = useState(false);
   const [steps, setSteps] = useState<IgdbStep[] | null>(null);
   const [note, setNote] = useState<string>("");
+  const [appKey, setAppKey] = useState<boolean>(false);
 
   useEffect(() => {
     let alive = true;
@@ -268,6 +269,7 @@ function IgdbCredentialsRow() {
         setSaved(!!(st.igdbClientId && st.igdbClientSecretSet));
         setStored(!!(st.igdbClientId || st.igdbClientSecretSet));
         setClientId(st.igdbClientId ?? "");
+        setAppKey(!!st.hasheousAppKey);
       })
       .catch(() => undefined);
     return () => {
@@ -319,7 +321,9 @@ function IgdbCredentialsRow() {
           description={
             saved
               ? "IGDB credentials are saved. Retro games get covers, screenshots, genres and developers instead of just a logo and description. They stay saved across plugin updates and reinstalls, and uninstalling the plugin does not remove them — press Remove credentials first if you want them off the device."
-              : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
+              : appKey
+                ? "Optional. Covers, screenshots and genres already come through EnhancedGV's Hasheous app, no setup needed. Your own IGDB credentials add IGDB's title search, which finds modern console games Hasheous doesn't list. Free: a Twitch account with two-factor and an application at dev.twitch.tv/console (Client Type: Confidential); steps in the README."
+                : "Without these you get the keyless baseline: logo + description. Free to obtain: create a Twitch account, enable two-factor, then register an application at dev.twitch.tv/console with Client Type set to Confidential. Full steps are in the plugin README."
           }
           value={clientId}
           onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
