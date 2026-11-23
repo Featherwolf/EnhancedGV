@@ -7,6 +7,7 @@ import { setVideoNote } from "../diag";
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
 import { playDashInto } from "../dashPlayer";
 import type { Movie, Screenshot } from "../types";
+import { useTranslation } from "../i18n";
 
 interface Props {
   movies: Movie[];
@@ -59,6 +60,7 @@ const IN_PAGE_FULLSCREEN_STYLE: CSSProperties = {
 // Thumbnails select directly; inline controls handle mute and fullscreen — no
 // popup players.
 export function MediaHero({ movies, screenshots }: Props) {
+  const { t } = useTranslation();
   const items = useMemo<Item[]>(
     () => [
       ...(movies ?? []).map<Item>((m) => ({
@@ -376,7 +378,7 @@ export function MediaHero({ movies, screenshots }: Props) {
   }, [idx, visible]);
 
   if (count === 0) {
-    return <div style={{ opacity: 0.6, fontSize: 13 }}>No media available.</div>;
+    return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("media.none")}</div>;
   }
 
   const toggleFullscreen = () => {
@@ -441,16 +443,16 @@ export function MediaHero({ movies, screenshots }: Props) {
         onActivate={onHeroActivate}
         onOKButton={onHeroActivate}
         onOKActionDescription={
-          curIsPlayableVideo ? (playing ? "Pause" : "Play") : "Fullscreen"
+          curIsPlayableVideo ? (playing ? t("media.pause") : t("media.play")) : t("media.fullscreen")
         }
         onSecondaryButton={curIsPlayableVideo ? () => setMuted((m) => !m) : undefined}
         onSecondaryActionDescription={
-          curIsPlayableVideo ? (muted ? "Unmute" : "Mute") : undefined
+          curIsPlayableVideo ? (muted ? t("media.unmute") : t("media.mute")) : undefined
         }
         onOptionsButton={toggleFullscreen}
-        onOptionsActionDescription={fullscreen ? "Exit Fullscreen" : "Fullscreen"}
+        onOptionsActionDescription={fullscreen ? t("media.exitFullscreen") : t("media.fullscreen")}
         onCancelButton={fullscreen ? toggleFullscreen : undefined}
-        onCancelActionDescription={fullscreen ? "Exit Fullscreen" : undefined}
+        onCancelActionDescription={fullscreen ? t("media.exitFullscreen") : undefined}
         onGamepadDirection={onHeroDirection}
         onGamepadFocus={() => setHeroFocused(true)}
         onGamepadBlur={() => setHeroFocused(false)}
@@ -525,10 +527,10 @@ export function MediaHero({ movies, screenshots }: Props) {
                 pointerEvents: "none",
               }}
             >
-              <span>◀ ▶ Browse</span>
-              {curIsPlayableVideo && <span>A Play/Pause</span>}
-              {curIsPlayableVideo && <span>X {muted ? "Unmute" : "Mute"}</span>}
-              <span>B Exit</span>
+              <span>◀ ▶ {t("media.browse")}</span>
+              {curIsPlayableVideo && <span>A {t("media.playPause")}</span>}
+              {curIsPlayableVideo && <span>X {muted ? t("media.unmute") : t("media.mute")}</span>}
+              <span>B {t("media.exit")}</span>
             </div>
           )}
           {/* Store-style overlay: title, position, mute state. Larger while
@@ -559,7 +561,7 @@ export function MediaHero({ movies, screenshots }: Props) {
             >
               {cur?.label ?? ""}
               {cur?.kind === "movie" && videoFailed[cur.id] && (
-                <span style={{ opacity: 0.7 }}> · preview unavailable</span>
+                <span style={{ opacity: 0.7 }}>{t("media.previewUnavailable")}</span>
               )}
             </span>
             {curIsPlayableVideo && muted && (

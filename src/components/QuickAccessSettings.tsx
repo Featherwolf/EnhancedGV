@@ -7,6 +7,7 @@ import {
   ToggleField,
   ButtonItem,
   TextField,
+  DropdownItem,
   showModal,
 } from "@decky/ui";
 import { toaster, useQuickAccessVisible } from "@decky/api";
@@ -49,6 +50,8 @@ import {
 import type { DiagState } from "../diag";
 import { DEFAULT_EXPANDED } from "../types";
 import type { PluginSettings } from "../types";
+import { useTranslation, LANGUAGE_UPDATED_EVENT } from "../i18n";
+import type { TranslationKey, LanguagePreference } from "../i18n";
 
 const DEFAULTS: PluginSettings = {
   sections: {
@@ -62,8 +65,20 @@ const DEFAULTS: PluginSettings = {
   expanded: { ...DEFAULT_EXPANDED },
   language: "auto",
   country: "auto",
+  uiLanguage: "auto",
   nonSteamSources: false,
 };
+
+// Translated per-render (needs `t`) rather than a module-level constant.
+function languageChoices(
+  t: (k: TranslationKey) => string,
+): { pref: LanguagePreference; label: string }[] {
+  return [
+    { pref: "auto", label: t("settings.languageAuto") },
+    { pref: "en", label: "English" },
+    { pref: "pt-BR", label: "Português (Brasil)" },
+  ];
+}
 
 const ACCENT = "#66c0f4";
 const WARN = "#e5b143";
@@ -143,6 +158,7 @@ function describeFetch(): string {
 // re-runs auto-detection; "Leave unmatched" keeps the game blank, which hides
 // the panel for it.
 function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: string }) {
+  const { t } = useTranslation();
   const [info, setInfo] = useState<ResolveResult | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [input, setInput] = useState("");
@@ -179,10 +195,10 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
 
   const save = async () => {
     setBusy(true);
-    setMsg("Looking up…");
+    setMsg(t("settings.lookingUp"));
     const look = await lookupStoreApp(input, lang, cc).catch(() => null);
     if (!look?.ok || !look.appid) {
-      setMsg(look?.error ?? "Lookup failed");
+      setMsg(look?.error ?? t("settings.lookupFailed"));
       setBusy(false);
       return;
     }
@@ -193,8 +209,12 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
     emitMatchChanged(appid); // re-resolve the open game page + reload this section
     setMsg(
       provider === "steam"
-        ? `Matched to ${look.name} (${look.year || "—"})`
-        : `Matched to ${look.name} (${look.year || "—"}) · via ${providerLabel(provider)}`,
+        ? t("settings.matchedTo", { name: look.name ?? "", year: look.year || "—" })
+        : t("settings.matchedToVia", {
+            name: look.name ?? "",
+            year: look.year || "—",
+            provider: providerLabel(provider),
+          }),
     );
     setBusy(false);
   };
@@ -203,7 +223,7 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
   // auto-matched again (sticky). Use this to hide the store panel for a game.
   const clear = async () => {
     setBusy(true);
-    setMsg("Left unmatched, so no store panel shows for this game. Enter an ID to match it, or choose Detect again.");
+    setMsg(t("settings.leftUnmatchedMsg"));
     await blankMatch(appid).catch(() => {});
     emitMatchChanged(appid);
     setBusy(false);
@@ -212,61 +232,61 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
   // Delete the record so auto-matching runs again on this game.
   const redetect = async () => {
     setBusy(true);
-    setMsg("Detecting…");
+    setMsg(t("settings.detecting"));
     await clearMatch(appid).catch(() => {});
     emitMatchChanged(appid);
     setBusy(false);
   };
 
   const matched = info?.store_appid
-    ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? " · set by you" : ""}`
+    ? `${info.name || "?"} (${info.year || "—"})${info.source === "manual" ? t("settings.setByYou") : ""}`
     : info?.provider && info.provider !== "steam" && info.provider_id != null
-    ? `${info.name || "?"} (${info.year || "—"}) · via ${providerLabel(info.provider)}`
+    ? `${info.name || "?"} (${info.year || "—"})${t("settings.viaProvider", { provider: providerLabel(info.provider) })}`
     : loaded
-    ? "Not matched"
+    ? t("settings.notMatched")
     : "…";
 
   return (
-    <PanelSection title="This game">
+    <PanelSection title={t("settings.thisGame")}>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={() => showModal(<FullStoreModal appid={appid} />)}>
-          Open store view
+          {t("settings.openStoreView")}
         </ButtonItem>
       </PanelSectionRow>
       <PanelSectionRow>
         <Rows>
-          {identity.isShortcut && <DiagRow label="Shortcut" value={identity.title || String(appid)} />}
-          <DiagRow label="Store page" value={matched} />
+          {identity.isShortcut && <DiagRow label={t("settings.shortcutLabel")} value={identity.title || String(appid)} />}
+          <DiagRow label={t("settings.storePageLabel")} value={matched} />
         </Rows>
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={() => setEditing((e) => !e)}>
-          {editing ? "Done" : "Change match"}
+          {editing ? t("settings.done") : t("settings.changeMatch")}
         </ButtonItem>
       </PanelSectionRow>
       {editing && (
         <>
           <PanelSectionRow>
             <TextField
-              label="Match to"
-              description="A Steam app ID or store link, or igdb:ID / hasheous:ID for a game Steam doesn't sell."
+              label={t("settings.matchToLabel")}
+              description={t("settings.matchToDesc")}
               value={input}
               onChange={(e) => setInput(e.target.value)}
             />
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy || !input.trim()} onClick={save}>
-              Save match
+              {t("settings.saveMatch")}
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy} onClick={redetect}>
-              Detect again
+              {t("settings.detectAgain")}
             </ButtonItem>
           </PanelSectionRow>
           <PanelSectionRow>
             <ButtonItem layout="below" disabled={busy} onClick={clear}>
-              Leave unmatched
+              {t("settings.leaveUnmatched")}
             </ButtonItem>
           </PanelSectionRow>
         </>
@@ -287,6 +307,7 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
 // id.twitch.tv: the test below never echoes it back, and the backend never
 // returns it over RPC.
 function NonSteamArtwork() {
+  const { t } = useTranslation();
   const [clientId, setClientId] = useState<string>("");
   const [clientSecret, setClientSecret] = useState<string>("");
   const [saved, setSaved] = useState<boolean>(false);
@@ -329,14 +350,14 @@ function NonSteamArtwork() {
       setClientSecret("");
       setSaved(!!(id && secret));
       setStored(!!(id || secret));
-      setNote("Credentials saved.");
+      setNote(t("settings.credentialsSaved"));
       // Panels already shown for non-Steam games were built without IGDB
       // artwork; drop the in-memory copies so the next visit asks again. The
       // backend cache stays: it never holds a merged result, and wiping it
       // would refetch every Steam game at once (#10).
       clearFrontendCache();
     } catch (e) {
-      setNote(`Could not save: ${String(e)}`);
+      setNote(t("settings.couldNotSave", { error: String(e) }));
     }
   };
 
@@ -348,21 +369,19 @@ function NonSteamArtwork() {
       // It reports failure in its result rather than throwing, and this note
       // must never claim an erase that didn't happen.
       if (!res?.ok) {
-        setNote(`Could not erase credentials: ${res?.error ?? "unknown error"}`);
+        setNote(t("settings.couldNotEraseCredentials", { error: res?.error ?? "unknown error" }));
         return;
       }
       const cur = await getSettings();
       primeSettings(cur as PluginSettings);
       setSaved(false);
       setStored(false);
-      setNote(
-        "Credentials erased: the ID, the secret and the cached access token are gone from this device. Regenerate the secret at dev.twitch.tv to revoke it everywhere.",
-      );
+      setNote(t("settings.credentialsErased"));
       // clearIgdbCredentials already dropped the IGDB data cached with them;
       // this just repaints without it.
       clearFrontendCache();
     } catch (e) {
-      setNote(`Could not clear: ${String(e)}`);
+      setNote(t("settings.couldNotClear", { error: String(e) }));
     }
   };
 
@@ -382,21 +401,21 @@ function NonSteamArtwork() {
   };
 
   const source = saved
-    ? "Your IGDB account"
+    ? t("settings.sourceYourIgdb")
     : appKey
-    ? "EnhancedGV's Hasheous app"
-    : "Hasheous (description and logo)";
+    ? t("settings.sourceHasheousApp")
+    : t("settings.sourceHasheous");
 
   return (
     <>
       <PanelSectionRow>
         <Rows>
-          <DiagRow label="Artwork from" value={source} />
+          <DiagRow label={t("settings.artworkFrom")} value={source} />
         </Rows>
       </PanelSectionRow>
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={runTest} disabled={busy}>
-          {busy ? "Testing…" : "Test artwork lookup"}
+          {busy ? t("settings.testing") : t("settings.testArtworkLookup")}
         </ButtonItem>
       </PanelSectionRow>
       {steps && steps.length > 0 && (
@@ -410,7 +429,11 @@ function NonSteamArtwork() {
       )}
       <PanelSectionRow>
         <ButtonItem layout="below" onClick={() => setOpen((o) => !o)}>
-          {open ? "Hide IGDB account" : saved ? "IGDB account (saved)" : "Use my own IGDB account"}
+          {open
+            ? t("settings.hideIgdbAccount")
+            : saved
+            ? t("settings.igdbAccountSaved")
+            : t("settings.useOwnIgdbAccount")}
         </ButtonItem>
       </PanelSectionRow>
       {open && (
@@ -418,23 +441,23 @@ function NonSteamArtwork() {
           <PanelSectionRow>
             <Hint>
               {saved
-                ? "Saved credentials stay through updates and reinstalls. Uninstalling the plugin doesn't remove them, so press Remove credentials first if you want them off this device."
+                ? t("settings.igdbHintSaved")
                 : appKey
-                ? "Optional. Your own credentials add IGDB's title search, which finds console games Hasheous doesn't list. They're free from dev.twitch.tv; the README has the steps."
-                : "Optional. Without them you get Hasheous' description and logo. They're free from dev.twitch.tv; the README has the steps."}
+                ? t("settings.igdbHintAppKey")
+                : t("settings.igdbHintNone")}
             </Hint>
           </PanelSectionRow>
           <PanelSectionRow>
             <TextField
-              label="IGDB Client ID"
+              label={t("settings.igdbClientId")}
               value={clientId}
               onChange={(e: { target: { value: string } }) => setClientId(e.target.value)}
             />
           </PanelSectionRow>
           <PanelSectionRow>
             <TextField
-              label="IGDB Client Secret"
-              description="Stored on this device and sent only to id.twitch.tv."
+              label={t("settings.igdbClientSecret")}
+              description={t("settings.igdbClientSecretDesc")}
               value={clientSecret}
               bIsPassword
               onChange={(e: { target: { value: string } }) => setClientSecret(e.target.value)}
@@ -446,13 +469,13 @@ function NonSteamArtwork() {
               onClick={() => save(clientId.trim(), clientSecret.trim())}
               disabled={!clientId.trim() || !clientSecret.trim()}
             >
-              Save credentials
+              {t("settings.saveCredentials")}
             </ButtonItem>
           </PanelSectionRow>
           {stored && (
             <PanelSectionRow>
               <ButtonItem layout="below" onClick={() => void remove()}>
-                Remove credentials
+                {t("settings.removeCredentials")}
               </ButtonItem>
             </PanelSectionRow>
           )}
@@ -468,6 +491,7 @@ function NonSteamArtwork() {
 }
 
 export function QuickAccessSettings() {
+  const { t } = useTranslation();
   const [settings, setLocal] = useState<PluginSettings>(DEFAULTS);
   const [diag, setDiag] = useState<DiagState>(getDiag());
   const [storeRenders, setStoreRenders] = useState<number>(getStoreRenders());
@@ -490,10 +514,10 @@ export function QuickAccessSettings() {
   const runVideoTest = async () => {
     const gameAppid = getCurrentAppid();
     if (gameAppid == null) {
-      setVideoTest("open a game page first");
+      setVideoTest(t("settings.openGamePageFirst"));
       return;
     }
-    setVideoTest("testing…");
+    setVideoTest(t("settings.testing"));
     try {
       // For a non-Steam game the page appid is the shortcut id, which has no
       // store data — probe the MATCHED store appid instead (idempotent resolve).
@@ -508,7 +532,7 @@ export function QuickAccessSettings() {
       const appid = r?.store_appid ?? gameAppid;
       const res = await testVideo(appid);
       if (!res.ok || !res.results) {
-        setVideoTest(`failed: ${res.error ?? "?"}`);
+        setVideoTest(t("settings.videoTestFailed", { error: res.error ?? "?" }));
         return;
       }
       setVideoTest(
@@ -521,7 +545,7 @@ export function QuickAccessSettings() {
           .join("\n")
       );
     } catch (e) {
-      setVideoTest(`failed: ${String(e)}`);
+      setVideoTest(t("settings.videoTestFailed", { error: String(e) }));
     }
   };
 
@@ -556,13 +580,13 @@ export function QuickAccessSettings() {
     setInstallNote("");
     const res = await installRelease(tag);
     setInstalling(false);
-    if (!res.ok) setInstallNote(res.error ?? "The install didn't start.");
+    if (!res.ok) setInstallNote(res.error ?? t("update.installNotStarted"));
   };
 
   useEffect(() => {
     let settled = false;
     const timer = setTimeout(() => {
-      if (!settled) setBackend("NOT RESPONDING — restart Steam");
+      if (!settled) setBackend(t("settings.backendNotResponding"));
     }, 5000);
     getSettings()
       .then((s) => {
@@ -580,7 +604,7 @@ export function QuickAccessSettings() {
       .catch((e) => {
         settled = true;
         clearTimeout(timer);
-        setBackend("error: " + String(e));
+        setBackend(t("settings.backendError", { error: String(e) }));
       });
     getBackendInfo()
       .then(setBackendInfo)
@@ -626,6 +650,10 @@ export function QuickAccessSettings() {
     // reappear. Omit both halves: set_settings leaves out what it isn't given.
     const { igdbClientId: _id, igdbClientSecret: _secret, ...withoutCreds } = next;
     await setSettings(withoutCreds).catch(() => {});
+    // The i18n module only re-resolves the plugin's own UI language on this
+    // event (it doesn't poll settings), so a uiLanguage change needs an
+    // explicit nudge — harmless to fire even when it didn't change.
+    window.dispatchEvent(new Event(LANGUAGE_UPDATED_EVENT));
   };
 
   const modalAppid = getCurrentAppid();
@@ -635,8 +663,8 @@ export function QuickAccessSettings() {
     backend !== "ok"
       ? backend
       : diag.panelError
-      ? "Backend OK · last game page had an error"
-      : "Backend OK";
+      ? t("settings.backendOkWithError")
+      : t("settings.backendOk");
 
   return (
     <>
@@ -644,9 +672,7 @@ export function QuickAccessSettings() {
         <PanelSection>
           <PanelSectionRow>
             <Hint color={WARN}>
-              EnhancedGV can't find where to place its panel on this Steam version.
-              Steam's newest beta changed how its interface is built. Update Decky
-              Loader, or switch Steam to the Stable channel, until EnhancedGV is updated.
+              {t("settings.layoutMissingWarning")}
             </Hint>
           </PanelSectionRow>
         </PanelSection>
@@ -656,7 +682,7 @@ export function QuickAccessSettings() {
         <PanelSection>
           <PanelSectionRow>
             <div style={{ fontSize: 13, fontWeight: 600, color: ACCENT, padding: "2px 0" }}>
-              Update available: v{update.latest}
+              {t("settings.updateAvailable", { version: update.latest ?? "" })}
               {update.prerelease ? " (beta)" : ""}
             </div>
           </PanelSectionRow>
@@ -667,21 +693,20 @@ export function QuickAccessSettings() {
                 disabled={installing}
                 onClick={() => void install(update.tag)}
               >
-                {installing ? "Downloading…" : `Update to v${update.latest}`}
+                {installing ? t("settings.downloading") : t("settings.updateToVersion", { version: update.latest ?? "" })}
               </ButtonItem>
             </PanelSectionRow>
           ) : (
             <>
               <PanelSectionRow>
                 <Hint>
-                  Download EnhancedGV.zip from the release, then choose Decky → Developer →
-                  Install Plugin from ZIP.
+                  {t("settings.downloadInstructions")}
                 </Hint>
               </PanelSectionRow>
               {update.url && (
                 <PanelSectionRow>
                   <ButtonItem layout="below" onClick={() => openExternal(update.url)}>
-                    Open the release page
+                    {t("settings.openReleasePage")}
                   </ButtonItem>
                 </PanelSectionRow>
               )}
@@ -701,7 +726,7 @@ export function QuickAccessSettings() {
                   )
                 }
               >
-                What's new
+                {t("settings.whatsNew")}
               </ButtonItem>
             </PanelSectionRow>
           )}
@@ -724,9 +749,21 @@ export function QuickAccessSettings() {
         />
       )}
 
-      <PanelSection title="Game page">
+      <PanelSection title={t("settings.language")}>
         <PanelSectionRow>
-          <Hint>{sectionSummary(settings)}</Hint>
+          <DropdownItem
+            label={t("settings.language")}
+            description={t("settings.languageDesc")}
+            rgOptions={languageChoices(t).map((c) => ({ data: c.pref, label: c.label }))}
+            selectedOption={settings.uiLanguage ?? "auto"}
+            onChange={(data) => void persist({ ...settings, uiLanguage: data.data as LanguagePreference })}
+          />
+        </PanelSectionRow>
+      </PanelSection>
+
+      <PanelSection title={t("settings.gamePage")}>
+        <PanelSectionRow>
+          <Hint>{sectionSummary(settings, t)}</Hint>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem
@@ -735,16 +772,16 @@ export function QuickAccessSettings() {
               showModal(<SectionsModal initial={settings} onSave={(next) => void persist(next)} />)
             }
           >
-            Choose sections
+            {t("settings.chooseSections")}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Non-Steam games">
+      <PanelSection title={t("settings.nonSteamGames")}>
         <PanelSectionRow>
           <ToggleField
-            label="Look up emulated games"
-            description="Details, cover art and screenshots from Hasheous for games Steam doesn't sell, such as ROMs added with Steam ROM Manager. Sends the game's name to hasheous.org."
+            label={t("settings.lookupEmulatedGames")}
+            description={t("settings.lookupEmulatedGamesDesc")}
             checked={!!settings.nonSteamSources}
             onChange={(value: boolean) => persist({ ...settings, nonSteamSources: value })}
           />
@@ -752,32 +789,32 @@ export function QuickAccessSettings() {
         {!!settings.nonSteamSources && <NonSteamArtwork />}
       </PanelSection>
 
-      <PanelSection title="Updates">
+      <PanelSection title={t("settings.updates")}>
         <PanelSectionRow>
           <Rows>
-            <DiagRow label="Installed" value={update?.current ? `v${update.current}` : "…"} />
+            <DiagRow label={t("settings.installed")} value={update?.current ? `v${update.current}` : "…"} />
             {update?.ok && (
               <DiagRow
-                label={update.channel === "beta" ? "Latest, with betas" : "Latest"}
+                label={update.channel === "beta" ? t("settings.latestWithBetas") : t("settings.latest")}
                 value={`v${update.latest ?? "?"}${update.prerelease ? " (beta)" : ""}${
-                  update.has_update ? "" : " · up to date"
+                  update.has_update ? "" : t("settings.upToDate")
                 }`}
               />
             )}
             {update && !update.ok && (
-              <DiagRow label="Update check" value={update.error ?? "failed"} />
+              <DiagRow label={t("settings.updateCheck")} value={update.error ?? t("settings.checkFailed")} />
             )}
           </Rows>
         </PanelSectionRow>
         <PanelSectionRow>
           <ButtonItem layout="below" onClick={() => void runUpdateCheck(!!settings.beta, true)}>
-            Check for updates
+            {t("settings.checkForUpdates")}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
           <ToggleField
-            label="Beta channel"
-            description="Also offer test builds of the next release."
+            label={t("settings.betaChannel")}
+            description={t("settings.betaChannelDesc")}
             checked={!!settings.beta}
             // Persisting flips settings.beta, which re-runs the update check
             // for the newly chosen channel via the effect above.
@@ -787,11 +824,11 @@ export function QuickAccessSettings() {
         <PanelSectionRow>
           {inPlace ? (
             <ButtonItem layout="below" onClick={() => showModal(<VersionPickerModal />)}>
-              Install another version
+              {t("settings.installAnotherVersion")}
             </ButtonItem>
           ) : (
             <ButtonItem layout="below" onClick={() => openExternal(RELEASES_PAGE)}>
-              Open the releases page
+              {t("settings.openReleasesPage")}
             </ButtonItem>
           )}
         </PanelSectionRow>
@@ -800,16 +837,16 @@ export function QuickAccessSettings() {
             layout="below"
             onClick={() => showModal(<PatchNotesModal version={update?.current} />)}
           >
-            Patch notes for this version
+            {t("settings.patchNotesForVersion")}
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
 
-      <PanelSection title="Troubleshooting">
+      <PanelSection title={t("settings.troubleshooting")}>
         <PanelSectionRow>
           <Rows>
-            <DiagRow label="Status" value={status} />
-            {diag.panelError && <DiagRow label="Last error" value={diag.panelError} />}
+            <DiagRow label={t("settings.status")} value={status} />
+            {diag.panelError && <DiagRow label={t("settings.lastError")} value={diag.panelError} />}
           </Rows>
         </PanelSectionRow>
         <PanelSectionRow>
@@ -821,30 +858,30 @@ export function QuickAccessSettings() {
               toaster.toast({
                 title: "EnhancedGV",
                 body: res
-                  ? `Cleared ${res.removed} cached file(s)`
-                  : "Failed to clear cache",
+                  ? t("settings.clearedFiles", { n: res.removed })
+                  : t("settings.clearFailed"),
               });
             }}
           >
-            Clear cached store data
+            {t("settings.clearCacheButton")}
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ToggleField label="Show diagnostics" checked={showDiag} onChange={setShowDiag} />
+          <ToggleField label={t("settings.showDiagnostics")} checked={showDiag} onChange={setShowDiag} />
         </PanelSectionRow>
         {showDiag && (
           <>
             <PanelSectionRow>
               <Rows>
-                <DiagRow label="Backend" value={backend} />
-                <DiagRow label="Integration" value={diag.path ?? "—"} />
-                <DiagRow label="Nav bridge" value={navBridge.split(" · ")[0]} />
-                <DiagRow label="Video" value={videoNote} />
-                <DiagRow label="Codecs" value={CODEC_SUPPORT} />
-                <DiagRow label="Store language" value={languageDiag(settings.language, settings.country)} />
-                <DiagRow label="Fetch" value={fetch} />
+                <DiagRow label={t("settings.diagBackend")} value={backend} />
+                <DiagRow label={t("settings.diagIntegration")} value={diag.path ?? "—"} />
+                <DiagRow label={t("settings.diagNavBridge")} value={navBridge.split(" · ")[0]} />
+                <DiagRow label={t("settings.diagVideo")} value={videoNote} />
+                <DiagRow label={t("settings.diagCodecs")} value={CODEC_SUPPORT} />
+                <DiagRow label={t("settings.diagStoreLanguage")} value={languageDiag(settings.language, settings.country)} />
+                <DiagRow label={t("settings.diagFetch")} value={fetch} />
                 <DiagRow
-                  label="Data (details/reviews/news/deck)"
+                  label={t("settings.diagData")}
                   value={
                     diag.dataOk
                       ? `${diag.dataOk.appdetails ? "✓" : "✗"}/${diag.dataOk.reviews ? "✓" : "✗"}/${diag.dataOk.news ? "✓" : "✗"}/${diag.dataOk.deck ? "✓" : "✗"}`
@@ -852,31 +889,31 @@ export function QuickAccessSettings() {
                   }
                 />
                 <DiagRow
-                  label="Sanitizer"
+                  label={t("settings.diagSanitizer")}
                   value={
                     backendInfo
                       ? `${backendInfo.engine} (html.parser: ${backendInfo.html_parser ? "yes" : "NO"}) · self-test b/br/img ${backendInfo.selftest_tags.b}/${backendInfo.selftest_tags.br}/${backendInfo.selftest_tags.img} · py ${backendInfo.python}`
                       : "—"
                   }
                 />
-                <DiagRow label="Layout class" value={diag.installClass ?? "MISSING"} />
-                <DiagRow label="renderFunc" value={tri(diag.renderFuncFound)} />
-                <DiagRow label="appid" value={diag.appid != null ? String(diag.appid) : tri(diag.overviewFound)} />
-                <DiagRow label="Note" value={diag.note} />
-                <DiagRow label="Panel renders" value={String(storeRenders)} />
-                <DiagRow label="Panel state" value={diag.panelState ?? "—"} />
+                <DiagRow label={t("settings.diagLayoutClass")} value={diag.installClass ?? "MISSING"} />
+                <DiagRow label={t("settings.diagRenderFunc")} value={tri(diag.renderFuncFound)} />
+                <DiagRow label={t("settings.diagAppid")} value={diag.appid != null ? String(diag.appid) : tri(diag.overviewFound)} />
+                <DiagRow label={t("settings.diagNote")} value={diag.note} />
+                <DiagRow label={t("settings.diagPanelRenders")} value={String(storeRenders)} />
+                <DiagRow label={t("settings.diagPanelState")} value={diag.panelState ?? "—"} />
                 <DiagRow
-                  label="Route / attach / miss"
+                  label={t("settings.diagRoute")}
                   value={`${probes.fFires} / ${probes.injectApplies} / ${probes.injectMisses}`}
                 />
-                <DiagRow label="Mounts (in/out)" value={probes.mounts} />
-                <DiagRow label="Ages" value={probes.ages} />
-                <DiagRow label="Nav bridge (full)" value={navBridge} />
+                <DiagRow label={t("settings.diagMounts")} value={probes.mounts} />
+                <DiagRow label={t("settings.diagAges")} value={probes.ages} />
+                <DiagRow label={t("settings.diagNavBridgeFull")} value={navBridge} />
                 {probes.lastMissReason && (
-                  <DiagRow label="Last miss" value={probes.lastMissReason} />
+                  <DiagRow label={t("settings.diagLastMiss")} value={probes.lastMissReason} />
                 )}
                 <DiagRow
-                  label="Panel box (w×h @top)"
+                  label={t("settings.diagPanelBox")}
                   value={
                     diag.panelRect
                       ? `${diag.panelRect.w}×${diag.panelRect.h} @${diag.panelRect.top} (vh ${diag.panelRect.vh})`
@@ -887,7 +924,7 @@ export function QuickAccessSettings() {
             </PanelSectionRow>
             <PanelSectionRow>
               <ButtonItem layout="below" onClick={runVideoTest}>
-                Test trailer connectivity
+                {t("settings.testTrailerConnectivity")}
               </ButtonItem>
             </PanelSectionRow>
             {videoTest && (

@@ -2,16 +2,28 @@ import { useState } from "react";
 import { DialogButton, Focusable, ModalRoot } from "@decky/ui";
 import { DEFAULT_EXPANDED } from "../types";
 import type { ExpandedToggles, PluginSettings, SectionToggles } from "../types";
+import { useTranslation } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 export type SectionMode = "hidden" | "collapsed" | "expanded";
 
-export const SECTION_ROWS: { key: keyof SectionToggles; label: string; expandable: boolean }[] = [
-  { key: "media", label: "Videos & screenshots", expandable: false },
-  { key: "about", label: "About", expandable: true },
-  { key: "features", label: "Features & details", expandable: true },
-  { key: "deck", label: "Steam Deck compatibility", expandable: true },
-  { key: "reviews", label: "Reviews", expandable: true },
-  { key: "news", label: "Update history", expandable: true },
+// Translated per-render (needs `t`) rather than a module-level constant.
+function sectionRows(
+  t: (k: TranslationKey) => string,
+): { key: keyof SectionToggles; label: string; expandable: boolean }[] {
+  return [
+    { key: "media", label: t("sections.media"), expandable: false },
+    { key: "about", label: t("sections.about"), expandable: true },
+    { key: "features", label: t("sections.features"), expandable: true },
+    { key: "deck", label: t("sections.deck"), expandable: true },
+    { key: "reviews", label: t("sections.reviews"), expandable: true },
+    { key: "news", label: t("sections.news"), expandable: true },
+  ];
+}
+
+// Keys only, for logic that doesn't need the label (sectionMode/withSectionMode).
+const SECTION_KEYS: (keyof SectionToggles)[] = [
+  "media", "about", "features", "deck", "reviews", "news",
 ];
 
 export function sectionMode(s: PluginSettings, key: keyof SectionToggles): SectionMode {
@@ -34,17 +46,20 @@ export function withSectionMode(
 }
 
 // One line for the panel: how many sections show, and how many open expanded.
-export function sectionSummary(s: PluginSettings): string {
-  const shown = SECTION_ROWS.filter((r) => s.sections[r.key]).length;
-  const open = SECTION_ROWS.filter((r) => r.expandable && sectionMode(s, r.key) === "expanded").length;
-  return `${shown} of ${SECTION_ROWS.length} shown · ${open} start expanded`;
+export function sectionSummary(s: PluginSettings, t: (k: TranslationKey, vars?: Record<string, string | number>) => string): string {
+  const shown = SECTION_KEYS.filter((k) => s.sections[k]).length;
+  const expandableKeys = SECTION_KEYS.filter((k) => k !== "media");
+  const open = expandableKeys.filter((k) => sectionMode(s, k) === "expanded").length;
+  return t("sections.summary", { shown, total: SECTION_KEYS.length, open });
 }
 
-const CHOICES: { mode: SectionMode; label: string }[] = [
-  { mode: "hidden", label: "Hidden" },
-  { mode: "collapsed", label: "Collapsed" },
-  { mode: "expanded", label: "Expanded" },
-];
+function choices(t: (k: TranslationKey) => string): { mode: SectionMode; label: string }[] {
+  return [
+    { mode: "hidden", label: t("sections.hidden") },
+    { mode: "collapsed", label: t("sections.collapsed") },
+    { mode: "expanded", label: t("sections.expanded") },
+  ];
+}
 
 export function SectionsModal({
   initial,
@@ -55,7 +70,10 @@ export function SectionsModal({
   onSave: (next: PluginSettings) => void;
   closeModal?: () => void;
 }) {
+  const { t } = useTranslation();
   const [settings, setLocal] = useState<PluginSettings>(initial);
+  const rows = sectionRows(t);
+  const allChoices = choices(t);
 
   const choose = (key: keyof SectionToggles, mode: SectionMode) => {
     const next = withSectionMode(settings, key, mode);
@@ -65,16 +83,16 @@ export function SectionsModal({
 
   return (
     <ModalRoot onCancel={closeModal} onEscKeypress={closeModal}>
-      <div style={{ fontSize: 17, fontWeight: 700 }}>Game page sections</div>
+      <div style={{ fontSize: 17, fontWeight: 700 }}>{t("sections.title")}</div>
       <div style={{ fontSize: 12.5, opacity: 0.7, margin: "4px 0 14px" }}>
-        Choose what shows under a game, and what starts open. Changes apply right away.
+        {t("sections.subtitle")}
       </div>
       <Focusable style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-        {SECTION_ROWS.map((row) => {
+        {rows.map((row) => {
           const current = sectionMode(settings, row.key);
-          const choices = row.expandable
-            ? CHOICES
-            : [CHOICES[0], { mode: "expanded" as SectionMode, label: "Shown" }];
+          const rowChoices = row.expandable
+            ? allChoices
+            : [allChoices[0], { mode: "expanded" as SectionMode, label: t("sections.shown") }];
           return (
             <Focusable
               key={row.key}
@@ -83,7 +101,7 @@ export function SectionsModal({
               style={{ display: "flex", alignItems: "center", gap: 6 }}
             >
               <div style={{ flex: 1, minWidth: 0, fontSize: 14 }}>{row.label}</div>
-              {choices.map((c, i) => (
+              {rowChoices.map((c, i) => (
                 <DialogButton
                   key={c.mode}
                   onClick={() => choose(row.key, c.mode)}
