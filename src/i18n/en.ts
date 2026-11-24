@@ -97,7 +97,7 @@ export const en = {
 
   // Settings: language
   "settings.language": "Language",
-  "settings.languageDesc": "The plugin's own interface text — separate from Store language below.",
+  "settings.languageDesc": "Menus and labels in EnhancedGV. Store content follows your Steam language.",
   "settings.languageAuto": "Automatic (System)",
 
   // Settings: troubleshooting
@@ -175,7 +175,7 @@ export const en = {
   // Store panel (game page)
   "store.title": "Store",
   "store.notMatchedYet":
-    "This game isn't matched to a Steam store page yet. Set its Steam App ID from Quick Access → EnhancedGV → Store data source to pull content.",
+    "This game isn't matched to a store page yet. To pick one, open Quick Access → EnhancedGV → This game → Change match.",
   "store.unavailable": "Store content unavailable ({why})",
   "store.sectionFailed": "Couldn't load this section. Try again in a minute.",
   "store.viaProvider": "via {provider}",
