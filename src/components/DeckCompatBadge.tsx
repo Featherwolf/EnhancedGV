@@ -7,10 +7,16 @@ import type { TranslationKey } from "../i18n";
 // resolves them client-side, inside the real Steam UI), so `category` and
 // each note's `token` are translated here instead of trusting the backend's
 // English `label`/`text` fallback fields.
-function categoryLabel(cat: number, t: (k: TranslationKey) => string): string {
+// Shared with StorePanel's section subtitle. A category with no dictionary
+// entry shows the backend's English label rather than the raw key.
+export function categoryLabel(
+  cat: number,
+  t: (k: TranslationKey) => string,
+  fallback = "Unknown",
+): string {
   const key = `deck.cat.${cat}` as TranslationKey;
   const translated = t(key);
-  return translated !== key ? translated : "Unknown";
+  return translated !== key ? translated : fallback || "Unknown";
 }
 
 function noteText(
@@ -60,7 +66,7 @@ export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
       title={deck.notes.map((n) => noteText(n, t)).filter(Boolean).join(" • ")}
     >
       <span>{GLYPH[cat] ?? "?"}</span>
-      <span>{t("deck.label", { label: categoryLabel(cat, t) })}</span>
+      <span>{t("deck.label", { label: categoryLabel(cat, t, deck.label) })}</span>
     </div>
   );
 }

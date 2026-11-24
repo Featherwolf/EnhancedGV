@@ -20,9 +20,8 @@ import { DescriptionSection } from "./DescriptionSection";
 import { FeaturesSection } from "./FeaturesSection";
 import { ReviewsSection } from "./ReviewsSection";
 import { NewsSection } from "./NewsSection";
-import { DeckCompatBadge, DeckCompatDetails } from "./DeckCompatBadge";
+import { DeckCompatBadge, DeckCompatDetails, categoryLabel } from "./DeckCompatBadge";
 import { useTranslation } from "../i18n";
-import type { TranslationKey } from "../i18n";
 
 interface Props {
   appid: number;
@@ -370,7 +369,7 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
       id: "deck",
       title: t("store.sectionDeck"),
       subtitle: data.deck?.ok
-        ? t(`deck.cat.${data.deck.category}` as TranslationKey)
+        ? categoryLabel(data.deck.category ?? 0, t, data.deck.label)
         : pending
           ? "…"
           : undefined,

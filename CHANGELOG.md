@@ -16,6 +16,10 @@
 - **A tidier Quick Access panel.** It's much shorter. Section choices and older
   versions open in their own dialogs. The match editor and IGDB account fold
   away until you need them. Diagnostics sit behind one switch.
+- **Portuguese (Brazil) interface.** EnhancedGV's own menus and labels now come
+  in Brazilian Portuguese too. They follow your Steam language, or you can pick
+  one under **Language** in Quick Access. Store content still follows Steam.
+  Contributed by btd1337.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is

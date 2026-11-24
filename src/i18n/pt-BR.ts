@@ -91,7 +91,7 @@ export const ptBR: Record<TranslationKey, string> = {
   "settings.patchNotesForVersion": "Notas de atualização desta versão",
 
   "settings.language": "Idioma",
-  "settings.languageDesc": "O texto da própria interface do plugin — independente do idioma da loja abaixo.",
+  "settings.languageDesc": "Menus e textos do EnhancedGV. O conteúdo da loja segue o idioma do Steam.",
   "settings.languageAuto": "Automático (Sistema)",
 
   "settings.troubleshooting": "Solução de problemas",
@@ -164,7 +164,7 @@ export const ptBR: Record<TranslationKey, string> = {
 
   "store.title": "Loja",
   "store.notMatchedYet":
-    "Este jogo ainda não está associado a uma página da loja Steam. Defina o Steam App ID em Acesso Rápido → EnhancedGV → Store data source para buscar o conteúdo.",
+    "Este jogo ainda não está associado a uma página da loja. Para escolher uma, abra Acesso Rápido → EnhancedGV → Este jogo → Alterar associação.",
   "store.unavailable": "Conteúdo da loja indisponível ({why})",
   "store.sectionFailed": "Não foi possível carregar esta seção. Tente novamente em um minuto.",
   "store.viaProvider": "via {provider}",
