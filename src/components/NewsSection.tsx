@@ -22,6 +22,14 @@ function fmtDate(unix: number): string {
   }
 }
 
+function siteName(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, "");
+  } catch {
+    return url;
+  }
+}
+
 const NEWS_HTML_STYLE = `
 .ssp-news img { max-width: 100%; height: auto; border-radius: 4px; margin: 6px 0; }
 .ssp-news a { color: #66c0f4; }
@@ -55,7 +63,9 @@ function NewsModal({
                 openExternal(item.url);
               }}
             >
-              {t("news.viewOnline")}
+              {item.excerpt
+                ? t("news.readFullArticle", { site: siteName(item.url) })
+                : t("news.viewOnline")}
             </DialogButton>
           </div>
         )}

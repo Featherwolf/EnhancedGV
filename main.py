@@ -2119,6 +2119,8 @@ PN_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
 # _fetch_pn_update_page gets 3 attempts per request rather than 2.
 PN_RETRY_ATTEMPTS = 3
 PN_RETRY_DELAY = 2.0
+# The rest of the history stays behind the "read the full article" link.
+PN_MAX_RELEASES = 3
 _PN_RESULT_RE = re.compile(r'<h2 class="cm-entry-title">\s*<a href="([^"]+)" title="([^"]*)">')
 # Every "all the updates" article's URL carries this segment (sometimes with
 # a "switch" infix, sometimes not) — verified against a dozen real titles.
@@ -2147,6 +2149,19 @@ _PN_DIV_RE = re.compile(r'<(/?)div\b[^>]*>')
 _PN_CONTENT_START_RE = re.compile(r'<div class="cm-entry-summary">')
 _PN_TITLE_RE = re.compile(r'<h1 class="cm-entry-title">\s*(.*?)\s*</h1>', re.S)
 _PN_DATE_RE = re.compile(r'<time\b[^>]*\bdatetime="([^"]+)"')
+# A release starts at a heading naming its version ("Mario Kart 8 Deluxe – Ver.
+# 4.0.1", "Guardian Tales – Ver. ??? (November 24th Update)"); the sub-headings
+# inside one release ("Forsaken Traders", "General") never carry "Ver.".
+_PN_RELEASE_HEADING_RE = re.compile(
+    r'<h([1-6])\b[^>]*>((?:(?!</h\1>).)*?\bVer\.(?:(?!</h\1>).)*)</h\1>', re.S | re.I)
+# Each release wraps its changes in two metadata lists: one ending in "Patch
+# notes:" (release date, maintenance, platforms, file size) and one starting
+# with "Additional notes" (official website, source).
+_PN_PATCH_NOTES_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?Patch notes\s*(?:</(?:strong|b)>\s*)?:?', re.I)
+_PN_TRAILER_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?(?:Additional notes|Official website|Source)\b', re.I)
+_PN_HR_RE = re.compile(r'<hr\b[^>]*>', re.I)
 
 
 def _pn_title_matches(want_words: list, got: str) -> bool:
@@ -2201,11 +2216,60 @@ def _pn_extract_div_content(raw_html: str, open_tag_end: int) -> str:
     return raw_html[open_tag_end:]
 
 
+def _pn_release_changes(block: str) -> str:
+    """The changes in one release block: what lies between its two metadata
+    lists. Some releases give a one-line "Patch notes: …" value instead of a
+    list, so that value is kept too."""
+    start = 0
+    inline = ""
+    label = _PN_PATCH_NOTES_LABEL_RE.search(block)
+    if label:
+        li_end = block.find("</li>", label.end())
+        if li_end != -1:
+            inline = re.sub(r"<[^>]+>", "", block[label.end():li_end]).strip(" :\t\r\n")
+        ul_end = block.find("</ul>", label.end())
+        start = ul_end + len("</ul>") if ul_end != -1 else label.end()
+    end = len(block)
+    trailer = _PN_TRAILER_LABEL_RE.search(block, start)
+    if trailer:
+        ul_start = block.rfind("<ul", start, trailer.start())
+        end = ul_start if ul_start != -1 else trailer.start()
+    changes = _PN_HR_RE.sub("", block[start:end])
+    if inline:
+        changes = f"<p>{html.escape(html.unescape(inline), quote=False)}</p>{changes}"
+    return changes
+
+
 def _parse_pn_article(raw_html: str):
+    """The changes of the newest PN_MAX_RELEASES releases, each under its
+    version heading — and nothing else: the intro, older releases, release
+    dates, file sizes, sources and links are dropped, leaving the full article
+    to the "read the full article" link. A release heading names the game
+    before "Ver." ("No Man's Sky – Ver. 7.0 (Cosmos) Hotfixes"); one starting
+    with "Ver." ("Ver. 7.01") is a sub-version inside a hotfix release, not a
+    release of its own. An
+    article with no recognizable release heading yields nothing, so
+    get_switch_news falls back to the eShop instead of showing it whole."""
     m = _PN_CONTENT_START_RE.search(raw_html or "")
     if not m:
         return None
     body_raw = _pn_extract_div_content(raw_html, m.end())
+    releases = [
+        rel for rel in _PN_RELEASE_HEADING_RE.finditer(body_raw)
+        if not html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip().lower().startswith("ver.")
+    ]
+    parts = []
+    for i, rel in enumerate(releases):
+        end = releases[i + 1].start() if i + 1 < len(releases) else len(body_raw)
+        changes = _pn_release_changes(body_raw[rel.end():end])
+        if not re.sub(r"<[^>]+>|&nbsp;|\s", "", changes):
+            continue
+        heading = html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip()
+        parts.append(f"<h3>{html.escape(heading, quote=False)}</h3>{changes}")
+        if len(parts) == PN_MAX_RELEASES:
+            break
+    if not parts:
+        return None
     title_m = _PN_TITLE_RE.search(raw_html)
     title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
     date_m = _PN_DATE_RE.search(raw_html)
@@ -2215,7 +2279,7 @@ def _parse_pn_article(raw_html: str):
             ts = int(datetime.datetime.fromisoformat(date_m.group(1)).timestamp())
         except Exception:
             ts = 0
-    return {"title": title, "html": _sanitize_html(body_raw), "date": ts}
+    return {"title": title, "html": _sanitize_html("".join(parts)), "date": ts}
 
 
 def _nintendo_richtext_to_html(node) -> str:
@@ -2642,6 +2706,7 @@ class Plugin:
             "external": True,
             "feedlabel": "Perfectly Nintendo",
             "author": "",
+            "excerpt": True,
         }
         return {"ok": True, "items": [item]}
 

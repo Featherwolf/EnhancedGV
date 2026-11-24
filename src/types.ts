@@ -169,6 +169,8 @@ export interface NewsItem {
   external: boolean;
   feedlabel: string;
   author: string;
+  /* `html` holds only part of the article at `url` (perfectly-nintendo.com: its latest release). */
+  excerpt?: boolean;
 }
 
 export interface News {
