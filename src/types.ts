@@ -183,7 +183,13 @@ export interface DeckCompat {
   category: number; // 0 Unknown / 1 Unsupported / 2 Playable / 3 Verified
   label: string;
   steamos_category: number | null;
-  notes: { display_type: number; text: string }[];
+  notes: {
+    display_type: number;
+    text: string; // English fallback; see `token`
+    // Normalized loc_token (e.g. "DefaultControllerConfigFullySupported"),
+    // for an i18n lookup (deck.note.<token>) — empty if Steam sent none.
+    token?: string;
+  }[];
   blog_url: string;
 }
 
@@ -225,6 +231,10 @@ export interface PluginSettings {
   expanded?: ExpandedToggles;
   language: string;
   country: string;
+  // UI language ("auto" | "en" | "pt-BR"): the plugin's OWN interface text —
+  // independent of `language` above, which is the Steam STORE CONTENT
+  // language (description/reviews/news). See src/i18n/index.ts.
+  uiLanguage?: string;
   beta?: boolean; // opt in to pre-release update checks
   // The user's own IGDB (Twitch application) credentials, optional. They add
   // IGDB's title search for non-Steam games. Stored on this device only.

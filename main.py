@@ -1688,6 +1688,15 @@ def _normalize_deck(data: dict) -> dict:
             "text": DECK_LOC_TOKENS.get(
                 tok, re.sub(r"(?<!^)(?=[A-Z])", " ",
                             tok.split("_")[-1]) if tok else ""),
+            # Normalized key for the frontend's i18n lookup (deck.note.<token>);
+            # unprefixed, so it's exactly the one DECK_LOC_TOKENS also matches
+            # on, and falls back to "text" above (English) when neither
+            # dictionary — ours or the plugin's i18n one — has that token.
+            # Steam's own ajaxgetdeckappcompatibilityreport NEVER localizes
+            # these (verified live: l=brazilian and l=english return
+            # byte-identical loc_token strings), so only our own translation
+            # can localize this text.
+            "token": tok.split("_")[-1] if tok else "",
         })
     return {
         "category": cat,
@@ -3134,6 +3143,11 @@ class Plugin:
             # An explicit language name here would be a manual override.
             "language": "auto",
             "country": "auto",
+            # UI language ("auto" | "en" | "pt-BR"): the plugin's own interface
+            # text (settings, section titles, empty-state messages) — separate
+            # from "language" above, which is the Steam STORE CONTENT language.
+            # "auto" follows the same Steam-locale detection as "language".
+            "uiLanguage": "auto",
             # Opt in to pre-release "beta" builds in the update check. Default off
             # so risky test builds never reach stable users.
             "beta": False,

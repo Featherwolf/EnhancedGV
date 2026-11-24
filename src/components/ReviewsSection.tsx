@@ -7,20 +7,23 @@ import type { Reviews, ReviewItem, ReviewScore, PluginSettings } from "../types"
 import { FOCUS_SCROLL_MARGIN, CENTER_ON_FOCUS } from "../focus";
 import { ReviewModal, deckNote, postedDate, helpfulText } from "./ReviewModal";
 import { resolveLanguage } from "../lang";
+import { useTranslation } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 // A single review: a real focus stop (has onActivate) so the D-pad can land on
 // it while scrolling, and A opens the full text in a popup — the list keeps the
 // 5-line clamp so it stays skimmable.
 function ReviewCard({ review }: { review: ReviewItem }) {
+  const { t, language } = useTranslation();
   const [focused, setFocused] = useState(false);
-  const deck = deckNote(review);
-  const posted = postedDate(review);
-  const helpful = helpfulText(review);
+  const deck = deckNote(review, t);
+  const posted = postedDate(review, language);
+  const helpful = helpfulText(review, t);
   return (
     <Focusable
       {...CENTER_ON_FOCUS}
       onActivate={() => showModal(<ReviewModal review={review} />)}
-      onOKActionDescription="Read full review"
+      onOKActionDescription={t("reviews.readFullAction")}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       style={{
@@ -49,11 +52,11 @@ function ReviewCard({ review }: { review: ReviewItem }) {
         ) : (
           <FaThumbsDown size={11} color="#c15b58" />
         )}
-        <span>{review.voted_up ? "Recommended" : "Not recommended"}</span>
+        <span>{review.voted_up ? t("reviews.recommended") : t("reviews.notRecommended")}</span>
         <span>·</span>
-        <span>{review.playtime_hours}h played</span>
+        <span>{t("reviews.hoursPlayed", { hours: review.playtime_hours })}</span>
         {deck && <span>· {deck}</span>}
-        {review.early_access && <span>· Early Access</span>}
+        {review.early_access && <span>· {t("reviews.earlyAccess")}</span>}
         {posted && <span style={{ marginLeft: "auto" }}>{posted}</span>}
       </div>
       <div
@@ -72,7 +75,7 @@ function ReviewCard({ review }: { review: ReviewItem }) {
         <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{helpful}</div>
       )}
       {focused && (
-        <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>▸ Press A to read the full review</div>
+        <div style={{ fontSize: 11, opacity: 0.6, marginTop: 4 }}>{t("reviews.readFullHint")}</div>
       )}
     </Focusable>
   );
@@ -86,11 +89,19 @@ function pct(pos: number, total: number): number {
 // One store-page-style score row. When Steam rates the reviews (score 1-9) the
 // row adds the positive share and count; with too few to rate, Steam's own
 // text ("3 user reviews") already carries the count.
-function ScoreRow({ label, s }: { label: string; s: ReviewScore }) {
+function ScoreRow({
+  label,
+  s,
+  t,
+}: {
+  label: string;
+  s: ReviewScore;
+  t: (k: TranslationKey) => string;
+}) {
   return (
     <div style={{ display: "flex", gap: 8, fontSize: 14 }}>
       <span style={{ opacity: 0.6, minWidth: 150 }}>{label}</span>
-      <span style={{ fontWeight: 600 }}>{s.desc || "No score"}</span>
+      <span style={{ fontWeight: 600 }}>{s.desc || t("reviews.noScore")}</span>
       {(s.score ?? 0) > 0 && (
         <span style={{ opacity: 0.6 }}>
           ({pct(s.total_positive, s.total_reviews)}% of{" "}
@@ -101,27 +112,24 @@ function ScoreRow({ label, s }: { label: string; s: ReviewScore }) {
   );
 }
 
-// Steam's language codes that don't read as names once capitalized.
-const LANG_NAMES: Record<string, string> = {
-  schinese: "Simplified Chinese",
-  tchinese: "Traditional Chinese",
-  koreana: "Korean",
-  latam: "Latin American Spanish",
-  brazilian: "Brazilian Portuguese",
-};
-
-function langName(code: string): string {
-  return LANG_NAMES[code] ?? code.charAt(0).toUpperCase() + code.slice(1);
+// reviews.lang is a Steam store-API language SLUG ("brazilian", "schinese", …
+// — see STORE_LANGS in lang.ts), not fit to show as-is; look up its display
+// name, falling back to a capitalized version of the code for anything added
+// to STORE_LANGS without a matching lang.* key yet.
+function langDisplayName(code: string, t: (k: TranslationKey) => string): string {
+  const key = `lang.${code.toLowerCase()}` as TranslationKey;
+  const translated = t(key);
+  return translated !== key ? translated : code.charAt(0).toUpperCase() + code.slice(1);
 }
 
 // No "Recent" chip: every list is the newest reviews already, so a 30-day
 // sub-filter would show a near-identical subset (user feedback).
 type Chip = "all" | "positive" | "negative" | "deck";
-const CHIPS: { key: Chip; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "positive", label: "Positive" },
-  { key: "negative", label: "Negative" },
-  { key: "deck", label: "Steam Deck" },
+const CHIP_KEYS: { key: Chip; labelKey: TranslationKey }[] = [
+  { key: "all", labelKey: "reviews.chipAll" },
+  { key: "positive", labelKey: "reviews.chipPositive" },
+  { key: "negative", labelKey: "reviews.chipNegative" },
+  { key: "deck", labelKey: "reviews.chipDeck" },
 ];
 
 // Module cache: filtered lists per appid so chip flips are instant on revisits.
@@ -150,6 +158,7 @@ export function ReviewsSection({
   appid: number;
   settings?: PluginSettings;
 }) {
+  const { t } = useTranslation();
   const [chip, setChip] = useState<Chip>("all");
   const [filtered, setFiltered] = useState<ReviewItem[] | null>(null);
   const [loadingChip, setLoadingChip] = useState(false);
@@ -198,7 +207,7 @@ export function ReviewsSection({
   }, [reviews, chip, filtered]);
 
   if (!reviews || !reviews.ok) {
-    return <div style={{ opacity: 0.6, fontSize: 13 }}>No reviews available.</div>;
+    return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("reviews.none")}</div>;
   }
 
   const s = reviews.summary;
@@ -211,11 +220,21 @@ export function ReviewsSection({
     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
       {/* Store-page style score rows */}
       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        <ScoreRow label="All Reviews:" s={s} />
-        {r && r.total_reviews > 0 && <ScoreRow label="Recent Reviews:" s={r} />}
-        {d && d.total_reviews > 0 && <ScoreRow label="Steam Deck Players:" s={d} />}
+        <ScoreRow label={t("reviews.all")} s={s} t={t} />
+        {r && r.total_reviews > 0 && (
+          <ScoreRow label={t("reviews.recent")} s={r} t={t} />
+        )}
+        {d && d.total_reviews > 0 && (
+          <ScoreRow label={t("reviews.deckPlayers")} s={d} t={t} />
+        )}
         {ls && ls.total_reviews > 0 && ls.total_reviews !== s.total_reviews && (
-          <ScoreRow label={`${langName(reviews.lang ?? "english")} Reviews:`} s={ls} />
+          <ScoreRow
+            label={t("reviews.langReviews", {
+              lang: langDisplayName(reviews.lang ?? "english", t),
+            })}
+            s={ls}
+            t={t}
+          />
         )}
         {s.total_reviews > 0 && (
           <div
@@ -232,8 +251,10 @@ export function ReviewsSection({
         )}
         {s.total_reviews > 0 && (
           <div style={{ fontSize: 12, opacity: 0.7 }}>
-            {s.total_positive.toLocaleString()} up / {s.total_negative.toLocaleString()}{" "}
-            down
+            {t("reviews.summaryLine", {
+              pos: s.total_positive.toLocaleString(),
+              neg: s.total_negative.toLocaleString(),
+            })}
           </div>
         )}
       </div>
@@ -244,7 +265,7 @@ export function ReviewsSection({
         flow-children="horizontal"
         style={{ display: "flex", gap: 6 }}
       >
-        {CHIPS.map((c) => (
+        {CHIP_KEYS.map((c) => (
           <DialogButton
             key={c.key}
             {...CENTER_ON_FOCUS}
@@ -262,7 +283,7 @@ export function ReviewsSection({
               opacity: chip === c.key ? 1 : 0.7,
             }}
           >
-            {c.label}
+            {t(c.labelKey)}
           </DialogButton>
         ))}
       </Focusable>
@@ -270,11 +291,11 @@ export function ReviewsSection({
       {/* Review cards, newest first */}
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {loadingChip && (
-          <div style={{ opacity: 0.6, fontSize: 13 }}>Loading reviews…</div>
+          <div style={{ opacity: 0.6, fontSize: 13 }}>{t("reviews.loading")}</div>
         )}
         {!loadingChip && visibleList.length === 0 && (
           <div style={{ opacity: 0.6, fontSize: 13 }}>
-            No reviews for this filter.
+            {t("reviews.emptyFilter")}
           </div>
         )}
         {!loadingChip &&

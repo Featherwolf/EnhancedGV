@@ -1,4 +1,5 @@
 import { FocusableBlocks } from "./FocusableBlocks";
+import { useTranslation } from "../i18n";
 
 interface Props {
   aboutHtml: string;
@@ -19,6 +20,7 @@ const HTML_STYLE = `
 // scrolls through it in place (the page follows focus) without needing the QAM
 // modal or right-stick scrolling.
 export function DescriptionSection({ aboutHtml, short }: Props) {
+  const { t } = useTranslation();
   // `aboutHtml` has been through the backend's allowlist sanitizer. `short` has
   // NOT — it is a plain-text field, passed through verbatim — so it must never
   // reach FocusableBlocks, whose only sink is dangerouslySetInnerHTML. Using it
@@ -34,5 +36,5 @@ export function DescriptionSection({ aboutHtml, short }: Props) {
   if (short) {
     return <div style={{ fontSize: 13.5, lineHeight: 1.5 }}>{short}</div>;
   }
-  return <div style={{ opacity: 0.6, fontSize: 13 }}>No description available.</div>;
+  return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("description.none")}</div>;
 }
