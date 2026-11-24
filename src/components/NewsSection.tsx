@@ -77,7 +77,11 @@ function NewsModal({
 export function NewsSection({ news }: { news: News }) {
   const { t } = useTranslation();
   if (!news || !news.ok || news.items.length === 0) {
-    return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("news.none")}</div>;
+    return (
+      <div style={{ opacity: 0.6, fontSize: 13 }}>
+        {news?.transient ? t("news.stillLoading") : t("news.none")}
+      </div>
+    );
   }
 
   return (

@@ -326,14 +326,17 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
                          f"the endpoint may have moved") from None
 
 
-def _http_get_text(url: str, headers: dict = None) -> str:
-    """Like _http_get_json, but for an HTML page (Nintendo's product/news
-    pages) rather than a JSON API — no json.loads at the end."""
-    hdrs = {"User-Agent": USER_AGENT}
-    if headers:
-        hdrs.update(headers)
-    req = urllib.request.Request(url, headers=hdrs)
-    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=_SSL_CTX) as resp:
+def _http_get_text(url: str, hosts) -> str:
+    """An HTML page (Nintendo's product/news pages, perfectly-nintendo.com)
+    rather than a JSON API. Only ever fetched from, and redirected within,
+    https on `hosts` (see _pinned_url)."""
+    if not _pinned_url(url, hosts):
+        raise ValueError(f"refusing to fetch {urllib.parse.urlsplit(url).netloc or url!r}: "
+                         f"not a pinned host")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with _pinned_opener(hosts).open(req, timeout=REQUEST_TIMEOUT) as resp:
+        if not _pinned_url(resp.geturl(), hosts):
+            raise ValueError("the page ended somewhere other than its pinned site")
         raw = resp.read(MAX_RESPONSE_BYTES + 1)
     if len(raw) > MAX_RESPONSE_BYTES:
         raise ValueError("response exceeds the size limit")
@@ -888,18 +891,39 @@ def _pinned_url(u, hosts) -> str:
     page's own HTML/JSON rather than built from a constant we wrote (e.g. an
     article href from a perfectly-nintendo.com search result, or a body URL
     from nintendo.com's own __NEXT_DATA__): that source could, by compromise,
-    mistake or a future redesign, hand back a link to any host, and urlopen
-    follows a redirect anywhere regardless. Pins it the same way
-    _github_url/_steam_media_url already do for their own fetches.
+    mistake or a future redesign, hand back a link to any host. Redirects are
+    pinned the same way, by _PinnedRedirect.
     """
     s = _plain_url(u)
     try:
         parts = urllib.parse.urlsplit(s)
+        port = parts.port
     except Exception:
         return ""
-    if parts.scheme != "https" or parts.hostname is None:
+    if (parts.scheme != "https" or port not in (None, 443)
+            or parts.username or parts.password or parts.hostname is None):
         return ""
     return s if parts.hostname.lower() in hosts else ""
+
+
+class _PinnedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to https on the same pinned hosts (the default
+    opener follows one anywhere)."""
+
+    def __init__(self, hosts):
+        super().__init__()
+        self._hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _pinned_url(newurl, self._hosts):
+            raise ValueError(f"{urllib.parse.urlsplit(req.full_url).netloc} redirected "
+                             f"outside its pinned site")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _pinned_opener(hosts):
+    return urllib.request.build_opener(
+        _PinnedRedirect(hosts), urllib.request.HTTPSHandler(context=_SSL_CTX))
 
 
 # --------------------------------------------------------------------------- #
@@ -2041,6 +2065,9 @@ NINTENDO_PRODUCT_BASE = "https://www.nintendo.com/us/store/products"
 # Capped: a prolific title (Mario Kart 8 Deluxe) still only has a handful of
 # genuine news entries, and this trades one extra HTTP request per item.
 NINTENDO_NEWS_MAX = 8
+# Seconds get_all_provider waits for a Switch update-history lookup before
+# answering without it (see _switch_news_for).
+SWITCH_NEWS_WAIT = 5
 _NEXT_DATA_RE = re.compile(
     r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
 
@@ -2106,11 +2133,6 @@ def _news_articles_from_next_data(data: dict) -> list:
 # (_parse_pn_search), not a constant we built — see _pinned_url.
 _PN_HOSTS = frozenset(("www.perfectly-nintendo.com", "perfectly-nintendo.com"))
 PN_BASE = "https://www.perfectly-nintendo.com"
-# A browser-shaped UA, used instead of the module-wide USER_AGENT purely by
-# convention for a third-party site — doesn't actually move the failure rate
-# below (that's the WAF flakiness, not UA sniffing).
-PN_USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                 "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 # This host's TLS handshake intermittently times out — confirmed live, ~30%
 # of requests, independent of UA, spaced seconds apart, immediately followed
 # by a clean success (looks like a WAF/edge node that occasionally just
@@ -2139,7 +2161,9 @@ def _pn_http_get_text(url: str) -> str:
     last_exc = None
     for attempt in range(PN_RETRY_ATTEMPTS):
         try:
-            return _http_get_text(url, {"User-Agent": PN_USER_AGENT})
+            return _http_get_text(url, _PN_HOSTS)
+        except ValueError:
+            raise  # a refused host or an oversized page won't change on retry
         except Exception as exc:
             last_exc = exc
             if attempt + 1 < PN_RETRY_ATTEMPTS:
@@ -2639,7 +2663,7 @@ class Plugin:
             return {"html": ""}
         try:
             loop = asyncio.get_running_loop()
-            raw_html = await loop.run_in_executor(None, _http_get_text, url)
+            raw_html = await loop.run_in_executor(None, _http_get_text, url, _NINTENDO_HOSTS)
         except Exception as exc:
             decky.logger.warning(f"switch article fetch failed ({url}): {exc}")
             return {"html": ""}
@@ -2723,7 +2747,7 @@ class Plugin:
         for cand in candidates:
             url = f"{NINTENDO_PRODUCT_BASE}/{cand}/"
             try:
-                page_html = await loop.run_in_executor(None, _http_get_text, url)
+                page_html = await loop.run_in_executor(None, _http_get_text, url, _NINTENDO_HOSTS)
                 break
             except urllib.error.HTTPError as exc:
                 if exc.code != 404:
@@ -3233,24 +3257,39 @@ class Plugin:
         ROMs matched through the exact same Hasheous/IGDB path have no
         equivalent to try).
 
-        get_all_provider awaits this AFTER appdetails/cover/screenshots are
-        already in hand, so a slow lookup here must not sit on top of that —
-        the whole response (appdetails included) would otherwise wait on it,
-        past the frontend's own call deadline. Capped well under that: a
-        single perfectly-nintendo.com WAF drop-and-retry round (see
-        PN_RETRY_ATTEMPTS/PN_RETRY_DELAY) is a couple of seconds in the common
-        case, so this only bites the rare worst case (several drops in a
-        row), and only drops the news section for that one visit — the retry
-        logic itself, and its cache, are untouched for the next one.
+        get_all_provider awaits this after the cover and description are
+        already in hand, so it waits only SWITCH_NEWS_WAIT for the lookup. A
+        slower one (a perfectly-nintendo.com connection drop and retry alone
+        takes most of 20 s) keeps running in the background under shield and
+        fills the cache; the result says so with `transient`, which makes the
+        frontend ask again a minute later instead of keeping the answer for
+        half an hour. One lookup per title at a time: a revisit while it runs
+        waits on the same task.
         """
         if not _is_switch_platform(appdetails):
             return {"ok": False, "error": "update history is Steam-only"}
         title = str(appdetails.get("name") or "")
+        key = _nintendo_slug(title)
+        if not hasattr(self, "_switch_news_tasks"):
+            self._switch_news_tasks = {}
+        task = self._switch_news_tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.ensure_future(self.get_switch_news(title))
+            self._switch_news_tasks[key] = task
+
+            def _settled(t, key=key):
+                if self._switch_news_tasks.get(key) is t:
+                    del self._switch_news_tasks[key]
+                if not t.cancelled() and t.exception() is not None:
+                    decky.logger.warning(f"switch update history failed ({title}): {t.exception()}")
+
+            task.add_done_callback(_settled)
         try:
-            return await asyncio.wait_for(self.get_switch_news(title), timeout=20)
+            return await asyncio.wait_for(asyncio.shield(task), timeout=SWITCH_NEWS_WAIT)
         except asyncio.TimeoutError:
-            decky.logger.warning(f"switch update history timed out ({title})")
-            return {"ok": False, "error": "update history timed out"}
+            return {"ok": False, "error": "update history is still loading", "transient": True}
+        except Exception as exc:
+            return {"ok": False, "error": f"update history failed: {exc}"}
 
     async def get_all_provider(self, provider, id, lang: str = "english",
                                cc: str = "us"):

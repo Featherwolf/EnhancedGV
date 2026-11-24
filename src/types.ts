@@ -176,6 +176,9 @@ export interface NewsItem {
 export interface News {
   ok: boolean;
   error?: string;
+  /* A Switch update-history lookup still running in the background: asking
+     again shortly gets the result. */
+  transient?: boolean;
   items: NewsItem[];
 }
 

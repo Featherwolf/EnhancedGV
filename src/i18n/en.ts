@@ -277,6 +277,7 @@ export const en = {
   // Update history (news)
   "news.none": "No recent updates.",
   "news.viewOnline": "View online",
+  "news.stillLoading": "Still fetching the update history. Open this game again in a minute.",
   "news.readFullArticle": "Read the full article on {site}",
 
   // Media gallery (button glyphs A/B/X and arrows are literal gamepad

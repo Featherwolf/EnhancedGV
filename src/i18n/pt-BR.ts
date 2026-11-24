@@ -258,6 +258,7 @@ export const ptBR: Record<TranslationKey, string> = {
 
   "news.none": "Nenhuma atualização recente.",
   "news.viewOnline": "Ver online",
+  "news.stillLoading": "Ainda buscando o histórico de atualizações. Abra este jogo de novo em um minuto.",
   "news.readFullArticle": "Ler o artigo completo em {site}",
 
   "media.none": "Nenhuma mídia disponível.",
