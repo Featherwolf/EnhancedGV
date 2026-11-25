@@ -120,7 +120,7 @@ if LIVE:
             ("The Legend of Zelda: Link's Awakening", "Nintendo Switch",
              "The Legend of Zelda: Link's Awakening", "2019"),
             ("Super Mario World", "Super Nintendo Entertainment System", "Super Mario World", "1990"),
-            ("Pokemon Emerald", "Game Boy Advance", "Pokémon Emerald", "2004")):
+            ("Pokemon Emerald", "Game Boy Advance", "Pokémon Emerald Version", "2004")):
         t0 = time.monotonic()
         r = run(P._hasheous_igdb_resolve(title, system))
         ms = int((time.monotonic() - t0) * 1000)
