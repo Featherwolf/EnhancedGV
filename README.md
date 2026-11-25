@@ -235,12 +235,16 @@ description, genres, developer/publisher, platform and a logo.
 
 ### IGDB credentials (optional)
 
-Not needed for artwork in release builds. Your own credentials add **IGDB's
-title search**, which finds modern console games Hasheous doesn't list (Hasheous
-indexes ROM dumps, so Breath of the Wild or Animal Crossing come back empty or as
-rom hacks), and fetch artwork straight from IGDB. When saved, they're used in
-place of the app key. Free and self-serve; about five minutes. IGDB is owned by
-Twitch and uses Twitch developer accounts, so the signup happens there.
+Not needed in release builds, where EnhancedGV's Hasheous app answers first for
+both artwork and finding games: with the game's system known, it searches IGDB
+itself, which finds the modern console games Hasheous' ROM index lacks (Kirby
+and the Forgotten Land, Metroid Dread). Your own credentials are only the
+fallback. They're used when the app can't search (it searches one system at a
+time, so a game whose system isn't detected), finds no exact title, fails, or
+doesn't know the game. In a build without the app's key (a local build or a
+fork) they're the only way to IGDB. Free and self-serve; about five minutes.
+IGDB is owned by Twitch and uses Twitch developer accounts, so the signup
+happens there.
 
 *On a computer:*
 

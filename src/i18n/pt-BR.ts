@@ -39,6 +39,7 @@ export const ptBR: Record<TranslationKey, string> = {
   "settings.couldNotClear": "Não foi possível limpar: {error}",
   "settings.sourceYourIgdb": "Sua conta IGDB",
   "settings.sourceHasheousApp": "App Hasheous do EnhancedGV",
+  "settings.sourceHasheousAppThenYours": "App Hasheous do EnhancedGV, depois sua conta IGDB",
   "settings.sourceHasheous": "Hasheous (descrição e logo)",
   "settings.artworkFrom": "Imagens de",
   "settings.testing": "Testando…",
@@ -49,7 +50,7 @@ export const ptBR: Record<TranslationKey, string> = {
   "settings.igdbHintSaved":
     "Credenciais salvas permanecem após atualizações e reinstalações. Desinstalar o plugin não as remove — pressione Remover credenciais primeiro se quiser tirá-las deste dispositivo.",
   "settings.igdbHintAppKey":
-    "Opcional. Suas próprias credenciais adicionam a busca por título do IGDB, que encontra jogos de console que o Hasheous não lista. São gratuitas em dev.twitch.tv; o README tem o passo a passo.",
+    "Opcional, e só como reserva: o app Hasheous do EnhancedGV já encontra jogos no IGDB quando consegue identificar o sistema deles. Sua própria conta é usada quando ele não consegue, ou quando o Hasheous não responde. São gratuitas em dev.twitch.tv; o README tem o passo a passo.",
   "settings.igdbHintNone":
     "Opcional. Sem elas você recebe a descrição e o logo do Hasheous. São gratuitas em dev.twitch.tv; o README tem o passo a passo.",
   "settings.igdbClientId": "IGDB Client ID",

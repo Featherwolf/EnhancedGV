@@ -5,8 +5,7 @@
 - **Artwork for non-Steam games, with no setup.** Games matched through
   Hasheous now get IGDB's cover art, screenshots, genres, developers and
   release dates through EnhancedGV's own Hasheous app. IGDB credentials are now
-  optional: they add IGDB's title search, which finds modern console games
-  Hasheous doesn't list.
+  optional, and only a fallback: the app answers first.
 - **Updates from Quick Access.** When a new version is out, press **Update**
   in Quick Access and confirm in Decky's dialog. The plugin reloads without a
   Steam restart. **Install another version** offers every release from 0.20.0
@@ -30,6 +29,11 @@
   a Switch game is no longer matched to a Game Boy dump, a rom hack or a
   soundtrack. Automatic matches made before are checked again once; ones you
   set yourself are left alone. Quick Access → This game shows the system.
+- **Switch games found without an IGDB account.** With the system known,
+  EnhancedGV's Hasheous app searches IGDB itself, so games Hasheous' ROM index
+  lacks (Kirby and the Forgotten Land, Metroid Dread) are found with no setup.
+  A saved IGDB account is now only the fallback, for finding games and for
+  their artwork.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is

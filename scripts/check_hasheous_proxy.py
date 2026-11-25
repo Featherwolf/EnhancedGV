@@ -19,7 +19,7 @@ With --live and HASHEOUS_CLIENT_API_KEY set (CI passes the secret to a separate,
 non-blocking step), it also asks the real proxy for a known game and prints the
 reply's shape, never the key. Without the variable, --live skips.
 """
-import asyncio, importlib.util, io, json, logging, os, sys, tempfile, types, urllib.error, urllib.parse
+import asyncio, importlib.util, io, json, logging, os, re, sys, tempfile, time, types, urllib.error, urllib.parse
 
 LIVE = "--live" in sys.argv
 LIVE_KEY = os.environ.get("HASHEOUS_CLIENT_API_KEY", "").strip()
@@ -101,6 +101,42 @@ if LIVE:
     check("and a developer or publisher", bool(delta.get("developers") or delta.get("publishers")),
           (delta.get("developers"), delta.get("publishers")))
     check("and a release date", bool(delta.get("release_date")), delta.get("release_date"))
+
+    print("== live: IGDB's own search through the app, per system (with timings) ==")
+    try:
+        t0 = time.monotonic()
+        raw = main._hasheous_proxy_get_sync(
+            "Search/Platform/130/Game", {"SearchString": "Kirby and the Forgotten Land"}, LIVE_KEY)
+        ms = int((time.monotonic() - t0) * 1000)
+        first = raw[0] if isinstance(raw, list) and raw else {}
+        print(f"     raw search reply: {type(raw).__name__} of {len(raw) if isinstance(raw, list) else '?'}"
+              f" in {ms} ms; first item's keys: {sorted(first)[:14] if isinstance(first, dict) else '-'}")
+    except urllib.error.HTTPError as exc:
+        check("the search endpoint answers", False, f"HTTP {exc.code}")
+    P = main.Plugin()
+    for title, system, want, year in (
+            ("Kirby and the Forgotten Land", "Nintendo Switch", "Kirby and the Forgotten Land", "2022"),
+            ("Metroid Dread", "Nintendo Switch", "Metroid Dread", "2021"),
+            ("The Legend of Zelda: Link's Awakening", "Nintendo Switch",
+             "The Legend of Zelda: Link's Awakening", "2019"),
+            ("Super Mario World", "Super Nintendo Entertainment System", "Super Mario World", "1990"),
+            ("Pokemon Emerald", "Game Boy Advance", "Pokémon Emerald", "2004")):
+        t0 = time.monotonic()
+        r = run(P._hasheous_igdb_resolve(title, system))
+        ms = int((time.monotonic() - t0) * 1000)
+        check(f"{title!r} on {system}: {r.get('name')!r} ({r.get('year')}), IGDB {r.get('id')}, {ms} ms",
+              r.get("ok") is True and main._norm_title(r.get("name")) == main._norm_title(want)
+              and r.get("year") == year, r)
+    t0 = time.monotonic()
+    found = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", "Nintendo Switch"))
+    print(f"     the same search again (Hasheous' cache): {int((time.monotonic() - t0) * 1000)} ms")
+    if found.get("ok"):
+        t0 = time.monotonic()
+        game = run(P._hasheous_igdb_game(int(found["id"]), LIVE_KEY))
+        check(f"details for it through the app, companies named: "
+              f"{int((time.monotonic() - t0) * 1000)} ms",
+              isinstance(game, dict) and bool(game.get("involved_companies")),
+              (game or {}).get("involved_companies") if isinstance(game, dict) else game)
     check("the key is in no log line", LIVE_KEY not in LOG.getvalue())
     print(f"\n{ok} passed, {fail} failed")
     sys.exit(1 if fail else 0)
@@ -211,21 +247,145 @@ on_disk = open(main.SETTINGS_FILE, encoding="utf-8").read() if os.path.exists(ma
 check("a report, never saved as a setting", "hasheousAppKey" not in on_disk)
 check("no cache write holds the key", all(KEY not in json.dumps(d) for _k, _i, d in writes))
 
-print("== the user's own IGDB credentials win; with neither, nothing is asked ==")
-sent.clear()
+print("== EnhancedGV's Hasheous app answers first; the user's own account is the fallback ==")
+asked_own = []
 async def creds(self):
     return ("cid", "tok")
 async def own_game(self, igdb_id, cid, token):
+    asked_own.append(igdb_id)
     return {"id": igdb_id, "name": "From IGDB itself", "cover": {"image_id": "own"}}
 main.Plugin._igdb_ready = creds
 main.Plugin._igdb_game = own_game
+sent.clear()
 d = run(P._igdb_delta(5))
-check("saved credentials are used", d.get("name") == "From IGDB itself", d)
+check("with both saved, the app answers", d.get("name") == "Super Metroid", d.get("name"))
+check("and the user's account isn't asked", not asked_own, asked_own)
+main._IGDB_OPENER.open = rejecting_open
+d = run(P._igdb_delta(7))
+check("the app rejected: the user's account answers",
+      d.get("name") == "From IGDB itself" and asked_own == [7], d)
+def empty_open(req, timeout=None):
+    sent.append(req)
+    return Reply(b"{}")
+main._IGDB_OPENER.open = empty_open
+asked_own.clear()
+d = run(P._igdb_delta(8))
+check("the app knows no such game: the user's account answers",
+      d.get("name") == "From IGDB itself" and asked_own == [8], d)
+main._IGDB_OPENER.open = fake_open
+put_key(None)
+sent.clear()
+d = run(P._igdb_delta(9))
+check("no app key: the user's account answers", d.get("name") == "From IGDB itself", d)
 check("and Hasheous isn't asked", not sent, [r.full_url for r in sent])
 main.Plugin._igdb_ready = no_creds
-put_key(None)
+sent.clear()
 check("no credentials and no key: no data", run(P._igdb_delta(6)) == {})
 check("and no request", not sent, [r.full_url for r in sent])
+put_key(KEY)
+
+print("== company names cost one extra round trip, not one each ==")
+inflight, peak = [0], [0]
+def slow_open(req, timeout=None):
+    if "/Company?" in req.full_url:
+        inflight[0] += 1
+        peak[0] = max(peak[0], inflight[0])
+        time.sleep(0.2)
+        inflight[0] -= 1
+    return fake_open(req, timeout)
+main._IGDB_OPENER.open = slow_open
+sent.clear()
+game = run(P._hasheous_igdb_game(1103, KEY))
+check("both credited companies looked up at the same time", peak[0] == 2, peak[0])
+check("developers still first, names unchanged",
+      [(_ic["company"]["name"], bool(_ic.get("developer"))) for _ic in game["involved_companies"]]
+      == [("Nintendo R&D1", True), ("Nintendo", False)], game["involved_companies"])
+main._IGDB_OPENER.open = fake_open
+
+print("== IGDB's own search through the app: per system, sanitised, bounded ==")
+SEARCH = {  # (IGDB platform id, SearchString) -> the proxy's reply
+    (130, "Kirby and the Forgotten Land"): [
+        {"id": 9001, "name": "Kirby and the Forgotten Land: Expansion Pass", "game_type": 1,
+         "first_release_date": "2022-03-25T00:00:00+00:00"},
+        {"id": 145, "name": "Kirby and the Forgotten Land", "game_type": 0,
+         "first_release_date": "2022-03-25T00:00:00+00:00"}],
+    (130, "The Legend of Zelda: Link's Awakening"): [
+        {"id": 115289, "name": "The Legend of Zelda: Link's Awakening", "game_type": {"id": 8},
+         "first_release_date": 1569456000}],
+    (99, "Zelda no Densetsu"): [{"id": 5555, "name": "Zelda no Densetsu", "category": 0}],
+}
+SEARCH_PATH = re.compile(r"^/api/v1/MetadataProxy/IGDB/Search/Platform/(\d+)/Game$")
+def search_open(req, timeout=None):
+    sent.append(req)
+    parts = urllib.parse.urlsplit(req.full_url)
+    m = SEARCH_PATH.match(parts.path)
+    if not m:
+        raise AssertionError(f"unexpected request {req.full_url}")
+    q = dict(urllib.parse.parse_qsl(parts.query))
+    hit = SEARCH.get((int(m.group(1)), q.get("SearchString", "")))
+    if hit is None:   # how Hasheous says "no games found"
+        raise urllib.error.HTTPError(req.full_url, 404, "Not Found", None, None)
+    return Reply(json.dumps(hit).encode())
+def searched():
+    return [(urllib.parse.urlsplit(r.full_url).path,
+             dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(r.full_url).query)).get("SearchString"))
+            for r in sent]
+main._IGDB_OPENER.open = search_open
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", "Nintendo Switch"))
+check("a Switch game Hasheous' ROM index lacks is found on IGDB",
+      r.get("ok") is True and r.get("provider") == "igdb" and r.get("exact") is True, r)
+check("...the game itself, not the expansion pass listed first", r.get("id") == 145, r.get("id"))
+check("...with its year and system", (r.get("year"), r.get("platform")) == ("2022", "Nintendo Switch"), r)
+check("...in one search of IGDB's Switch platform (130)",
+      searched() == [("/api/v1/MetadataProxy/IGDB/Search/Platform/130/Game", "Kirby and the Forgotten Land")],
+      searched())
+for q in sent:
+    parts = urllib.parse.urlsplit(q.full_url)
+    check("search goes to https://hasheous.org with the key in its header only",
+          (parts.scheme, parts.hostname) == ("https", "hasheous.org")
+          and q.get_header("X-client-api-key") == KEY and KEY not in q.full_url)
+SEARCH[(130, "Kirby Forgotten Land")] = SEARCH[(130, "Kirby and the Forgotten Land")]
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Kirby Forgotten Land", "Nintendo Switch"))
+check("no exact title: the game still beats the expansion pass IGDB listed first",
+      r.get("ok") is True and r.get("id") == 145 and r.get("exact") is False, r)
+sent.clear()
+r = run(P._hasheous_igdb_resolve("The Legend of Zelda: Link's Awakening [0100D2D013B70000] (v1.0.2)",
+                                 "Nintendo Switch"))
+check("bracketed tags are dropped from the search, and a remake counts as a game",
+      r.get("ok") is True and r.get("id") == 115289 and r.get("year") == "2019"
+      and searched()[0][1] == "The Legend of Zelda: Link's Awakening", (r, searched()))
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Zelda no Densetsu", "Nintendo Entertainment System"))
+check("NES: nothing on IGDB's NES (a 404), found on its Famicom",
+      r.get("ok") is True and r.get("id") == 5555
+      and [p.rsplit("/", 2)[-2] for p, _q in searched()] == ["18", "99"], (r, searched()))
+sent.clear()
+run(P._hasheous_igdb_resolve('Evil "game"; fields *; where id = 1', "Nintendo Switch"))
+q = searched()[0][1] if sent else ""
+check("quotes, backslashes and semicolons never reach Hasheous' IGDB query",
+      q and not any(c in q for c in '";\\'), q)
+sent.clear()
+run(P._hasheous_igdb_resolve("Some Game", "Game Boy|Game Boy Color|Game Boy Advance|Nintendo DS"))
+check(f"at most {main.HASHEOUS_IGDB_MAX_SEARCHES} searches per game",
+      len(sent) == main.HASHEOUS_IGDB_MAX_SEARCHES, len(sent))
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", ""))
+check("no system: no search, no request", r.get("ok") is False and not sent, (r, searched()))
+put_key(None)
+r = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", "Nintendo Switch"))
+check("no app key: no search, no request", r.get("ok") is False and not sent, (r, searched()))
+put_key(KEY)
+def broken_open(req, timeout=None):
+    sent.append(req)
+    raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", None, None)
+main._IGDB_OPENER.open = broken_open
+LOG.truncate(0); LOG.seek(0)
+r = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", "Nintendo Switch"))
+check("a failing search gives no match, logged without the key",
+      r.get("ok") is False and "503" in LOG.getvalue() and KEY not in LOG.getvalue(), LOG.getvalue())
+main._IGDB_OPENER.open = fake_open
 
 print(f"\n{ok} passed, {fail} failed")
 if fail:
