@@ -79,6 +79,41 @@ jobs:
       - name: Check news renders as written and remote content stays inert
         run: python3 scripts/check_remote_content.py
 
+      # Switch update history scrapes perfectly-nintendo.com. Every fetch and
+      # redirect stays on that site, only the latest releases' changes are
+      # shown, no other site is asked, and a slow lookup never holds the page.
+      - name: Check Switch update history stays on its site and stays inert
+        run: python3 scripts/check_switch_news.py
+
+      # Non-Steam games are matched by title, and one title is on many systems.
+      # The system read from a shortcut's launch command keeps IGDB and Hasheous
+      # matches on it, and no part of the command leaves the device.
+      - name: Check emulated games are matched on their own system
+        run: python3 scripts/check_platform_detect.py
+
+      # EnhancedGV's Hasheous app key unlocks IGDB artwork for every user. It
+      # may go only to hasheous.org, in its header, never redirected, logged,
+      # cached or handed to the panel.
+      - name: Check the Hasheous app key is used safely
+        run: python3 scripts/check_hasheous_proxy.py
+
+      # The same, against the real proxy with the real key. Secrets reach only
+      # this repository's own runs (never a fork's PR), the script never prints
+      # the key, and a Hasheous outage must not block a release, so this step
+      # reports without gating.
+      - name: Probe Hasheous' IGDB proxy with the app key
+        continue-on-error: true
+        env:
+          HASHEOUS_CLIENT_API_KEY: ${{ secrets.HASHEOUS_CLIENT_API_KEY }}
+        run: python3 scripts/check_hasheous_proxy.py --live
+
+      # Quick Access installs releases through Decky's installer, which runs
+      # as root. Only this repository's own release zips may get there: pinned
+      # URL and redirects, GitHub's SHA-256, and a package check before Decky
+      # sees anything.
+      - name: Check the in-plugin updater installs only checked releases
+        run: python3 scripts/check_update_install.py
+
       - name: Install dependencies
         run: npm install
 
@@ -89,6 +124,10 @@ jobs:
         run: npm run build
 
       - name: Package plugin
+        env:
+          # See HASHEOUS_KEY_FILE in main.py. Empty for a fork's PR and for
+          # local builds, which then use the keyless baseline.
+          HASHEOUS_CLIENT_API_KEY: ${{ secrets.HASHEOUS_CLIENT_API_KEY }}
         run: |
           # This name is load-bearing and must never change. Decky unzips the
           # archive straight into ~/homebrew/plugins, so the ZIP's top-level
@@ -103,6 +142,12 @@ jobs:
           mkdir -p "dist_pkg/$PLUGIN"
           cp -r dist "dist_pkg/$PLUGIN/dist"
           cp main.py plugin.json package.json decky.pyi LICENSE README.md CHANGELOG.md "dist_pkg/$PLUGIN/"
+          if [ -n "${HASHEOUS_CLIENT_API_KEY}" ]; then
+            printf '%s' "${HASHEOUS_CLIENT_API_KEY}" > "dist_pkg/$PLUGIN/hasheous_client_key"
+            echo "Bundled the Hasheous app key"
+          else
+            echo "No Hasheous app key in this build (keyless baseline)"
+          fi
           # A tag build stamps the FULL tag version into the packaged manifests
           # (zip only — git stays at the bare X.Y.Z). So a beta installs as
           # "0.19.0-beta": Decky displays it, and the in-plugin updater can tell
@@ -150,7 +195,7 @@ jobs:
           import os, re
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
           base = tag.split("-")[0]
-          foot = "\n\n---\nInstall via Decky → Developer → Install Plugin from ZIP. The plugin's Updates section checks for and links to new releases."
+          foot = "\n\n---\nIf Quick Access → EnhancedGV offers an Update button, use that. Otherwise download EnhancedGV.zip below and use Decky → Developer → Install Plugin from ZIP."
           text = open("CHANGELOG.md", encoding="utf-8").read()
           m = (re.search(rf"^## v{re.escape(tag)}\s*$\n(.*?)(?=^## |\Z)", text, re.S | re.M)
                or re.search(rf"^## v{re.escape(base)}\s*$\n(.*?)(?=^## |\Z)", text, re.S | re.M))

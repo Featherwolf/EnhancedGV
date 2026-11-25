@@ -117,6 +117,40 @@ export interface UpdateInfo {
   channel?: string; // "stable" | "beta"
   url?: string; // release page
   zip_url?: string;
+  tag?: string; // e.g. "v0.21.0-beta.2"
+  // Whether this panel can install it (a checksummed EnhancedGV.zip, 0.20.0+).
+  installable?: boolean;
+}
+
+export interface ReleaseInfo {
+  tag: string;
+  version: string;
+  prerelease: boolean;
+  published: string; // YYYY-MM-DD
+  url: string; // release page
+  installable: boolean;
+  installed: boolean;
+  newer: boolean; // than the installed version
+  self_update?: boolean; // has the Update button; older builds update by hand
+}
+
+export interface ReleaseList {
+  ok: boolean;
+  error?: string;
+  current: string;
+  releases: ReleaseInfo[];
+}
+
+// What Decky's installer needs, after the backend has downloaded the release
+// and checked it against GitHub's checksum.
+export interface PreparedUpdate {
+  ok: boolean;
+  error?: string;
+  artifact?: string; // file:// path of the checked zip
+  name?: string;
+  version?: string;
+  hash?: string; // SHA-256, hex
+  install_type?: number; // Decky's PluginInstallType: 1 reinstall, 2 update, 3 downgrade
 }
 
 export interface PatchNotes {
@@ -135,11 +169,16 @@ export interface NewsItem {
   external: boolean;
   feedlabel: string;
   author: string;
+  /* `html` holds only part of the article at `url` (perfectly-nintendo.com: its latest release). */
+  excerpt?: boolean;
 }
 
 export interface News {
   ok: boolean;
   error?: string;
+  /* A Switch update-history lookup still running in the background: asking
+     again shortly gets the result. */
+  transient?: boolean;
   items: NewsItem[];
 }
 
@@ -149,7 +188,13 @@ export interface DeckCompat {
   category: number; // 0 Unknown / 1 Unsupported / 2 Playable / 3 Verified
   label: string;
   steamos_category: number | null;
-  notes: { display_type: number; text: string }[];
+  notes: {
+    display_type: number;
+    text: string; // English fallback; see `token`
+    // Normalized loc_token (e.g. "DefaultControllerConfigFullySupported"),
+    // for an i18n lookup (deck.note.<token>) — empty if Steam sent none.
+    token?: string;
+  }[];
   blog_url: string;
 }
 
@@ -191,13 +236,20 @@ export interface PluginSettings {
   expanded?: ExpandedToggles;
   language: string;
   country: string;
+  // UI language ("auto" | "en" | "pt-BR"): the plugin's OWN interface text —
+  // independent of `language` above, which is the Steam STORE CONTENT
+  // language (description/reviews/news). See src/i18n/index.ts.
+  uiLanguage?: string;
   beta?: boolean; // opt in to pre-release update checks
-  // Hasheous CLIENT API key. Empty = keyless baseline (logo + description);
-  // set = IGDB artwork/details for non-Steam games. Stored locally only.
+  // The user's own IGDB (Twitch application) credentials, optional. They add
+  // IGDB's title search for non-Steam games. Stored on this device only.
   igdbClientId?: string;
   igdbClientSecret?: string;
   /** Backend-reported: a secret is stored. The secret itself is never sent. */
   igdbClientSecretSet?: boolean;
+  // Whether this build carries EnhancedGV's Hasheous app key (never the key):
+  // with it, IGDB artwork needs no credentials of the user's own.
+  hasheousAppKey?: boolean;
   // Opt in to pulling metadata for non-Steam / emulated games from external
   // sources (Hasheous). OFF by default — when off, non-Steam games behave exactly
   // as before (Steam title-search only, then "unmatched").

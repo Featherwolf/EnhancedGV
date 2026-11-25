@@ -12,7 +12,9 @@ export default definePlugin(() => {
 
   return {
     name: "EnhancedGV",
-    titleView: <div className={staticClasses.Title}>EnhancedGV</div>,
+    // Optional chaining: Steam's Vite-built beta UI drops most of the class maps
+    // @decky/ui reads, and a missing map must not stop the plugin loading.
+    titleView: <div className={staticClasses?.Title}>EnhancedGV</div>,
     // Quick Access panel = section toggles + cache controls.
     content: <QuickAccessSettings />,
     icon: <FaStore />,

@@ -15,10 +15,14 @@ import sys
 import ssl
 import json
 import time
+import datetime
 import html
 import asyncio
 import functools
 import hashlib
+import io
+import zipfile
+import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -62,10 +66,23 @@ CACHE_VERSION = "0.15.0-lang"
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
        "reviews_recent": 3600, "news_posts": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
-       "hasheous": 604800, "igdb": 604800}
+       "hasheous": 604800, "igdb": 604800,
+       # A Switch game's update history from perfectly-nintendo.com. Updates
+       # are rare events, so this is cached like deck/appdetails rather than
+       # refetched often.
+       "switch_news": 86400}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
+# Per-kind override of the above. switch_news's negative case is reached a lot
+# more often than a plain network blip: perfectly-nintendo.com genuinely has no
+# article for plenty of titles, and that's a stable fact, not a glitch — the
+# 120s default was only ever a stopgap for testing the matching logic itself.
+# An hour avoids re-hitting the site (and its intermittent TLS flakiness —
+# see PN_RETRY_ATTEMPTS) on every revisit within
+# a session, while still recovering well within the same day if a fetch
+# failure, rather than a genuine miss, was the actual cause.
+NEGATIVE_TTL_OVERRIDE = {"switch_news": 3600}
 # How long past its TTL a cached entry may still be SERVED while a refresh runs
 # in the background (stale-while-revalidate). Revisiting a game after the TTL
 # expired used to mean sitting on the loading placeholder through a full set of
@@ -109,22 +126,21 @@ DECK_LOC_TOKENS = {
 # followed by a leading "/" in the content, so no trailing slash here.
 CLAN_IMAGE_BASE = "https://clan.akamai.steamstatic.com/images"
 
-# --- Hasheous: keyless metadata for non-Steam / emulated games ---------------- #
-# Public community instance. Keyless pipeline (no API key, no ROM file needed):
+# --- Hasheous: metadata for non-Steam / emulated games ----------------------- #
+# Public community instance. The matching pipeline needs no key and no ROM file:
 #   MCP hasheous_search_games (clean title match, returns reference ROM hashes)
 #   -> Lookup/ByHash (bridges to the stable Hasheous game/DataObject id)
 #   -> DataObjects/Game/{id} (name, AIDescription, Logo, Tags, publisher, IGDB id)
-# The rich IGDB proxy (cover/screenshots/genres) is key-gated (a later, opt-in
-# phase); this baseline is entirely keyless and works with the feature toggled on.
-# --- IGDB enrichment (opt-in, needs free IGDB/Twitch credentials) ----------- #
-# We talk to IGDB DIRECTLY, not through Hasheous' proxy. Hasheous does proxy IGDB
-# at /MetadataProxy/IGDB/*, but every metadata endpoint there is declared
-# `security: [Client API Key]`, and those client keys are issued per REGISTERED
-# APPLICATION — creating one is restricted to Hasheous admins/moderators (three
-# applications exist service-wide, all official integrations). So that route is
-# closed to ordinary users, however free it looks.
+# Off until the user turns on non-Steam lookups, since it sends the game's name.
+# --- IGDB artwork ------------------------------------------------------------ #
+# Hasheous proxies IGDB at /MetadataProxy/IGDB/*, behind a client key issued to
+# a REGISTERED APPLICATION (only Hasheous admins can create one). EnhancedGV has
+# its own: CI writes it into release builds, and _hasheous_app_key reads it, so
+# every user of a release build gets covers and screenshots with no setup.
 #
-# IGDB's own API is free and genuinely self-serve: a Twitch account with 2FA,
+# A user's own IGDB credentials, when saved, are used instead and talk to IGDB
+# DIRECTLY; they also add IGDB's title search. IGDB's own API is free and
+# genuinely self-serve: a Twitch account with 2FA,
 # an application registered in the Twitch Developer Portal (Client Type
 # "Confidential"), and a generated Client Secret. Verified against the live
 # services:
@@ -176,6 +192,21 @@ HASHEOUS_IMAGE = HASHEOUS_BASE + "/Images/"  # + {image_hash}
 # sha1("") — Hasheous stores this as a placeholder/empty Logo; never use it.
 _HASHEOUS_EMPTY_IMG = "DA39A3EE5E6B4B0D3255BFEF95601890AFD80709"
 
+# EnhancedGV's own Hasheous application key. It unlocks Hasheous' IGDB proxy,
+# so non-Steam games get IGDB's cover art, screenshots and genres without the
+# user setting up IGDB credentials. It is never in git: release builds get it
+# from a repository secret, which CI writes into this file inside the package.
+# Like any key shipped in an app it can be read out of the zip by anyone who
+# looks; it identifies the app, not a user, and Hasheous can rotate it. It is
+# sent only to hasheous.org, in the X-Client-API-Key header, and never logged.
+HASHEOUS_KEY_FILE = os.path.join(decky.DECKY_PLUGIN_DIR, "hasheous_client_key")
+HASHEOUS_PROXY_IGDB = HASHEOUS_BASE + "/MetadataProxy/IGDB"
+_HASHEOUS_KEY_RE = re.compile(r"^[A-Za-z0-9._~+/=-]{8,512}$")
+# The proxy expands one level only, so companies come back as bare ids and
+# each name costs a request; a few at most (developers first).
+HASHEOUS_IGDB_EXPAND = "cover,screenshots,artworks,genres,platforms,involved_companies"
+HASHEOUS_MAX_COMPANIES = 4
+
 
 # --------------------------------------------------------------------------- #
 # Low-level HTTP + cache (all sync; run inside an executor from async methods)
@@ -225,13 +256,19 @@ MAX_SANITIZE_BYTES = 512 * 1024
 HASHEOUS_MAX_GAMES = 8
 HASHEOUS_MAX_ROMS = 8
 HASHEOUS_MAX_LOOKUPS = 24
+# Platform-filtered Hasheous searches tried before the unfiltered one, when the
+# shortcut's system is known.
+HASHEOUS_MAX_FILTERS = 2
+# IGDB searches through Hasheous' proxy per game: one per IGDB platform of the
+# shortcut's system (mGBA's three, NES's two), never more than this.
+HASHEOUS_IGDB_MAX_SEARCHES = 3
 
 # Bumped whenever automatic matching improves. An AUTO match stamped with an
 # older generation is re-detected on next open, so a tester who was matched to
 # the wrong thing by a previous build does not have to hunt down every game and
 # press Re-detect by hand. MANUAL and CLEARED records are never touched — those
 # are decisions, not guesses.
-MATCH_GENERATION = 2
+MATCH_GENERATION = 3   # 3: an IGDB edition match leads to its game
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -293,6 +330,23 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
             if (final.netloc, final.path) != (asked.netloc, asked.path) else ""
         raise ValueError(f"{asked.netloc} sent a web page instead of data{moved}; "
                          f"the endpoint may have moved") from None
+
+
+def _http_get_text(url: str, hosts) -> str:
+    """An HTML page (perfectly-nintendo.com's search and article pages)
+    rather than a JSON API. Only ever fetched from, and redirected within,
+    https on `hosts` (see _pinned_url)."""
+    if not _pinned_url(url, hosts):
+        raise ValueError(f"refusing to fetch {urllib.parse.urlsplit(url).netloc or url!r}: "
+                         f"not a pinned host")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with _pinned_opener(hosts).open(req, timeout=REQUEST_TIMEOUT) as resp:
+        if not _pinned_url(resp.geturl(), hosts):
+            raise ValueError("the page ended somewhere other than its pinned site")
+        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
+    return raw.decode("utf-8", "replace")
 
 
 def _http_post_json(url: str, payload: dict) -> dict:
@@ -368,7 +422,7 @@ def _read_cache_entry(kind: str, key: str):
         return None, False  # corrupt/foreign file -> a cache miss, never raise
     age = time.time() - blob.get("fetched_at", 0)
     negative = bool(blob.get("negative"))
-    ttl = NEGATIVE_TTL if negative else TTL.get(kind, 3600)
+    ttl = NEGATIVE_TTL_OVERRIDE.get(kind, NEGATIVE_TTL) if negative else TTL.get(kind, 3600)
     if age < ttl:
         return blob.get("data"), True
     # A stale FAILURE is worthless — never serve it; retry instead.
@@ -602,6 +656,60 @@ def _igdb_post_sync(endpoint: str, body: str, client_id: str, token: str):
     return json.loads(raw)
 
 
+def _hasheous_app_key() -> str:
+    """This build's Hasheous app key, or "" when it has none (a local or fork
+    build, or a file that doesn't look like a key)."""
+    try:
+        with open(HASHEOUS_KEY_FILE, "r", encoding="utf-8") as fh:
+            key = fh.read(1024).strip()
+    except Exception:
+        return ""
+    return key if _HASHEOUS_KEY_RE.match(key) else ""
+
+
+def _hasheous_proxy_get_sync(endpoint: str, params: dict, key: str):
+    """One keyed GET against Hasheous' IGDB proxy (`endpoint` is "Game" or
+    "Company"). The key goes only to hasheous.org, only in its header, over
+    verified TLS, and never across a redirect: this is the same no-redirect
+    opener the IGDB credentials use, so a 3xx raises instead of forwarding the
+    header to wherever Location points."""
+    if not _ssl_verifies():
+        raise RuntimeError(
+            "refusing to send the Hasheous app key: TLS certificate verification "
+            "is unavailable on this device (no usable CA bundle)")
+    url = f"{HASHEOUS_PROXY_IGDB}/{endpoint}?" + urllib.parse.urlencode(params)
+    req = urllib.request.Request(url, headers={
+        "User-Agent": USER_AGENT, "Accept": "application/json",
+        "X-Client-API-Key": key})
+    with _IGDB_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        raw = resp.read(MAX_RESPONSE_BYTES + 1).decode("utf-8", "replace")
+    if len(raw.encode("utf-8", "ignore")) > MAX_RESPONSE_BYTES:
+        raise ValueError("Hasheous response exceeds the size limit")
+    return json.loads(raw) if raw.strip() else None
+
+
+def _from_hasheous_proxy(game: dict) -> dict:
+    """A record from Hasheous' IGDB proxy, in the shape IGDB's own API answers
+    with, which is what the parsers below read. The proxy expands a list
+    reference into {"<id>": {...}, ...} rather than [...], and may serialize
+    dates as ISO strings instead of unix seconds."""
+    out = {}
+    for k, v in game.items():
+        if isinstance(v, dict) and v and all(str(x).isdigit() for x in v):
+            v = [x for x in v.values() if isinstance(x, dict)]
+        out[k] = v
+    ts = _igdb_pick(out, "first_release_date")
+    if isinstance(ts, str) and not ts.strip().isdigit():
+        try:
+            dt = datetime.datetime.fromisoformat(ts.strip().replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            out["first_release_date"] = int(dt.timestamp())
+        except Exception:
+            pass
+    return out
+
+
 def _igdb_img(image_hash: str, size: str) -> str:
     """A sized IGDB CDN URL. Keyless and public (see the note above)."""
     h = re.sub(r"[^A-Za-z0-9_-]", "", str(image_hash or ""))
@@ -679,7 +787,10 @@ def _year_from(release_date: str) -> str:
 
 
 def _norm_title(s) -> str:
-    s = re.sub(r"[™®©]", "", str(s or "")).lower()  # ™ ® ©
+    # Accents folded first ("Pokémon" is "Pokemon"), not dropped with the rest
+    # of what isn't a-z0-9 ("pok mon").
+    s = unicodedata.normalize("NFKD", re.sub(r"[™®©]", "", str(s or "")))  # ™ ® ©
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
@@ -694,6 +805,307 @@ def _best_match(title: str, items: list):
             if _norm_title(it.get("name")) == nt:
                 return it
     return items[0]
+
+
+# --- The system a non-Steam shortcut's game is for ------------------------- #
+# A shortcut that launches an emulator says which system its game is for: by
+# the ROM's file extension, by the ROM folder (EmuDeck, RetroDECK and ES-DE
+# name them after the system), or by the emulator itself. Hasheous and IGDB
+# list one title on many systems ("Link's Awakening" is a Game Boy, Game Boy
+# Color, 3DS and Switch game), and Hasheous has next to no Switch games at all,
+# so without the system a Switch game can be matched to a Game Boy dump or an
+# N64 rom hack. Only the system's name leaves the device (as the platform
+# filter of a Hasheous search); the shortcut's paths never do.
+#
+# Names are IGDB's. Each entry: the Hasheous search filters (substrings of its
+# platform names, which come in several naming families, e.g. "SNES/Super
+# Famicom" and "Nintendo - Super Nintendo Entertainment System"), a pattern
+# that recognises the platform in either service's names, and the near-misses
+# it must not take ("Game Boy Color" is not the Game Boy, "Megadrive 32X" is
+# not the Mega Drive).
+_PLATFORMS = {
+    "Nintendo Switch": (("Switch",), r"\bswitch\b(?!\s*2\b)", None),
+    "Wii U": (("Wii U",), r"\bwii\s*u\b", None),
+    "Wii": (("Wii",), r"\bwii\b", r"\bwii\s*u\b"),
+    "Nintendo GameCube": (("GameCube",), r"game\s*cube", None),
+    "Nintendo 64": (("Nintendo 64",), r"nintendo\s*64|\bn64\b", r"64\s*dd"),
+    "Super Nintendo Entertainment System": (
+        ("SNES", "Super Nintendo"), r"super\s*nintendo|\bsnes\b|super\s*famicom", None),
+    "Nintendo Entertainment System": (
+        ("NES", "Famicom"),
+        r"\bnes\b|famicom|nintendo\s*entertainment\s*system|family\s*computer",
+        r"super|\bsnes\b|disk\s*system"),
+    "Family Computer Disk System": (("Disk System", "FDS"), r"disk\s*system|\bfds\b", None),
+    "Game Boy": (("Game Boy",), r"game\s*boy", r"colou?r|advance|\bgbc\b|\bgba\b"),
+    "Game Boy Color": (("Game Boy Color",), r"game\s*boy\s*colou?r|\bgbc\b", None),
+    "Game Boy Advance": (("Game Boy Advance",), r"game\s*boy\s*advance|\bgba\b", None),
+    "Nintendo DS": (("Nintendo DS",), r"nintendo\s*dsi?\b|\bnds\b", r"3ds"),
+    "Nintendo 3DS": (("3DS",), r"3ds", None),
+    "Virtual Boy": (("Virtual Boy",), r"virtual\s*boy", None),
+    "PlayStation": (
+        ("PlayStation",),
+        r"playstation(?!\s*(?:[2-5]|portable|vita|network|move|vr))|\bpsx\b|\bps1\b|\bps\s*one\b",
+        None),
+    "PlayStation 2": (("PlayStation 2",), r"playstation\s*2|\bps2\b", None),
+    "PlayStation 3": (("PlayStation 3",), r"playstation\s*3|\bps3\b", None),
+    "PlayStation Portable": (("PlayStation Portable", "PSP"), r"playstation\s*portable|\bpsp\b", None),
+    "PlayStation Vita": (("Vita",), r"\bvita\b", None),
+    "Xbox": (("Xbox",), r"\bxbox\b(?!\s*(?:360|one|series))", None),
+    "Xbox 360": (("Xbox 360",), r"xbox\s*360", None),
+    "Sega Mega Drive/Genesis": (
+        ("Mega Drive", "Genesis"), r"mega\s*-?\s*drive|genesis", r"32x|mega\s*-?\s*cd|\bcd\b"),
+    "Sega Master System/Mark III": (("Master System",), r"master\s*system|mark\s*iii", None),
+    "Sega Game Gear": (("Game Gear",), r"game\s*gear", None),
+    "Sega CD": (("Sega CD", "Mega-CD"), r"mega\s*-?\s*cd|sega\s*cd", None),
+    "Sega 32X": (("32X",), r"\b32x\b", None),
+    "Sega Saturn": (("Saturn",), r"\bsaturn\b", None),
+    "Dreamcast": (("Dreamcast",), r"dreamcast", None),
+    "TurboGrafx-16/PC Engine": (("PC Engine", "TurboGrafx"), r"pc\s*engine|turbo\s*grafx", None),
+    "Atari 2600": (("2600",), r"\b2600\b", None),
+}
+# IGDB's platform ids, for the search Hasheous runs on IGDB per platform. The
+# NES has two: Japan's Famicom is a platform of its own there.
+_IGDB_PLATFORM_IDS = {
+    "Nintendo Switch": (130,), "Wii U": (41,), "Wii": (5,), "Nintendo GameCube": (21,),
+    "Nintendo 64": (4,), "Super Nintendo Entertainment System": (19,),
+    "Nintendo Entertainment System": (18, 99), "Family Computer Disk System": (51,),
+    "Game Boy": (33,), "Game Boy Color": (22,), "Game Boy Advance": (24,),
+    "Nintendo DS": (20,), "Nintendo 3DS": (37,), "Virtual Boy": (87,),
+    "PlayStation": (7,), "PlayStation 2": (8,), "PlayStation 3": (9,),
+    "PlayStation Portable": (38,), "PlayStation Vita": (46,), "Xbox": (11,), "Xbox 360": (12,),
+    "Sega Mega Drive/Genesis": (29,), "Sega Master System/Mark III": (64,),
+    "Sega Game Gear": (35,), "Sega CD": (78,), "Sega 32X": (30,), "Sega Saturn": (32,),
+    "Dreamcast": (23,), "TurboGrafx-16/PC Engine": (86,), "Atari 2600": (59,),
+}
+
+_PLATFORM_RE = {name: (re.compile(inc), re.compile(exc) if exc else None)
+                for name, (_f, inc, exc) in _PLATFORMS.items()}
+
+_P_SWITCH, _P_WIIU, _P_WII, _P_GC = ("Nintendo Switch",), ("Wii U",), ("Wii",), ("Nintendo GameCube",)
+_P_N64, _P_SNES = ("Nintendo 64",), ("Super Nintendo Entertainment System",)
+_P_NES, _P_FDS = ("Nintendo Entertainment System",), ("Family Computer Disk System",)
+_P_GB, _P_GBC, _P_GBA = ("Game Boy",), ("Game Boy Color",), ("Game Boy Advance",)
+_P_DS, _P_3DS, _P_VB = ("Nintendo DS",), ("Nintendo 3DS",), ("Virtual Boy",)
+_P_PS1, _P_PS2, _P_PS3 = ("PlayStation",), ("PlayStation 2",), ("PlayStation 3",)
+_P_PSP, _P_VITA = ("PlayStation Portable",), ("PlayStation Vita",)
+_P_XBOX, _P_X360 = ("Xbox",), ("Xbox 360",)
+_P_MD, _P_SMS, _P_GG = ("Sega Mega Drive/Genesis",), ("Sega Master System/Mark III",), ("Sega Game Gear",)
+_P_SCD, _P_32X, _P_SAT, _P_DC = ("Sega CD",), ("Sega 32X",), ("Sega Saturn",), ("Dreamcast",)
+_P_PCE, _P_2600 = ("TurboGrafx-16/PC Engine",), ("Atari 2600",)
+
+# ROM file extension -> systems. Only extensions that name a system: disc
+# images (.iso .chd .cue .bin .m3u) fit many and are left to the folder or the
+# emulator, and .wad is both a Wii channel and a Doom WAD.
+_PLATFORM_EXT = {
+    "nsp": _P_SWITCH, "nsz": _P_SWITCH, "xci": _P_SWITCH, "xcz": _P_SWITCH,
+    "nca": _P_SWITCH, "nro": _P_SWITCH,
+    "wua": _P_WIIU, "wux": _P_WIIU, "wud": _P_WIIU, "rpx": _P_WIIU,
+    "wbfs": _P_WII, "gcm": _P_GC,
+    "rvz": _P_GC + _P_WII, "gcz": _P_GC + _P_WII, "ciso": _P_GC + _P_WII,
+    "z64": _P_N64, "n64": _P_N64, "v64": _P_N64,
+    "sfc": _P_SNES, "smc": _P_SNES, "fig": _P_SNES, "swc": _P_SNES,
+    "nes": _P_NES, "unf": _P_NES, "unif": _P_NES, "fds": _P_FDS,
+    "gb": _P_GB, "gbc": _P_GBC, "gba": _P_GBA,
+    "nds": _P_DS, "3ds": _P_3DS, "cia": _P_3DS, "cci": _P_3DS, "cxi": _P_3DS, "3dsx": _P_3DS,
+    "vb": _P_VB, "vboy": _P_VB,
+    "cso": _P_PSP, "pbp": _P_PSP + _P_PS1,
+    "xbe": _P_XBOX, "xex": _P_X360,
+    "md": _P_MD, "gen": _P_MD, "smd": _P_MD, "sms": _P_SMS, "gg": _P_GG, "32x": _P_32X,
+    "cdi": _P_DC, "gdi": _P_DC, "pce": _P_PCE, "sgx": _P_PCE, "a26": _P_2600,
+}
+# Files that are a game but don't name its system: they still mark which
+# argument is the ROM (its folder is the next clue, and its name is no clue to
+# the emulator: "Dolphin Island.gba" is not a Dolphin game).
+_ROMISH_EXT = frozenset(_PLATFORM_EXT) | {
+    "iso", "chd", "cue", "bin", "img", "m3u", "ecm", "mdf", "zip", "7z", "elf", "dol"}
+
+# ROM folder -> systems, compared with case and punctuation dropped. EmuDeck,
+# RetroDECK, ES-DE and Batocera names, plus common spelled-out ones. Two-letter
+# names that are also everyday folder names (dc, ds, gg) are left out.
+_PLATFORM_DIR = {
+    "switch": _P_SWITCH, "nintendoswitch": _P_SWITCH,
+    "wiiu": _P_WIIU, "wii": _P_WII, "gc": _P_GC, "ngc": _P_GC, "gamecube": _P_GC,
+    "nintendogamecube": _P_GC, "n64": _P_N64, "nintendo64": _P_N64,
+    "snes": _P_SNES, "sfc": _P_SNES, "snesna": _P_SNES, "supernintendo": _P_SNES,
+    "superfamicom": _P_SNES, "nes": _P_NES, "famicom": _P_NES, "fds": _P_FDS,
+    "gb": _P_GB, "gameboy": _P_GB, "gbc": _P_GBC, "gameboycolor": _P_GBC,
+    "gba": _P_GBA, "gameboyadvance": _P_GBA, "nds": _P_DS, "nintendods": _P_DS,
+    "n3ds": _P_3DS, "3ds": _P_3DS, "nintendo3ds": _P_3DS, "virtualboy": _P_VB,
+    "psx": _P_PS1, "ps1": _P_PS1, "playstation": _P_PS1, "ps2": _P_PS2,
+    "playstation2": _P_PS2, "ps3": _P_PS3, "playstation3": _P_PS3, "psp": _P_PSP,
+    "psvita": _P_VITA, "vita": _P_VITA, "xbox": _P_XBOX, "xbox360": _P_X360,
+    "genesis": _P_MD, "megadrive": _P_MD, "mastersystem": _P_SMS, "gamegear": _P_GG,
+    "segacd": _P_SCD, "megacd": _P_SCD, "sega32x": _P_32X, "32x": _P_32X,
+    "saturn": _P_SAT, "dreamcast": _P_DC, "pcengine": _P_PCE, "tg16": _P_PCE,
+    "turbografx16": _P_PCE, "atari2600": _P_2600,
+}
+
+# Emulator -> systems, matched in file names only (an emulator's binary,
+# launcher script, Flatpak ID or RetroArch core), never in folder names, where
+# a user name could pass for one. First match wins, so Slippi (a Dolphin build
+# that only plays GameCube games) comes before Dolphin.
+_PLATFORM_EMU = tuple((re.compile(pat), systems) for pat, systems in (
+    (r"ryujinx|ryubing|yuzu|suyu|sudachi|citron|torzu|kenji-?nx|(?<![a-z0-9])eden(?![a-z])",
+     _P_SWITCH),
+    (r"cemu", _P_WIIU),
+    (r"slippi", _P_GC),
+    (r"dolphin|primehack", _P_GC + _P_WII),
+    (r"citra|lime3ds|azahar|panda3ds|mandarine", _P_3DS),
+    (r"melonds|desmume|drastic|noods", _P_DS),
+    (r"gpsp", _P_GBA),
+    (r"mgba|vbam|vba-m|vba_next|visualboyadvance|skyemu", _P_GBA + _P_GBC + _P_GB),
+    (r"gambatte|sameboy|gearboy|tgbdual", _P_GB + _P_GBC),
+    (r"snes9x|bsnes|mesen-s|supafaust", _P_SNES),
+    (r"nestopia|fceumm|fceux|punes|quicknes", _P_NES + _P_FDS),
+    (r"mupen64|simple64|parallel_n64|project64|rosalie|gopher64|(?<![a-z0-9])rmg(?![a-z])",
+     _P_N64),
+    (r"duckstation|swanstation|pcsx_rearmed|pcsx-rearmed|pcsx-redux|pcsxr|beetle_psx"
+     r"|mednafen_psx|epsxe", _P_PS1),
+    (r"pcsx2|aethersx2|nethersx2|(?<![a-z0-9])play_libretro", _P_PS2),
+    (r"rpcs3", _P_PS3),
+    (r"ppsspp", _P_PSP),
+    (r"vita3k", _P_VITA),
+    (r"xemu", _P_XBOX),
+    (r"xenia", _P_X360),
+    (r"flycast|redream|reicast", _P_DC),
+    (r"yabause|kronos|yaba_?sanshiro|mednafen_saturn|beetle_saturn", _P_SAT),
+    (r"blastem", _P_MD),
+    (r"genesis_plus_gx|genesis-plus-gx|picodrive|kega|(?<![a-z0-9])gens(?![a-z])",
+     _P_MD + _P_SMS + _P_GG + _P_SCD + _P_32X),
+    (r"mednafen_pce|beetle_pce|pce_fast", _P_PCE),
+    (r"mednafen_vb|beetle_vb", _P_VB),
+    (r"stella", _P_2600),
+))
+
+
+def _platform_name_is(name: str, systems) -> bool:
+    """Whether a Hasheous or IGDB platform name is one of `systems`."""
+    low = str(name or "").lower()
+    for s in systems:
+        inc, exc = _PLATFORM_RE.get(s, (None, None))
+        if inc is not None and inc.search(low) and not (exc is not None and exc.search(low)):
+            return True
+    return False
+
+
+def _platforms_from_hint(hint) -> tuple:
+    """A platform hint ("Nintendo GameCube|Wii", or free text such as "Sega
+    Mega Drive") -> the systems it names, in table order."""
+    named = set()
+    for part in str(hint or "").split("|"):
+        part = part.strip()
+        if not part:
+            continue
+        if part in _PLATFORMS:
+            named.add(part)
+        else:
+            named.update(p for p in _PLATFORMS if _platform_name_is(part, (p,)))
+    return tuple(p for p in _PLATFORMS if p in named)
+
+
+def _search_title(title) -> str:
+    """A shortcut's title as a search for Hasheous' IGDB proxy, which writes it
+    into an IGDB query verbatim: region and version tags in brackets dropped
+    ("Super Mario Odyssey [0100000000010000]"), and the characters that would
+    end or extend that query (quotes, backslashes, semicolons) blanked."""
+    s = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", " ", str(title or ""))
+    s = re.sub(r'["\\;]', " ", s)
+    return re.sub(r"\s+", " ", s).strip()[:120]
+
+
+def _igdb_is_addon(game) -> bool:
+    """Whether an IGDB game is an add-on (DLC, expansion, bundle, mod, episode,
+    season, pack or update) rather than a game: standalone expansions, remakes,
+    remasters and ports count as games. Reads game_type, or the older category,
+    as an id or an object."""
+    kind = _igdb_pick(game, "game_type", "category")
+    if isinstance(kind, dict):
+        kind = _igdb_pick(kind, "id")
+    try:
+        return int(kind or 0) in (1, 2, 3, 5, 6, 7, 13, 14)
+    except (TypeError, ValueError):
+        return False
+
+
+def _igdb_parent_id(game) -> int:
+    """The IGDB id of the game an entry stands for: the game it is an edition
+    of (Special, Deluxe, Game of the Year...: version_parent), or, for an
+    add-on, the game it adds to (parent_game). 0 when it is a game of its own;
+    the proxy writes a missing id as 0, IGDB as null."""
+    for field, applies in (("version_parent", True), ("parent_game", _igdb_is_addon(game))):
+        if not applies:
+            continue
+        value = _igdb_pick(game, field)
+        if isinstance(value, dict):
+            value = _igdb_pick(value, "id")
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return 0
+
+
+def _launch_tokens(s: str) -> list:
+    """A command line's arguments, quoted or not, with Windows separators made
+    forward slashes."""
+    s = str(s or "").replace("\\", "/")
+    return [a or b or c for a, b, c in re.findall(r'"([^"]*)"|\'([^\']*)\'|(\S+)', s)]
+
+
+def _detect_platform(launch) -> tuple:
+    """The systems a non-Steam shortcut's game can be for, from its launch
+    command ({"exe", "args", "dir"}, as Steam stores them): () when it doesn't
+    say. The ROM's extension is the strongest clue, then its folder, then the
+    emulator; a later clue only narrows an earlier one, and one that
+    contradicts it is ignored."""
+    if not isinstance(launch, dict):
+        return ()
+    exe = str(launch.get("exe") or "")[:4096]
+    args = str(launch.get("args") or "")[:8192]
+    start = str(launch.get("dir") or "")[:4096]
+    by_ext, by_dir, names = set(), set(), []
+    for tok in _launch_tokens(exe) + _launch_tokens(args):
+        path = tok.strip().rstrip("/")
+        base = path.rsplit("/", 1)[-1].lower()
+        ext = base.rsplit(".", 1)[-1] if "." in base else ""
+        if ext not in _ROMISH_EXT:
+            names.append(base)
+            continue
+        by_ext.update(_PLATFORM_EXT.get(ext, ()))
+        dirs = [re.sub(r"[^a-z0-9]", "", d.lower()) for d in path.split("/")[:-1]]
+        after_roms = [dirs[i + 1] for i in range(len(dirs) - 1) if dirs[i] in ("roms", "rom")]
+        for d in (after_roms or dirs[-2:]):
+            by_dir.update(_PLATFORM_DIR.get(d, ()))
+    names.append(start.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower())
+    haystack = " ".join(names)
+    by_emu = next((set(systems) for pat, systems in _PLATFORM_EMU if pat.search(haystack)), set())
+    found = set()
+    for clue in (by_ext, by_dir, by_emu):
+        if not clue:
+            continue
+        if not found:
+            found = set(clue)
+        elif found & clue:
+            found &= clue
+    return tuple(p for p in _PLATFORMS if p in found)
+
+
+def _match_needs_redo(rec, hint: str) -> bool:
+    """Whether a saved match should be worked out again: an AUTO match from an
+    older resolver, or an AUTO non-Steam match made before the shortcut's
+    system was known (or under another one). Manual and cleared records are
+    decisions, never redone, and an unknown system redoes nothing."""
+    if _match_is_stale(rec):
+        return True
+    # With non-Steam sources off, a provider match is kept untouched (shown as
+    # unmatched) so turning them back on restores it.
+    return (bool(hint) and isinstance(rec, dict)
+            and str(rec.get("source", "auto")) == "auto"
+            and rec.get("provider") in ("hasheous", "igdb")
+            and str(rec.get("hint") or "") != hint
+            and _feature_non_steam())
 
 
 def _parse_appid(s):
@@ -780,6 +1192,229 @@ def _github_url(u) -> str:
     if parts.scheme != "https" or parts.hostname is None:
         return ""
     return s if parts.hostname.lower() in _GITHUB_HOSTS else ""
+
+
+def _pinned_url(u, hosts) -> str:
+    """A URL, or "" unless it is https on one of `hosts`.
+
+    Shared by every fetch that follows a link SCRAPED from a third-party
+    page's own HTML rather than built from a constant we wrote (e.g. an
+    article href from a perfectly-nintendo.com search result): that source
+    could, by compromise, mistake or a future redesign, hand back a link to
+    any host. Redirects are
+    pinned the same way, by _PinnedRedirect.
+    """
+    s = _plain_url(u)
+    try:
+        parts = urllib.parse.urlsplit(s)
+        port = parts.port
+    except Exception:
+        return ""
+    if (parts.scheme != "https" or port not in (None, 443)
+            or parts.username or parts.password or parts.hostname is None):
+        return ""
+    return s if parts.hostname.lower() in hosts else ""
+
+
+class _PinnedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to https on the same pinned hosts (the default
+    opener follows one anywhere)."""
+
+    def __init__(self, hosts):
+        super().__init__()
+        self._hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _pinned_url(newurl, self._hosts):
+            raise ValueError(f"{urllib.parse.urlsplit(req.full_url).netloc} redirected "
+                             f"outside its pinned site")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _pinned_opener(hosts):
+    return urllib.request.build_opener(
+        _PinnedRedirect(hosts), urllib.request.HTTPSHandler(context=_SSL_CTX))
+
+
+# --------------------------------------------------------------------------- #
+# In-plugin installs
+# --------------------------------------------------------------------------- #
+# EnhancedGV installs its releases through Decky Loader's own installer, the one
+# Decky's store uses: Decky asks the user to confirm in its own dialog, swaps the
+# plugin in place and reloads it. Nobody downloads a zip by hand.
+#
+# Decky checks the zip's SHA-256 only AFTER it has removed the installed copy, so
+# a download that fails that check leaves no plugin at all. So the backend fetches
+# the release itself first, checks it against the SHA-256 GitHub recorded when CI
+# uploaded it, checks it is an EnhancedGV package of the version asked for, and
+# hands Decky that local file with the same hash. Decky reads a file:// artifact
+# into memory before it uninstalls anything.
+RELEASES_API = "https://api.github.com/repos/Featherwolf/EnhancedGV/releases"
+RELEASE_DOWNLOAD_PREFIX = "https://github.com/Featherwolf/EnhancedGV/releases/download/"
+PLUGIN_NAME = "EnhancedGV"
+RELEASE_ASSET = "EnhancedGV.zip"
+_RELEASE_TAG_RE = re.compile(r"v\d{1,4}\.\d{1,4}\.\d{1,4}(?:-(?:alpha|beta|rc)\.\d{1,4})?")
+_SHA256_DIGEST_RE = re.compile(r"sha256:([0-9a-f]{64})")
+# github.com answers a release download with a redirect to its asset storage.
+_RELEASE_STORAGE_HOSTS = frozenset((
+    "objects.githubusercontent.com", "release-assets.githubusercontent.com",
+))
+RELEASE_ZIP_MAX_BYTES = 32 * 1024 * 1024
+RELEASE_UNPACKED_MAX_BYTES = 128 * 1024 * 1024
+RELEASE_MAX_ENTRIES = 2000
+# Older builds call the review endpoint Steam retired (see
+# check_reviews_endpoint.py), so they are not offered.
+RELEASE_MIN_INSTALLABLE = "0.20.0"
+# The first build with this installer. Going back past it means the next
+# update is a manual one again, and the version list says so.
+RELEASE_FIRST_SELF_UPDATE = "0.21.0-beta.2"
+UPDATE_DIR = os.path.join(CACHE_DIR, "update")
+# Decky Loader's PluginInstallType.
+INSTALL_REINSTALL, INSTALL_UPDATE, INSTALL_DOWNGRADE = 1, 2, 3
+
+
+def _release_zip_url(tag: str) -> str:
+    return f"{RELEASE_DOWNLOAD_PREFIX}{tag}/{RELEASE_ASSET}"
+
+
+def _is_release_storage_url(u) -> bool:
+    """Whether u is GitHub's asset storage over plain https: the only place a
+    release download may be redirected to."""
+    s = _plain_url(u)
+    try:
+        parts = urllib.parse.urlsplit(s)
+        port = parts.port
+    except Exception:
+        return False
+    return (parts.scheme == "https" and port in (None, 443)
+            and not parts.username and not parts.password
+            and (parts.hostname or "").lower() in _RELEASE_STORAGE_HOSTS)
+
+
+class _ReleaseRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a release download only into GitHub's asset storage."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _is_release_storage_url(newurl):
+            raise ValueError("GitHub redirected the download somewhere unexpected")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+_RELEASE_OPENER = urllib.request.build_opener(
+    _ReleaseRedirect, urllib.request.HTTPSHandler(context=_SSL_CTX))
+
+
+def _release_asset(rel, tag: str):
+    """(download URL, sha256 hex) of a release's EnhancedGV.zip, or None unless
+    it is exactly this repository's asset for this tag with a recorded digest."""
+    if not isinstance(rel, dict) or rel.get("draft") or rel.get("tag_name") != tag:
+        return None
+    for a in rel.get("assets") or []:
+        if not isinstance(a, dict) or a.get("name") != RELEASE_ASSET:
+            continue
+        if a.get("state", "uploaded") != "uploaded":
+            return None
+        url = str(a.get("browser_download_url") or "")
+        m = _SHA256_DIGEST_RE.fullmatch(str(a.get("digest") or ""))
+        size = a.get("size")
+        if url != _release_zip_url(tag) or not m:
+            return None
+        if isinstance(size, int) and size > RELEASE_ZIP_MAX_BYTES:
+            return None
+        return url, m.group(1)
+    return None
+
+
+def _download_release(url: str) -> bytes:
+    req = urllib.request.Request(
+        url, headers={"User-Agent": USER_AGENT, "Accept": "application/octet-stream"})
+    with _RELEASE_OPENER.open(req, timeout=REQUEST_TIMEOUT) as resp:
+        final = resp.geturl()
+        if final != url and not _is_release_storage_url(final):
+            raise ValueError("the download ended somewhere other than GitHub")
+        data = resp.read(RELEASE_ZIP_MAX_BYTES + 1)
+    if len(data) > RELEASE_ZIP_MAX_BYTES:
+        raise ValueError("the download is larger than any EnhancedGV release")
+    return data
+
+
+def _release_zip_problem(data: bytes, version: str) -> str:
+    """"" when data is an installable EnhancedGV package of this version, else
+    what is wrong with it. Decky unzips into its plugins folder as root, so every
+    path must sit inside one EnhancedGV/ folder."""
+    try:
+        zf = zipfile.ZipFile(io.BytesIO(data))
+        infos = zf.infolist()
+    except Exception:
+        return "the download isn't a zip file"
+    if not infos or len(infos) > RELEASE_MAX_ENTRIES:
+        return "the zip doesn't look like an EnhancedGV package"
+    prefix = PLUGIN_NAME + "/"
+    for info in infos:
+        name = info.filename
+        if (not name.startswith(prefix) or "\\" in name or "\x00" in name
+                or ".." in name.split("/")):
+            return "the zip holds a file outside the EnhancedGV folder"
+    if sum(i.file_size for i in infos) > RELEASE_UNPACKED_MAX_BYTES:
+        return "the zip unpacks larger than any EnhancedGV release"
+    names = {i.filename for i in infos}
+    for need in ("plugin.json", "main.py", "dist/index.js"):
+        if prefix + need not in names:
+            return f"the zip has no {need}"
+    try:
+        meta = json.loads(zf.read(prefix + "plugin.json").decode("utf-8"))
+    except Exception:
+        return "the zip's plugin.json can't be read"
+    if not isinstance(meta, dict) or meta.get("name") != PLUGIN_NAME:
+        return "the zip isn't EnhancedGV"
+    if str(meta.get("version", "")).lstrip("v") != version:
+        return "the zip's version doesn't match the release"
+    return ""
+
+
+def _clear_staged_releases() -> int:
+    removed = 0
+    try:
+        names = os.listdir(UPDATE_DIR)
+    except OSError:
+        return 0
+    for name in names:
+        if name.startswith(PLUGIN_NAME + "-") and name.endswith((".zip", ".zip.part")):
+            try:
+                os.remove(os.path.join(UPDATE_DIR, name))
+                removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def _prepare_release_sync(tag: str) -> dict:
+    """Fetch and check one release, and stage it for Decky's installer."""
+    if not _ssl_verifies():
+        return {"ok": False, "error": "This device can't verify GitHub's certificate, "
+                                      "so EnhancedGV won't install from here. Install "
+                                      "the zip by hand instead."}
+    # One preparation at a time: whatever an earlier one staged is dropped, so
+    # a refused download never leaves an older file behind for Decky.
+    _clear_staged_releases()
+    asset = _release_asset(_http_get_json(f"{RELEASES_API}/tags/{tag}"), tag)
+    if asset is None:
+        return {"ok": False, "error": f"{tag} has no installable EnhancedGV.zip"}
+    url, digest = asset
+    data = _download_release(url)
+    if hashlib.sha256(data).hexdigest() != digest:
+        return {"ok": False, "error": "The download doesn't match the checksum GitHub "
+                                      "recorded for it. Nothing was installed."}
+    version = tag[1:]
+    problem = _release_zip_problem(data, version)
+    if problem:
+        return {"ok": False, "error": f"Not installing {tag}: {problem}."}
+    os.makedirs(UPDATE_DIR, exist_ok=True)
+    path = os.path.join(UPDATE_DIR, f"{PLUGIN_NAME}-{version}.zip")
+    with open(path + ".part", "wb") as fh:
+        fh.write(data)
+    os.replace(path + ".part", path)
+    return {"ok": True, "path": path, "version": version, "hash": digest}
 
 
 _SCHEME_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.\-]*:")
@@ -1436,6 +2071,15 @@ def _normalize_deck(data: dict) -> dict:
             "text": DECK_LOC_TOKENS.get(
                 tok, re.sub(r"(?<!^)(?=[A-Z])", " ",
                             tok.split("_")[-1]) if tok else ""),
+            # Normalized key for the frontend's i18n lookup (deck.note.<token>);
+            # unprefixed, so it's exactly the one DECK_LOC_TOKENS also matches
+            # on, and falls back to "text" above (English) when neither
+            # dictionary — ours or the plugin's i18n one — has that token.
+            # Steam's own ajaxgetdeckappcompatibilityreport NEVER localizes
+            # these (verified live: l=brazilian and l=english return
+            # byte-identical loc_token strings), so only our own translation
+            # can localize this text.
+            "token": tok.split("_")[-1] if tok else "",
         })
     return {
         "category": cat,
@@ -1699,6 +2343,224 @@ def _normalize_hasheous(obj: dict) -> dict:
     return out
 
 
+def _is_switch_platform(appdetails: dict) -> bool:
+    """Whether a normalized non-Steam AppDetails describes a Nintendo Switch
+    game — gates the update-history lookup below, which only makes sense
+    for Switch (not a SNES/Genesis/PS1/etc. ROM also served through the same
+    Hasheous/IGDB path). Reuses `categories`, already populated with the
+    platform name by _normalize_hasheous/_igdb_facts, rather than re-deriving
+    it from either provider's raw shape."""
+    for c in (appdetails.get("categories") or []):
+        if "switch" in str(c.get("description", "")).lower():
+            return True
+    return False
+
+
+# Seconds get_all_provider waits for a Switch update-history lookup before
+# answering without it (see _switch_news_for).
+SWITCH_NEWS_WAIT = 5
+
+
+def _nintendo_slug(title: str) -> str:
+    """A game title as a lowercase, accent-free slug: how perfectly-nintendo.com
+    titles are matched (see _parse_pn_search), and the cache key for a title.
+    NFKD-decomposing first matters: without it, "Pokémon" loses its "é" to
+    the ASCII-only strip below and becomes "pok-mon", which never matches
+    "pokemon" (bug found live: every accented title silently got no match)."""
+    s = unicodedata.normalize("NFKD", str(title or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[™®©]", "", s)
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
+    return s
+
+
+# --- perfectly-nintendo.com: Switch update history ------------------------- #
+# perfectly-nintendo.com maintains one hand-written "all the updates" article
+# per game — a single page, continuously edited in place, with the full real
+# version/patch-note history. Only the changes of its newest releases are
+# shown, with a link to the full article. A game it has no article for shows
+# no update history: Nintendo's own eShop "related news" is PR-style
+# announcements rather than patch notes, so it isn't used. The site has no
+# API and no server-rendered search result we can query as JSON either, just
+# an ordinary WordPress search page, so this is scraped: request a page,
+# regex out what's needed.
+# The article href comes from this site's OWN search-result HTML
+# (_parse_pn_search), not a constant we built — see _pinned_url.
+_PN_HOSTS = frozenset(("www.perfectly-nintendo.com", "perfectly-nintendo.com"))
+PN_BASE = "https://www.perfectly-nintendo.com"
+# This host's TLS handshake intermittently times out — confirmed live, ~30%
+# of requests, independent of UA, spaced seconds apart, immediately followed
+# by a clean success (looks like a WAF/edge node that occasionally just
+# drops the connection rather than a slow server or a hard block). A single
+# retry still missed it occasionally in practice (confirmed live), so
+# _fetch_pn_update_page gets 3 attempts per request rather than 2.
+PN_RETRY_ATTEMPTS = 3
+PN_RETRY_DELAY = 2.0
+# The rest of the history stays behind the "read the full article" link.
+PN_MAX_RELEASES = 3
+_PN_RESULT_RE = re.compile(r'<h2 class="cm-entry-title">\s*<a href="([^"]+)" title="([^"]*)">')
+# Every "all the updates" article's URL carries this segment (sometimes with
+# a "switch" infix, sometimes not) — verified against a dozen real titles.
+# Not anchored to the end: some of these slugs tack on a trailing version
+# number at creation time (e.g. "...-switch-software-updates-latest-ver-1-0-2/"
+# for Donkey Kong Country: Tropical Freeze — confirmed live), so the end-
+# anchored form missed real update pages.
+_PN_UPDATES_URL_RE = re.compile(r'-(?:switch-)?(?:software-updates|all-the-updates)(?:-|/|$)')
+
+
+def _pn_http_get_text(url: str) -> str:
+    """_http_get_text against perfectly-nintendo.com, retrying PN_RETRY_
+    ATTEMPTS times on failure (see PN_RETRY_ATTEMPTS comment above). Runs
+    inside the executor thread, so the blocking sleep between attempts
+    doesn't stall the event loop."""
+    last_exc = None
+    for attempt in range(PN_RETRY_ATTEMPTS):
+        try:
+            return _http_get_text(url, _PN_HOSTS)
+        except ValueError:
+            raise  # a refused host or an oversized page won't change on retry
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < PN_RETRY_ATTEMPTS:
+                time.sleep(PN_RETRY_DELAY)
+    raise last_exc
+_PN_DIV_RE = re.compile(r'<(/?)div\b[^>]*>')
+_PN_CONTENT_START_RE = re.compile(r'<div class="cm-entry-summary">')
+_PN_TITLE_RE = re.compile(r'<h1 class="cm-entry-title">\s*(.*?)\s*</h1>', re.S)
+_PN_DATE_RE = re.compile(r'<time\b[^>]*\bdatetime="([^"]+)"')
+# A release starts at a heading naming its version ("Mario Kart 8 Deluxe – Ver.
+# 4.0.1", "Guardian Tales – Ver. ??? (November 24th Update)"); the sub-headings
+# inside one release ("Forsaken Traders", "General") never carry "Ver.".
+_PN_RELEASE_HEADING_RE = re.compile(
+    r'<h([1-6])\b[^>]*>((?:(?!</h\1>).)*?\bVer\.(?:(?!</h\1>).)*)</h\1>', re.S | re.I)
+# Each release wraps its changes in two metadata lists: one ending in "Patch
+# notes:" (release date, maintenance, platforms, file size) and one starting
+# with "Additional notes" (official website, source).
+_PN_PATCH_NOTES_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?Patch notes\s*(?:</(?:strong|b)>\s*)?:?', re.I)
+_PN_TRAILER_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?(?:Additional notes|Official website|Source)\b', re.I)
+_PN_HR_RE = re.compile(r'<hr\b[^>]*>', re.I)
+
+
+def _pn_title_matches(want_words: list, got: str) -> bool:
+    """Whether every word of our (slugified) game title appears in the
+    candidate article's slug, IN ORDER, allowing gaps. A plain prefix check
+    (got.startswith(want)) missed real pages where perfectly-nintendo.com
+    bundles several games into one article — e.g. "Super Mario Galaxy +
+    Super Mario Galaxy 2" for a "Super Mario Galaxy 2" lookup, or "Pokémon
+    Brilliant Diamond / Shining Pearl" for "Pokémon Shining Pearl" — both
+    confirmed live misses before this. The URL-suffix filter already run by
+    the caller keeps this from being too loose."""
+    got_words = got.split("-")
+    i = 0
+    for w in want_words:
+        try:
+            i = got_words.index(w, i) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def _parse_pn_search(raw_html: str, game_title: str) -> str:
+    """Best-matching 'software updates' article URL from a perfectly-nintendo.
+    com search-results page, or "" if nothing looks like a safe match. The
+    site's search hands back real article titles, so a result is only
+    trusted when its title actually
+    contains our game's words in order (see _pn_title_matches) — avoids
+    attaching another game's update history just because it mentioned ours
+    in passing."""
+    want = _nintendo_slug(game_title)
+    if not want:
+        return ""
+    want_words = want.split("-")
+    for href, title_attr in _PN_RESULT_RE.findall(raw_html or ""):
+        if not _PN_UPDATES_URL_RE.search(href):
+            continue
+        got = _nintendo_slug(html.unescape(title_attr))
+        if _pn_title_matches(want_words, got):
+            return href
+    return ""
+
+
+def _pn_extract_div_content(raw_html: str, open_tag_end: int) -> str:
+    """Inner HTML of a <div>...</div>, matched by nesting depth rather than a
+    fixed sibling marker — the article body is long (full version history)
+    and nothing reliably follows it across every page layout variant."""
+    depth = 1
+    for m in _PN_DIV_RE.finditer(raw_html, open_tag_end):
+        depth += 1 if m.group(1) == "" else -1
+        if depth == 0:
+            return raw_html[open_tag_end:m.start()]
+    return raw_html[open_tag_end:]
+
+
+def _pn_release_changes(block: str) -> str:
+    """The changes in one release block: what lies between its two metadata
+    lists. Some releases give a one-line "Patch notes: …" value instead of a
+    list, so that value is kept too."""
+    start = 0
+    inline = ""
+    label = _PN_PATCH_NOTES_LABEL_RE.search(block)
+    if label:
+        li_end = block.find("</li>", label.end())
+        if li_end != -1:
+            inline = re.sub(r"<[^>]+>", "", block[label.end():li_end]).strip(" :\t\r\n")
+        ul_end = block.find("</ul>", label.end())
+        start = ul_end + len("</ul>") if ul_end != -1 else label.end()
+    end = len(block)
+    trailer = _PN_TRAILER_LABEL_RE.search(block, start)
+    if trailer:
+        ul_start = block.rfind("<ul", start, trailer.start())
+        end = ul_start if ul_start != -1 else trailer.start()
+    changes = _PN_HR_RE.sub("", block[start:end])
+    if inline:
+        changes = f"<p>{html.escape(html.unescape(inline), quote=False)}</p>{changes}"
+    return changes
+
+
+def _parse_pn_article(raw_html: str):
+    """The changes of the newest PN_MAX_RELEASES releases, each under its
+    version heading — and nothing else: the intro, older releases, release
+    dates, file sizes, sources and links are dropped, leaving the full article
+    to the "read the full article" link. A release heading names the game
+    before "Ver." ("No Man's Sky – Ver. 7.0 (Cosmos) Hotfixes"); one starting
+    with "Ver." ("Ver. 7.01") is a sub-version inside a hotfix release, not a
+    release of its own. An article with no recognizable release heading
+    yields nothing, so the game shows no update history rather than the
+    whole article."""
+    m = _PN_CONTENT_START_RE.search(raw_html or "")
+    if not m:
+        return None
+    body_raw = _pn_extract_div_content(raw_html, m.end())
+    releases = [
+        rel for rel in _PN_RELEASE_HEADING_RE.finditer(body_raw)
+        if not html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip().lower().startswith("ver.")
+    ]
+    parts = []
+    for i, rel in enumerate(releases):
+        end = releases[i + 1].start() if i + 1 < len(releases) else len(body_raw)
+        changes = _pn_release_changes(body_raw[rel.end():end])
+        if not re.sub(r"<[^>]+>|&nbsp;|\s", "", changes):
+            continue
+        heading = html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip()
+        parts.append(f"<h3>{html.escape(heading, quote=False)}</h3>{changes}")
+        if len(parts) == PN_MAX_RELEASES:
+            break
+    if not parts:
+        return None
+    title_m = _PN_TITLE_RE.search(raw_html)
+    title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
+    date_m = _PN_DATE_RE.search(raw_html)
+    ts = 0
+    if date_m:
+        try:
+            ts = int(datetime.datetime.fromisoformat(date_m.group(1)).timestamp())
+        except Exception:
+            ts = 0
+    return {"title": title, "html": _sanitize_html("".join(parts)), "date": ts}
+
+
 # --------------------------------------------------------------------------- #
 # Plugin
 # --------------------------------------------------------------------------- #
@@ -1708,6 +2570,9 @@ class Plugin:
         self._inflight = {}
         os.makedirs(CACHE_DIR, exist_ok=True)
         self._purge_stale_cache()
+        # A release staged for Decky's installer has done its job once any
+        # build starts: either it is now installed, or the user said no.
+        _clear_staged_releases()
         decky.logger.info("EnhancedGV backend started (TLS verification: %s)",
                           "on" if _ssl_verifies() else "OFF - no usable CA bundle")
 
@@ -1990,6 +2855,75 @@ class Plugin:
         # expires.
         return await self._fetch("news_posts", str(appid), url, norm)
 
+    async def _fetch_pn_update_page(self, title: str) -> dict:
+        """perfectly-nintendo.com lookup for get_switch_news (see the module
+        comment above PN_BASE): search the site for this title, then scrape
+        its one "all the updates" article into a news item holding the
+        changes of its newest releases."""
+        loop = asyncio.get_running_loop()
+        search_url = f"{PN_BASE}/?s={urllib.parse.quote_plus(title)}"
+        try:
+            search_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, search_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo search failed ({title}): {exc}")
+            return {"ok": False, "error": "perfectly-nintendo.com search failed"}
+
+        article_url = _pinned_url(_parse_pn_search(search_html, title), _PN_HOSTS)
+        if not article_url:
+            return {"ok": True, "items": []}
+
+        try:
+            article_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, article_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo article fetch failed ({article_url}): {exc}")
+            return {"ok": True, "items": []}
+
+        art = _parse_pn_article(article_html)
+        if not art or not art.get("html"):
+            return {"ok": True, "items": []}
+
+        item = {
+            "gid": _nintendo_slug(title) or "pn-updates",
+            "title": art.get("title") or f"{title}: software updates",
+            "html": art["html"],
+            "date": art.get("date", 0),
+            "url": _safe_ext_url(article_url),
+            "external": True,
+            "feedlabel": "Perfectly Nintendo",
+            "author": "",
+            "excerpt": True,
+        }
+        return {"ok": True, "items": [item]}
+
+    async def get_switch_news(self, title: str) -> dict:
+        """Update history for a Switch game, from perfectly-nintendo.com's "all
+        the updates" article: an actual version/patch-note history. A game the
+        site has no article for gets an empty list, which the panel shows as
+        "No recent updates". There is deliberately no second source: Nintendo's
+        own eShop "related news" is PR-style announcements, not patch notes
+        (Super Mario Bros. Wonder has 6 such articles and zero patch notes)."""
+        slug_base = _nintendo_slug(title)
+        if not slug_base:
+            return {"ok": False, "error": "no title to search"}
+
+        cached, fresh = _read_cache_entry("switch_news", slug_base)
+        if cached is not None and fresh:
+            return cached
+
+        res = await self._fetch_pn_update_page(title)
+
+        # An empty/failed result is negative-cached (NEGATIVE_TTL_OVERRIDE's
+        # 1h for this kind) rather than for a full day like a real hit — a
+        # transient PN fetch hiccup looks identical to "genuinely no article
+        # exists" from here, so a real miss still gets rechecked same-day.
+        if res.get("ok") and res.get("items"):
+            _write_cache("switch_news", slug_base, res)
+        else:
+            _write_negative("switch_news", slug_base, res)
+        return res
+
     async def get_deck(self, appid: int, lang: str = "english"):
         url = ("https://store.steampowered.com/saleaction/"
                "ajaxgetdeckappcompatibilityreport?" + urllib.parse.urlencode(
@@ -2120,14 +3054,42 @@ class Plugin:
     async def _hasheous_resolve(self, title: str, platform: str = ""):
         """Keyless title -> stable Hasheous game (DataObject) id. Search by name,
         pick the best normalized-title match that carries a reference ROM hash,
-        then bridge that hash to the metadata-side game id via Lookup/ByHash."""
-        try:
-            games = await self._hasheous_search(title, platform)
-        except Exception as exc:
-            decky.logger.warning(f"hasheous search failed: {exc}")
-            return {"ok": False, "error": f"hasheous search: {exc}"}
+        then bridge that hash to the metadata-side game id via Lookup/ByHash.
+
+        With the game's system known (`platform`, a hint such as "Nintendo
+        GameCube|Wii"), only entries on that system count. Hasheous is searched
+        with the system as its filter first, then without, and an entry on any
+        other system is never taken: a Switch game Hasheous doesn't have stays
+        unmatched instead of becoming a Game Boy dump or an N64 rom hack."""
+        wanted = _platforms_from_hint(platform)
+        queries = [""]
+        if wanted:
+            filters = []
+            for p in wanted:
+                for f in _PLATFORMS[p][0]:
+                    if f not in filters:
+                        filters.append(f)
+            queries = filters[:HASHEOUS_MAX_FILTERS] + [""]
+        games, error = [], None
+        for query in queries:
+            try:
+                got = await self._hasheous_search(title, query)
+            except Exception as exc:
+                decky.logger.warning(f"hasheous search failed: {exc}")
+                error = error or f"hasheous search: {exc}"
+                continue
+            if wanted:
+                got = [g for g in got if _platform_name_is(
+                    str((g.get("platform") or {}).get("name") or ""), wanted)]
+            if any(g.get("roms") for g in got):
+                games = got
+                break
+            games = games or got
         if not games:
-            return {"ok": False, "error": "no hasheous match"}
+            if error:
+                return {"ok": False, "error": error}
+            return {"ok": False, "error": "no hasheous match"
+                    + (" on " + " or ".join(wanted) if wanted else "")}
         nt = _norm_title(title)
 
         # Hasheous is a ROM-signature database, so a title search returns dumps,
@@ -2144,13 +3106,11 @@ class Plugin:
             if name != nt:
                 score += 4                      # not the title we asked for
             if any(w in plat for w in ("rom hack", "hack", "bootleg", "audio cd",
-                                       "amiibo", "demo", "prototype")):
+                                       "amiibo", "demo", "prototype",
+                                       "memory card", "wallpaper")):
                 score += 8                      # not a release of the game
-            if want_plat and want_plat in plat:
-                score -= 4                      # the platform we were told
             return score
 
-        want_plat = str(platform or "").strip().lower()
         # A candidate with no reference ROM can NEVER bridge to a game id, so it
         # is not a candidate at all — spending lookups on it is what exhausted
         # the budget before reaching a real match.
@@ -2207,6 +3167,70 @@ class Plugin:
             return got[0]
         return None
 
+    async def _hasheous_igdb_game(self, igdb_id: int, key: str):
+        """IGDB's record for a game through Hasheous, in IGDB's own shape."""
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(
+            None, _hasheous_proxy_get_sync, "Game",
+            {"Id": int(igdb_id), "expandColumns": HASHEOUS_IGDB_EXPAND}, key)
+        if not isinstance(got, dict) or not got:
+            return None
+        game = _from_hasheous_proxy(got)
+        # Companies arrive as bare ids. Name the developers and publishers,
+        # developers first, within a small budget; the rest are dropped rather
+        # than shown as numbers.
+        ics = [ic for ic in (_igdb_pick(game, "involved_companies") or [])
+               if isinstance(ic, dict)
+               and (_igdb_pick(ic, "developer") or _igdb_pick(ic, "publisher"))]
+        ics.sort(key=lambda ic: not _igdb_pick(ic, "developer"))
+        picked = ics[:HASHEOUS_MAX_COMPANIES]
+
+        # All at once, not one after another: this is the price the proxy pays
+        # over IGDB's own API (which names companies in the game's request), so
+        # it costs one extra round trip rather than four.
+        async def _company_name(comp):
+            if not isinstance(comp, dict):
+                try:
+                    comp = await loop.run_in_executor(
+                        None, _hasheous_proxy_get_sync, "Company", {"Id": int(comp)}, key)
+                except Exception:
+                    return None
+            return _igdb_pick(comp, "name") if isinstance(comp, dict) else None
+
+        names = await asyncio.gather(*(_company_name(_igdb_pick(ic, "company")) for ic in picked))
+        game["involved_companies"] = [{**ic, "company": {"name": str(n)}}
+                                      for ic, n in zip(picked, names) if n]
+        return game
+
+    async def _igdb_game_by_id(self, igdb_id: int):
+        """IGDB's record for one game: through Hasheous with EnhancedGV's app
+        key, else (no key, or the proxy failing or knowing no such game) from
+        IGDB itself with the user's own credentials, which are only the
+        fallback. None when neither is available or both fail."""
+        key = _hasheous_app_key()
+        if key:
+            try:
+                game = await self._hasheous_igdb_game(int(igdb_id), key)
+                if isinstance(game, dict) and game:
+                    return game
+            except urllib.error.HTTPError as exc:
+                decky.logger.error(f"hasheous igdb proxy: HTTP {exc.code} for game {igdb_id}")
+            except Exception as exc:
+                decky.logger.error(f"hasheous igdb proxy: game {igdb_id} failed: {exc}")
+        cid, token = await self._igdb_ready()
+        if cid:
+            try:
+                game = await self._igdb_game(int(igdb_id), cid, token)
+                if isinstance(game, dict):
+                    return game
+            except urllib.error.HTTPError as exc:
+                # 401/403 = rejected credentials, 429 = over the 4 req/s limit.
+                # Logged without the credentials themselves.
+                decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
+            except Exception as exc:
+                decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
+        return None
+
     async def _igdb_ready(self):
         """(client_id, token) when IGDB is usable, else (None, None)."""
         cid, secret = _igdb_creds()
@@ -2231,7 +3255,7 @@ class Plugin:
         if not safe:
             return []
         body = (f'search "{safe}"; '
-                'fields name,first_release_date,platforms.name,category; '
+                'fields name,first_release_date,platforms.name,category,game_type,version_parent,parent_game; '
                 f'limit {int(limit)};')
         loop = asyncio.get_running_loop()
         try:
@@ -2242,27 +3266,23 @@ class Plugin:
             return []
         return got if isinstance(got, list) else []
 
-    async def _igdb_delta(self, igdb_id: int, client_id: str, token: str) -> dict:
-        """Fetch the IGDB-derived fields for a game. CACHED ON ITS OWN — never
-        cache the merged result: the merge depends on what the Hasheous baseline
-        already had, so a cached merge made against one baseline would be served
-        over a different one. Returns {} on any failure."""
+    async def _igdb_delta(self, igdb_id: int) -> dict:
+        """Fetch the IGDB-derived fields for a game, from whichever source is
+        available (see _igdb_game_by_id). CACHED ON ITS OWN — never cache the
+        merged result: the merge depends on what the Hasheous baseline already
+        had, so a cached merge made against one baseline would be served over a
+        different one. Also carries the name and the "Features & details" facts,
+        so a game matched straight to IGDB needs no second request for them.
+        Returns {} when nothing could be fetched."""
         cached = _read_cache_entry("igdb", str(igdb_id))[0]
-        if isinstance(cached, dict):
+        # A delta cached before 0.21 has no name: fetch once more to add it,
+        # falling back to the old copy if that fails.
+        if isinstance(cached, dict) and cached.get("name"):
             return cached
 
-        try:
-            game = await self._igdb_game(int(igdb_id), client_id, token)
-        except urllib.error.HTTPError as exc:
-            # 401/403 = rejected credentials, 429 = over the 4 req/s limit.
-            # Logged without the credentials themselves.
-            decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
-            return {}
-        except Exception as exc:
-            decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
-            return {}
+        game = await self._igdb_game_by_id(int(igdb_id))
         if not isinstance(game, dict):
-            return {}
+            return cached if isinstance(cached, dict) else {}
 
         delta = {}
 
@@ -2320,6 +3340,11 @@ class Plugin:
         if url_:
             delta["website"] = _safe_url(url_)
 
+        name = _igdb_pick(game, "name")
+        if name:
+            delta["name"] = str(name)
+        delta.update(_igdb_facts(game))
+
         if delta:
             _write_cache("igdb", str(igdb_id), delta)
         return delta
@@ -2332,15 +3357,9 @@ class Plugin:
         data WINS wherever it has some — IGDB only fills what was empty. The one
         exception is `screenshots`, which the baseline can never populate.
         """
-        client_id, client_secret = _igdb_creds()
-        if not (client_id and client_secret and igdb_id):
+        if not igdb_id:
             return base
-        try:
-            token = await self._igdb_token(client_id, client_secret)
-        except Exception as exc:
-            decky.logger.error(f"igdb: could not obtain an access token: {exc}")
-            return base
-        delta = await self._igdb_delta(int(igdb_id), client_id, token)
+        delta = await self._igdb_delta(int(igdb_id))
         if not delta:
             return base
 
@@ -2361,6 +3380,47 @@ class Plugin:
         out["igdb_enriched"] = True
         return out
 
+    async def _switch_news_for(self, appdetails: dict) -> dict:
+        """News section for a non-Steam provider result: perfectly-nintendo.com's
+        update notes when this is recognizably a Switch game,
+        the existing "Steam-only" placeholder otherwise (SNES/Genesis/PS1/…
+        ROMs matched through the exact same Hasheous/IGDB path have no
+        equivalent to try).
+
+        get_all_provider awaits this after the cover and description are
+        already in hand, so it waits only SWITCH_NEWS_WAIT for the lookup. A
+        slower one (a perfectly-nintendo.com connection drop and retry alone
+        takes most of 20 s) keeps running in the background under shield and
+        fills the cache; the result says so with `transient`, which makes the
+        frontend ask again a minute later instead of keeping the answer for
+        half an hour. One lookup per title at a time: a revisit while it runs
+        waits on the same task.
+        """
+        if not _is_switch_platform(appdetails):
+            return {"ok": False, "error": "update history is Steam-only"}
+        title = str(appdetails.get("name") or "")
+        key = _nintendo_slug(title)
+        if not hasattr(self, "_switch_news_tasks"):
+            self._switch_news_tasks = {}
+        task = self._switch_news_tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.ensure_future(self.get_switch_news(title))
+            self._switch_news_tasks[key] = task
+
+            def _settled(t, key=key):
+                if self._switch_news_tasks.get(key) is t:
+                    del self._switch_news_tasks[key]
+                if not t.cancelled() and t.exception() is not None:
+                    decky.logger.warning(f"switch update history failed ({title}): {t.exception()}")
+
+            task.add_done_callback(_settled)
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=SWITCH_NEWS_WAIT)
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "update history is still loading", "transient": True}
+        except Exception as exc:
+            return {"ok": False, "error": f"update history failed: {exc}"}
+
     async def get_all_provider(self, provider, id, lang: str = "english",
                                cc: str = "us"):
         """Non-Steam metadata aggregate — same AppData shape as get_all, with
@@ -2378,43 +3438,35 @@ class Plugin:
             return {"ok": False, "error": "invalid provider id"}
 
         if provider == "igdb":
-            # Reuses _igdb_delta wholesale — it already produces cover,
-            # screenshots, genres, developers, publishers and summary in
-            # AppDetails shape. Only the name has to be added on top.
-            cid, token = await self._igdb_ready()
-            if not cid:
-                appdetails = {"ok": False, "error": "IGDB credentials not set"}
+            # Reuses _igdb_delta wholesale: it already produces the name, cover,
+            # screenshots, genres, developers, publishers, summary and facts, from
+            # the user's IGDB credentials or EnhancedGV's Hasheous app key.
+            delta = await self._igdb_delta(gid)
+            if not delta:
+                appdetails = {"ok": False, "error": (
+                    "no IGDB data for that id"
+                    if _igdb_configured() or _hasheous_app_key()
+                    else "IGDB credentials not set")}
             else:
-                delta = await self._igdb_delta(gid, cid, token)
-                if delta:
-                    try:
-                        game = await self._igdb_game(gid, cid, token)
-                    except Exception:
-                        game = None
-                    # On the full contract, never a bare delta: the delta only
-                    # carries the fields IGDB happened to have, and a missing
-                    # `movies` list crashed the panel.
-                    appdetails = _empty_appdetails(
-                        str(_igdb_pick(game or {}, "name") or ""))
-                    appdetails.update(delta)
-                    # _igdb_delta is an OVERLAY for Hasheous baselines, so it
-                    # names its prose summary_html/summary_text — keys the panel
-                    # never reads. Standing alone as a provider, it has to be
-                    # translated into the AppDetails contract or the description
-                    # and "Features & details" render empty.
-                    appdetails["about_html"] = delta.get("summary_html", "")
-                    appdetails["short_description"] = delta.get("summary_text", "")
-                    appdetails.pop("summary_html", None)
-                    appdetails.pop("summary_text", None)
-                    appdetails.update(_igdb_facts(game or {}))
-                    appdetails["igdb_id"] = gid
-                    appdetails["igdb_enriched"] = True
-                else:
-                    appdetails = {"ok": False, "error": "no IGDB data for that id"}
+                # On the full contract, never a bare delta: the delta only
+                # carries the fields IGDB happened to have, and a missing
+                # `movies` list crashed the panel.
+                appdetails = _empty_appdetails(str(delta.get("name") or ""))
+                appdetails.update(delta)
+                # _igdb_delta is an OVERLAY for Hasheous baselines, so it names
+                # its prose summary_html/summary_text, keys the panel never
+                # reads. Standing alone as a provider, it has to be translated
+                # into the AppDetails contract or the description renders empty.
+                appdetails["about_html"] = delta.get("summary_html", "")
+                appdetails["short_description"] = delta.get("summary_text", "")
+                appdetails.pop("summary_html", None)
+                appdetails.pop("summary_text", None)
+                appdetails["igdb_id"] = gid
+                appdetails["igdb_enriched"] = True
             return {
                 "ok": True, "appid": gid, "appdetails": appdetails,
                 "reviews": {"ok": False, "error": "reviews are Steam-only"},
-                "news": {"ok": False, "error": "update history is Steam-only"},
+                "news": await self._switch_news_for(appdetails),
                 "deck": {"ok": False, "error": "not a Steam app"},
             }
         url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
@@ -2444,7 +3496,7 @@ class Plugin:
             "appid": gid,
             "appdetails": appdetails,
             "reviews": {"ok": False, "error": "reviews are Steam-only"},
-            "news": {"ok": False, "error": "update history is Steam-only"},
+            "news": await self._switch_news_for(appdetails),
             "deck": {"ok": False, "error": "not a Steam app"},
         }
 
@@ -2460,35 +3512,56 @@ class Plugin:
 
         step("Non-Steam sources enabled", _feature_non_steam(),
              "on" if _feature_non_steam() else "turn it on above")
-        step("Credentials present", bool(client_id and client_secret),
-             ("client id + secret saved" if client_id and client_secret else
-              "missing " + (" and ".join(
-                  ([] if client_id else ["Client ID"])
-                  + ([] if client_secret else ["Client Secret"])))))
-        if not (client_id and client_secret):
+        creds = bool(client_id and client_secret)
+        app_key = _hasheous_app_key()
+        # EnhancedGV's Hasheous app answers first; the user's own account, when
+        # saved, is the fallback. The test follows the same order.
+        own = creds and not app_key
+        if app_key:
+            step("IGDB access", True, "through EnhancedGV's Hasheous app"
+                 + (", your IGDB account as fallback" if creds else ", no setup needed"))
+        elif creds:
+            step("Credentials present", True, "client id + secret saved")
+        else:
+            step("Credentials present", False,
+                 "missing " + (" and ".join(
+                     ([] if client_id else ["Client ID"])
+                     + ([] if client_secret else ["Client Secret"]))))
             return {"ok": False, "steps": steps, "error": "no IGDB credentials"}
 
-        try:
-            token = await self._igdb_token(client_id, client_secret)
-            step("Access token from Twitch", bool(token), "token obtained")
-        except urllib.error.HTTPError as exc:
-            detail = f"HTTP {exc.code}"
-            if exc.code in (400, 401, 403):
-                detail += " — Twitch rejected the client id/secret pair"
-            step("Access token from Twitch", False, detail)
-            return {"ok": False, "steps": steps, "error": detail}
-        except Exception as exc:
-            step("Access token from Twitch", False, str(exc))
-            return {"ok": False, "steps": steps, "error": str(exc)}
+        token = ""
+        if creds:
+            name = "Access token from Twitch" if own else "Your IGDB account (fallback)"
+            try:
+                token = await self._igdb_token(client_id, client_secret)
+                step(name, bool(token), "token obtained")
+            except urllib.error.HTTPError as exc:
+                detail = f"HTTP {exc.code}"
+                if exc.code in (400, 401, 403):
+                    detail += " — Twitch rejected the client id/secret pair"
+                step(name, False, detail)
+                if own:
+                    return {"ok": False, "steps": steps, "error": detail}
+            except Exception as exc:
+                step(name, False, str(exc))
+                if own:
+                    return {"ok": False, "steps": steps, "error": str(exc)}
 
-        # Which game? The one on screen if it resolves to Hasheous, else a known
-        # public mapping (Super Metroid) so the key itself can still be tested.
+        # Which game? The one on screen if it is matched to IGDB, directly or
+        # through Hasheous, else a known public mapping (Super Metroid) so the
+        # access itself can still be tested.
         igdb_id, label = 0, ""
         try:
             rec = _read_matches().get(str(int(game_appid or 0)))
         except Exception:
             rec = None
-        if isinstance(rec, dict) and rec.get("provider") == "hasheous":
+        if isinstance(rec, dict) and rec.get("provider") == "igdb":
+            try:
+                igdb_id = int(rec.get("provider_id") or 0)
+            except (TypeError, ValueError):
+                igdb_id = 0
+            label = str(rec.get("name") or "")
+        elif isinstance(rec, dict) and rec.get("provider") == "hasheous":
             try:
                 raw = await self._fetch(
                     "hasheous", str(rec["provider_id"]),
@@ -2504,19 +3577,22 @@ class Plugin:
         else:
             igdb_id, label = 1103, "Super Metroid (fallback probe)"
             step("This game maps to IGDB", False,
-                 "no IGDB mapping for this game; testing the credentials against a known title")
+                 "no IGDB mapping for this game; testing against a known title")
 
         try:
-            game = await self._igdb_game(igdb_id, client_id, token)
+            game = (await self._igdb_game(igdb_id, client_id, token) if own
+                    else await self._hasheous_igdb_game(igdb_id, app_key))
             step("IGDB game fetched", isinstance(game, dict),
                  _igdb_pick(game, "name") if isinstance(game, dict)
                  else "no game returned for that id")
         except urllib.error.HTTPError as exc:
             detail = f"HTTP {exc.code}"
             if exc.code in (401, 403):
-                detail += " — IGDB rejected the token or client id"
+                detail += (" — IGDB rejected the token or client id" if own
+                           else " — Hasheous rejected EnhancedGV's app key")
             elif exc.code == 429:
-                detail += " — over the 4 requests/second limit"
+                detail += (" — over the 4 requests/second limit" if own
+                           else " — Hasheous is rate limiting; try again shortly")
             step("IGDB game fetched", False, detail)
             return {"ok": False, "steps": steps, "error": detail}
         except Exception as exc:
@@ -2533,8 +3609,12 @@ class Plugin:
         return {"ok": True, "steps": steps, "igdb_id": igdb_id,
                 "name": label, "sample_image": sample}
 
-    async def _igdb_resolve(self, title: str):
-        """Title -> IGDB game id, same result shape as _hasheous_resolve."""
+    async def _igdb_resolve(self, title: str, platform: str = ""):
+        """Title -> IGDB game id, same result shape as _hasheous_resolve. With
+        the game's system known (`platform`, as for _hasheous_resolve), only
+        games released on it count, which also picks the right one of two
+        same-named games (the 1993 Game Boy "Link's Awakening" or the 2019
+        Switch one)."""
         nt = _norm_title(title)
         try:
             games = await self._igdb_search(title)
@@ -2542,11 +3622,24 @@ class Plugin:
             return {"ok": False, "error": f"igdb search: {exc}"}
         if not games:
             return {"ok": False, "error": "no igdb match"}
+        wanted = _platforms_from_hint(platform)
+
+        def _plats(g):
+            return [str(_igdb_pick(p, "name") or "")
+                    for p in (_igdb_pick(g, "platforms") or []) if isinstance(p, dict)]
+
+        if wanted:
+            games = [g for g in games
+                     if any(_platform_name_is(n, wanted) for n in _plats(g))]
+            if not games:
+                return {"ok": False, "error": "no igdb match on " + " or ".join(wanted)}
         # IGDB's own search already orders by relevance; only pull an exact
-        # title match forward, and prefer a main game over a DLC/bundle entry.
+        # title match forward, and prefer a main game over a DLC/bundle entry,
+        # and over an edition of it.
         def _rank(g):
             return (0 if _norm_title(_igdb_pick(g, "name")) == nt else 1,
-                    0 if int(_igdb_pick(g, "category") or 0) == 0 else 1)
+                    0 if int(_igdb_pick(g, "category") or 0) == 0 else 1,
+                    _igdb_parent_id(g) > 0)
         best = sorted(games, key=_rank)[0]
         ts = _igdb_pick(best, "first_release_date")
         year = ""
@@ -2555,28 +3648,124 @@ class Plugin:
                 year = time.strftime("%Y", time.gmtime(int(ts)))
             except Exception:
                 year = ""
-        plats = [str(_igdb_pick(p, "name") or "")
-                 for p in (_igdb_pick(best, "platforms") or []) if isinstance(p, dict)]
+        plats = _plats(best)
+        shown = next((n for n in plats if wanted and _platform_name_is(n, wanted)),
+                     plats[0] if plats else "")
         return {"ok": True, "provider": "igdb", "id": int(_igdb_pick(best, "id") or 0),
                 "name": str(_igdb_pick(best, "name") or title), "year": year,
-                "platform": plats[0] if plats else ""}
+                "platform": shown, "exact": _norm_title(_igdb_pick(best, "name")) == nt}
+
+    async def _hasheous_igdb_resolve(self, title: str, platform: str):
+        """Title -> IGDB game id through Hasheous' proxy with EnhancedGV's app
+        key: IGDB's own search, and the first way a game is looked up on IGDB
+        (the user's own account is the fallback). It finds the modern console
+        games Hasheous' ROM index lacks (Kirby and the Forgotten Land has no
+        Switch dump there, but is on IGDB). The proxy searches one IGDB
+        platform at a time, so this needs the shortcut's system (`platform`, as
+        for _hasheous_resolve). Same result shape as _igdb_resolve."""
+        key = _hasheous_app_key()
+        wanted = _platforms_from_hint(platform)
+        query = _search_title(title)
+        if not key or not wanted or not query:
+            return {"ok": False, "error": "no IGDB search without the system or the app key"}
+        nt = _norm_title(query)
+        loop = asyncio.get_running_loop()
+        searched = 0
+        for system in wanted:
+            for pid in _IGDB_PLATFORM_IDS.get(system, ()):
+                if searched >= HASHEOUS_IGDB_MAX_SEARCHES:
+                    break
+                searched += 1
+                try:
+                    got = await loop.run_in_executor(
+                        None, _hasheous_proxy_get_sync, f"Search/Platform/{int(pid)}/Game",
+                        {"SearchString": query}, key)
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 404:     # 404 is how it says "no games found"
+                        decky.logger.warning(f"hasheous igdb search failed: HTTP {exc.code}")
+                    continue
+                except Exception as exc:
+                    decky.logger.warning(f"hasheous igdb search failed: {exc}")
+                    continue
+                games = [_from_hasheous_proxy(g) for g in (got if isinstance(got, list) else [])
+                         if isinstance(g, dict)]
+                games = [g for g in games if _igdb_pick(g, "id") and _igdb_pick(g, "name")]
+                if not games:
+                    continue
+                # IGDB's search already orders by relevance; pull an exact title
+                # forward, and a game ahead of its DLC, bundles and editions.
+                best = sorted(games, key=lambda g: (
+                    _norm_title(_igdb_pick(g, "name")) != nt, _igdb_is_addon(g),
+                    _igdb_parent_id(g) > 0))[0]
+                # An edition or an add-on stands for its game, whose listing has
+                # the screenshots and the description: "Super Smash Bros.
+                # Ultimate" on the Switch came back as only its Special Edition
+                # (a box with a controller in it, no screenshots).
+                parent = _igdb_parent_id(best)
+                if parent:
+                    found = next((g for g in games if _igdb_parent_id(g) == 0
+                                  and str(_igdb_pick(g, "id")) == str(parent)), None)
+                    if found is None:
+                        try:
+                            got = await loop.run_in_executor(
+                                None, _hasheous_proxy_get_sync, "Game", {"Id": parent}, key)
+                            if isinstance(got, dict) and got:
+                                found = _from_hasheous_proxy(got)
+                        except Exception as exc:
+                            decky.logger.warning(f"hasheous igdb: game {parent} failed: {exc}")
+                    if isinstance(found, dict) and _igdb_pick(found, "id") and _igdb_pick(found, "name"):
+                        best = found
+                year = ""
+                ts = _igdb_pick(best, "first_release_date")
+                if ts:
+                    try:
+                        year = time.strftime("%Y", time.gmtime(int(ts)))
+                    except Exception:
+                        year = ""
+                try:
+                    gid = int(_igdb_pick(best, "id"))
+                except (TypeError, ValueError):
+                    continue
+                return {"ok": True, "provider": "igdb", "id": gid,
+                        "name": str(_igdb_pick(best, "name")), "year": year,
+                        "platform": system,
+                        "exact": _norm_title(_igdb_pick(best, "name")) == nt}
+        return {"ok": False, "error": "no igdb match on " + " or ".join(wanted)}
 
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
                            title: str = "", lang: str = "english", cc: str = "us",
-                           platform: str = ""):
+                           platform: str = "", launch=None):
         """Resolve a library game (Steam or non-Steam shortcut) to the SOURCE to
         fetch content for. A saved match wins. Otherwise a Steam game maps to
         itself, and a non-Steam shortcut is searched on Steam first (best result
         auto-accepted); if Steam has nothing AND non-Steam sources are enabled,
-        it falls back to Hasheous by title (+platform). The match is PERSISTED so
-        it's never re-identified — only the user changes it. `platform`, when the
-        frontend can infer it, disambiguates the Hasheous lookup."""
+        it falls back to IGDB and Hasheous by title. The match is PERSISTED so
+        it's never re-identified — only the user changes it.
+
+        For a shortcut, `launch` is its launch command as Steam stores it
+        ({"exe", "args", "dir"}); the system it reveals (see _detect_platform)
+        narrows the IGDB and Hasheous lookups, and is returned as `system` for
+        the Quick Access panel. `platform` names the system outright instead.
+        The command itself stays here: only the system's name is ever sent."""
+        hint = ""
+        if platform:
+            hint = "|".join(_platforms_from_hint(platform))
+        elif is_shortcut:
+            hint = "|".join(_detect_platform(launch))
+        res = await self._resolve_game(game_appid, is_shortcut, title, lang, cc, hint)
+        if isinstance(res, dict) and is_shortcut:
+            res["system"] = hint.split("|") if hint else []
+        return res
+
+    async def _resolve_game(self, game_appid, is_shortcut: bool, title: str,
+                            lang: str, cc: str, hint: str):
+        """resolve_game's work, with the shortcut's system as a `hint`."""
         try:
             game_appid = int(game_appid)
         except Exception:
             return {"ok": False, "error": "invalid appid"}
         rec = _read_matches().get(str(game_appid))
-        if rec is not None and not _match_is_stale(rec):
+        if rec is not None and not _match_needs_redo(rec, hint):
             return _rec_to_result(rec)
 
         if is_shortcut:
@@ -2597,30 +3786,36 @@ class Plugin:
                 # feature OFF this is byte-identical to the old behavior (Steam's
                 # best guess, else unmatched).
                 if _feature_non_steam():
-                    # Order depends on whether IGDB is configured.
+                    # IGDB goes first whenever it can be searched. It indexes
+                    # GAMES, so it answers with the actual release. Hasheous
+                    # indexes ROM DUMPS, and its title search surfaces rom hacks,
+                    # bootlegs, soundtracks and wrong-platform entries that look
+                    # plausible and are not — so asking it first means sometimes
+                    # accepting a worse answer when a better one was available.
                     #
-                    # WITH credentials, IGDB goes first. It indexes GAMES, so it
-                    # answers with the actual release. Hasheous indexes ROM
-                    # DUMPS, and its title search surfaces rom hacks, bootlegs,
-                    # soundtracks and wrong-platform entries that look plausible
-                    # and are not — so asking it first means sometimes accepting
-                    # a worse answer when a better one was available.
-                    #
-                    # WITHOUT credentials, IGDB cannot answer at all, so Hasheous
-                    # is the only option and this is the previous behaviour
-                    # unchanged.
-                    if _igdb_configured():
-                        h = await self._igdb_resolve(title or "")
-                        if not h.get("ok"):
-                            h = await self._hasheous_resolve(title or "", platform)
-                    else:
-                        h = await self._hasheous_resolve(title or "", platform)
+                    # IGDB is searched through Hasheous' proxy on EnhancedGV's
+                    # app key, which searches per platform, so once the
+                    # shortcut's system is known. The user's own IGDB account is
+                    # only the fallback: asked when the proxy can't search (no
+                    # system), fails, finds nothing, or finds no exact title
+                    # (Hasheous may answer from its own copy of IGDB, a plainer
+                    # name search than IGDB's), and then preferred only for an
+                    # exact title. Hasheous' ROM index comes last, as before.
+                    h = {"ok": False}
+                    if hint:
+                        h = await self._hasheous_igdb_resolve(title or "", hint)
+                    if _igdb_configured() and not (h.get("ok") and h.get("exact")):
+                        own = await self._igdb_resolve(title or "", hint)
+                        if own.get("ok") and (not h.get("ok") or own.get("exact")):
+                            h = own
+                    if not h.get("ok"):
+                        h = await self._hasheous_resolve(title or "", hint)
                     if h.get("ok"):
                         prov_rec = {
                             "provider": h.get("provider", "hasheous"),
                             "provider_id": int(h["id"]),
                             "platform": h.get("platform", ""), "name": h.get("name", ""),
-                            "year": h.get("year", ""), "source": "auto",
+                            "year": h.get("year", ""), "hint": hint, "source": "auto",
                             "gen": MATCH_GENERATION, "ts": int(time.time())}
                         if not steam_ok:
                             # Steam's search failed (throttled, offline), so it
@@ -2630,13 +3825,23 @@ class Plugin:
                         async with self._matches_lock():
                             cur = _read_matches()
                             existing = cur.get(str(game_appid))
-                            if existing is not None and not _match_is_stale(existing):
+                            if existing is not None and not _match_needs_redo(existing, hint):
                                 return _rec_to_result(existing)
                             cur[str(game_appid)] = prov_rec
                             _write_matches(cur)
                         return _rec_to_result(prov_rec)
                 best = _best_match(title or "", items or [])
                 if not best:
+                    if steam_ok and rec is not None and _match_needs_redo(rec, hint):
+                        # A guess saved before the system was known, and nothing
+                        # on that system matches now: drop it, so the wrong game
+                        # (a Game Boy dump for a Switch game) stops showing.
+                        async with self._matches_lock():
+                            cur = _read_matches()
+                            existing = cur.get(str(game_appid))
+                            if existing is not None and _match_needs_redo(existing, hint):
+                                del cur[str(game_appid)]
+                                _write_matches(cur)
                     return {"ok": True, "store_appid": None, "matched": False,
                             "name": "", "year": "", "reason": "no store match for title"}
                 store_appid = int(best["appid"])
@@ -2662,7 +3867,7 @@ class Plugin:
         async with self._matches_lock():
             cur = _read_matches()
             existing = cur.get(str(game_appid))
-            if existing is not None and not _match_is_stale(existing):
+            if existing is not None and not _match_needs_redo(existing, hint):
                 return _rec_to_result(existing)
             cur[str(game_appid)] = {
                 "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
@@ -2704,14 +3909,9 @@ class Plugin:
                 return {"ok": True, "provider": "igdb", "appid": found["id"],
                         "name": found.get("name", ""), "year": found.get("year", ""),
                         "platform": found.get("platform", "")}
-            cid, token = await self._igdb_ready()
-            if not cid:
+            if not (_igdb_configured() or _hasheous_app_key()):
                 return {"ok": False, "error": "IGDB credentials not set."}
-            try:
-                game = await self._igdb_game(int(ref), cid, token)
-            except Exception as exc:
-                return {"ok": False, "error": f"IGDB lookup failed: {exc}"}
-            name = _igdb_pick(game or {}, "name")
+            name = (await self._igdb_delta(int(ref))).get("name")
             if not name:
                 return {"ok": False, "error": "No IGDB game with that id."}
             return {"ok": True, "provider": "igdb", "appid": int(ref),
@@ -2827,6 +4027,11 @@ class Plugin:
             # An explicit language name here would be a manual override.
             "language": "auto",
             "country": "auto",
+            # UI language ("auto" | "en" | "pt-BR"): the plugin's own interface
+            # text (settings, section titles, empty-state messages) — separate
+            # from "language" above, which is the Steam STORE CONTENT language.
+            # "auto" follows the same Steam-locale detection as "language".
+            "uiLanguage": "auto",
             # Opt in to pre-release "beta" builds in the update check. Default off
             # so risky test builds never reach stable users.
             "beta": False,
@@ -2866,6 +4071,8 @@ class Plugin:
         # whether one is stored, and it never prefills the field.
         defaults.pop(SECRET_KEY, None)
         defaults["igdbClientSecretSet"] = bool(_igdb_creds()[1])
+        # Whether this build carries EnhancedGV's Hasheous app key. Never the key.
+        defaults["hasheousAppKey"] = bool(_hasheous_app_key())
         return defaults
 
     async def clear_igdb_credentials(self):
@@ -2997,6 +4204,7 @@ class Plugin:
             if not str(merged.get(SECRET_KEY, "") or "").strip() and kept_secret:
                 merged[SECRET_KEY] = kept_secret
             merged.pop("igdbClientSecretSet", None)  # a report, not a setting
+            merged.pop("hasheousAppKey", None)       # likewise
             tmp = SETTINGS_FILE + ".tmp"
             # 0600 from the moment of creation. open(tmp, "w") would have used
             # 0666 & ~umask = 0644, and os.replace carries that mode onto the
@@ -3126,15 +4334,19 @@ class Plugin:
                 rels = await loop.run_in_executor(
                     None, _http_get_json,
                     "https://api.github.com/repos/Featherwolf/EnhancedGV/releases?per_page=20")
+                # Only tags this plugin knows how to read and install: an
+                # oddly named pre-release must not become "the latest beta".
                 cands = [r for r in (rels if isinstance(rels, list) else [])
-                         if isinstance(r, dict) and not r.get("draft")]
+                         if isinstance(r, dict) and not r.get("draft")
+                         and _RELEASE_TAG_RE.fullmatch(str(r.get("tag_name", "")))]
                 raw = max(cands, key=lambda r: self._ver_tuple(str(r.get("tag_name", ""))),
                           default={})
             else:
                 raw = await loop.run_in_executor(
                     None, _http_get_json,
                     "https://api.github.com/repos/Featherwolf/EnhancedGV/releases/latest")
-            latest = str(raw.get("tag_name", "")).lstrip("v")
+            tag = str(raw.get("tag_name", ""))
+            latest = tag.lstrip("v")
             zip_url = ""
             for a in raw.get("assets") or []:
                 if a.get("name") == "EnhancedGV.zip":
@@ -3144,6 +4356,8 @@ class Plugin:
                 "ok": True,
                 "current": current,
                 "latest": latest,
+                "tag": tag,
+                "installable": self._installable(raw, tag),
                 "notes": raw.get("body") or "",
                 "has_update": bool(latest) and self._ver_tuple(latest) > self._ver_tuple(current),
                 "prerelease": bool(raw.get("prerelease")),
@@ -3155,6 +4369,79 @@ class Plugin:
             decky.logger.error(f"check_update failed: {exc}")
             return {"ok": False, "error": str(exc), "current": current,
                     "channel": "beta" if beta else "stable"}
+
+    def _installable(self, rel, tag: str) -> bool:
+        return (bool(_RELEASE_TAG_RE.fullmatch(tag))
+                and self._ver_tuple(tag) >= self._ver_tuple(RELEASE_MIN_INSTALLABLE)
+                and _release_asset(rel, tag) is not None)
+
+    async def list_releases(self):
+        """Every published release this panel can install, newest first: the
+        current stable, any beta, and the stable builds before them."""
+        current = self._installed_version()
+        try:
+            loop = asyncio.get_running_loop()
+            rels = await loop.run_in_executor(
+                None, _http_get_json, f"{RELEASES_API}?per_page=30")
+        except Exception as exc:
+            decky.logger.error(f"list_releases failed: {exc}")
+            return {"ok": False, "error": str(exc), "current": current, "releases": []}
+        out = []
+        for rel in rels if isinstance(rels, list) else []:
+            if not isinstance(rel, dict) or rel.get("draft"):
+                continue
+            tag = str(rel.get("tag_name") or "")
+            if not _RELEASE_TAG_RE.fullmatch(tag):
+                continue
+            version = tag[1:]
+            if self._ver_tuple(version) < self._ver_tuple(RELEASE_MIN_INSTALLABLE):
+                continue
+            out.append({
+                "tag": tag,
+                "version": version,
+                "prerelease": bool(rel.get("prerelease")),
+                "published": str(rel.get("published_at") or "")[:10],
+                "url": _github_url(rel.get("html_url", "")),
+                "installable": self._installable(rel, tag),
+                "installed": self._ver_tuple(version) == self._ver_tuple(current),
+                "newer": self._ver_tuple(version) > self._ver_tuple(current),
+                "self_update": self._ver_tuple(version) >= self._ver_tuple(RELEASE_FIRST_SELF_UPDATE),
+            })
+        out.sort(key=lambda r: self._ver_tuple(r["version"]), reverse=True)
+        return {"ok": True, "current": current, "releases": out[:12]}
+
+    async def prepare_update(self, tag: str = ""):
+        """Download and check one release, then return what the frontend hands
+        to Decky's installer: a local file, its SHA-256 and the install type.
+        Decky then asks the user to confirm before it changes anything."""
+        tag = str(tag or "").strip()
+        if not _RELEASE_TAG_RE.fullmatch(tag):
+            return {"ok": False, "error": "That isn't an EnhancedGV release tag."}
+        version = tag[1:]
+        if self._ver_tuple(version) < self._ver_tuple(RELEASE_MIN_INSTALLABLE):
+            return {"ok": False, "error": f"Versions before {RELEASE_MIN_INSTALLABLE} "
+                                          "no longer work with Steam's store."}
+        try:
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(None, _prepare_release_sync, tag)
+        except urllib.error.HTTPError as exc:
+            decky.logger.error(f"prepare_update {tag}: HTTP {exc.code}")
+            if exc.code == 404:
+                return {"ok": False, "error": f"{tag} isn't a published release."}
+            return {"ok": False, "error": f"GitHub answered HTTP {exc.code}; try again shortly."}
+        except Exception as exc:
+            decky.logger.error(f"prepare_update {tag} failed: {exc}")
+            return {"ok": False, "error": f"Couldn't download {tag}: {exc}"}
+        if not res.get("ok"):
+            decky.logger.warning(f"prepare_update {tag}: {res.get('error')}")
+            return res
+        current = self._ver_tuple(self._installed_version())
+        wanted = self._ver_tuple(version)
+        kind = (INSTALL_UPDATE if wanted > current
+                else INSTALL_DOWNGRADE if wanted < current else INSTALL_REINSTALL)
+        decky.logger.info(f"prepared {tag} for Decky's installer (type {kind})")
+        return {"ok": True, "artifact": "file://" + res["path"], "name": PLUGIN_NAME,
+                "version": version, "hash": res["hash"], "install_type": kind}
 
     async def get_patch_notes(self, version: str = ""):
         """Return the CHANGELOG section for a version (default: the installed one).

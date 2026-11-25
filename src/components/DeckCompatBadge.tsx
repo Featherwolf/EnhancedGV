@@ -1,4 +1,33 @@
 import type { DeckCompat } from "../types";
+import { useTranslation } from "../i18n";
+import type { TranslationKey } from "../i18n";
+
+// Steam's own compat-report endpoint never localizes (verified live:
+// l=brazilian and l=english return byte-identical loc_tokens — Valve
+// resolves them client-side, inside the real Steam UI), so `category` and
+// each note's `token` are translated here instead of trusting the backend's
+// English `label`/`text` fallback fields.
+// Shared with StorePanel's section subtitle. A category with no dictionary
+// entry shows the backend's English label rather than the raw key.
+export function categoryLabel(
+  cat: number,
+  t: (k: TranslationKey) => string,
+  fallback = "Unknown",
+): string {
+  const key = `deck.cat.${cat}` as TranslationKey;
+  const translated = t(key);
+  return translated !== key ? translated : fallback || "Unknown";
+}
+
+function noteText(
+  note: { text: string; token?: string },
+  t: (k: TranslationKey) => string,
+): string {
+  if (!note.token) return note.text;
+  const key = `deck.note.${note.token}` as TranslationKey;
+  const translated = t(key);
+  return translated !== key ? translated : note.text;
+}
 
 const COLORS: Record<number, string> = {
   0: "#8f98a0", // Unknown
@@ -15,6 +44,7 @@ const GLYPH: Record<number, string> = {
 };
 
 export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
+  const { t } = useTranslation();
   if (!deck || !deck.ok) return null;
   const cat = deck.category ?? 0;
   const color = COLORS[cat] ?? COLORS[0];
@@ -33,10 +63,10 @@ export function DeckCompatBadge({ deck }: { deck: DeckCompat }) {
         fontWeight: 600,
         whiteSpace: "nowrap",
       }}
-      title={deck.notes.map((n) => n.text).filter(Boolean).join(" • ")}
+      title={deck.notes.map((n) => noteText(n, t)).filter(Boolean).join(" • ")}
     >
       <span>{GLYPH[cat] ?? "?"}</span>
-      <span>Deck: {deck.label}</span>
+      <span>{t("deck.label", { label: categoryLabel(cat, t, deck.label) })}</span>
     </div>
   );
 }
@@ -52,10 +82,11 @@ const RESULT_MARK: Record<number, { mark: string; color: string }> = {
 const INFO_MARK = { mark: "ⓘ", color: "#8f98a0" };
 
 export function DeckCompatDetails({ deck }: { deck: DeckCompat }) {
+  const { t } = useTranslation();
   if (!deck || !deck.ok) {
     return (
       <div style={{ opacity: 0.6, fontSize: 13 }}>
-        No Steam Deck compatibility report.
+        {t("deck.none")}
       </div>
     );
   }
@@ -70,7 +101,7 @@ export function DeckCompatDetails({ deck }: { deck: DeckCompat }) {
             return (
               <li key={i} style={{ display: "flex", gap: 6 }}>
                 <span style={{ color: m.color, flex: "0 0 auto" }}>{m.mark}</span>
-                <span>{n.text}</span>
+                <span>{noteText(n, t)}</span>
               </li>
             );
           })}

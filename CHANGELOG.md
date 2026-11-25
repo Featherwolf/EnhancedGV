@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.21.0
+
+- **Artwork for non-Steam games, with no setup.** Games matched through
+  Hasheous now get IGDB's cover art, screenshots, genres, developers and
+  release dates through EnhancedGV's own Hasheous app. IGDB credentials are now
+  optional, and only a fallback: the app answers first.
+- **Updates from Quick Access.** When a new version is out, press **Update**
+  in Quick Access and confirm in Decky's dialog. The plugin reloads without a
+  Steam restart. **Install another version** offers every release from 0.20.0
+  on, stable or beta. Each download is checked against the checksum GitHub
+  recorded for it before Decky installs anything. Needs Decky Loader 3.0 or
+  later.
+- **A tidier Quick Access panel.** It's much shorter. Section choices and older
+  versions open in their own dialogs. The match editor and IGDB account fold
+  away until you need them. Diagnostics sit behind one switch.
+- **Portuguese (Brazil) interface.** EnhancedGV's own menus and labels now come
+  in Brazilian Portuguese too. They follow your Steam language, or you can pick
+  one under **Language** in Quick Access. Store content still follows Steam.
+  Contributed by @btd1337.
+- **Update history for Switch games.** Non-Steam Switch games now show the
+  changes from their three newest releases, from perfectly-nintendo.com, with a
+  link to the full article. Contributed by @btd1337.
+- **Emulated games matched on the right system.** EnhancedGV now reads which
+  system a non-Steam game is for from its shortcut (the ROM's file type, its
+  ROM folder or the emulator) and only accepts IGDB and Hasheous listings on
+  that system. A Game Boy ROM gets the Game Boy game, not its Color remake, and
+  a Switch game is no longer matched to a Game Boy dump, a rom hack or a
+  soundtrack. Automatic matches made before are checked again once; ones you
+  set yourself are left alone. Quick Access → This game shows the system.
+- **Switch games found without an IGDB account.** With the system known,
+  EnhancedGV's Hasheous app searches IGDB itself, so games Hasheous' ROM index
+  lacks (Kirby and the Forgotten Land, Metroid Dread) are found with no setup.
+  A saved IGDB account is now only the fallback, for finding games and for
+  their artwork. An edition or add-on found instead of the game itself (Super
+  Smash Bros. Ultimate's Special Edition box) leads to the game.
+- **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
+  EnhancedGV can't yet find where to place its panel there. Instead of quietly
+  showing nothing, Quick Access now says so. Steam's Stable channel is
+  unaffected.
+- **Fullscreen trailers no longer break Big Picture.** On Windows and Linux
+  desktops, leaving a fullscreen trailer or screenshot used to drop Big Picture
+  into a normal window until Steam was restarted. Fullscreen media now fills
+  Big Picture's screen without touching its window, on every system, the Steam
+  Deck included. Y or B leaves fullscreen, and so does Esc.
+- **Smaller fixes.** Very long paragraphs in update history scroll with the
+  D-pad; Quick Access no longer asks GitHub for updates every time it opens;
+  games matched straight to IGDB load with one request instead of two.
+
 ## v0.20.0
 
 - **Steam Deck players' score.** The reviews section adds the score from

@@ -213,7 +213,12 @@ function fetchFull(ref: DataRef, settings: PluginSettings, key: string): Promise
         // transient details failure (throttling, an empty reply, a timeout)
         // goes in failureCache like any failure, so a visit a minute later
         // tries again; a real "no store page" stays for the session (#11).
-        const retryable = !!res?.ok && res.appdetails?.ok === false && !!res.appdetails.transient;
+        /* Same for a Switch update history still loading in the backend: it
+           lands in the backend cache, so the next ask picks it up. */
+        const retryable =
+          !!res?.ok &&
+          ((res.appdetails?.ok === false && !!res.appdetails.transient) ||
+            (res.news?.ok === false && !!res.news.transient));
         if (res && res.ok && !retryable) {
           lruSet(dataCache, key, res);
           fetchedAt.set(res, Date.now());
