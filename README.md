@@ -204,8 +204,9 @@ Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individu
 shortcuts) fall back to **Hasheous**, a free community game database. Turn on
 **Quick Access → EnhancedGV → Non-Steam games → Look up emulated games**. That is
 the only setup: no account and no key. It's off by default because it sends the
-name of each non-Steam game you open to hasheous.org. Each game needs its own
-Steam shortcut with a recognisable name, which is what Steam ROM Manager makes.
+name of each non-Steam game you open to hasheous.org, and a Switch game's name to
+perfectly-nintendo.com for its update history. Each game needs its own Steam
+shortcut with a recognisable name, which is what Steam ROM Manager makes.
 
 Hasheous matches the shortcut's title to a game, and that half needs no key.
 Release builds also carry **EnhancedGV's own Hasheous application key**, which
@@ -287,6 +288,10 @@ which part broke:
   source; a game that genuinely exists on Steam always uses the Steam store page.
 - **No trailers.** IGDB supplies YouTube ids rather than playable video URLs, so the
   video gallery stays Steam-only.
+- **Update history for Switch games only.** It comes from perfectly-nintendo.com's
+  "all the updates" article for the game: the changes from its three newest
+  releases, with a link to the full article. A game the site has no article for,
+  and every other system, shows no update history.
 - **Per-game shortcuts only.** A single emulator/frontend entry (one RetroDeck or
   ES-DE shortcut covering your whole library) has no per-game page to attach to.
 - **Images are fetched in display sizes** (a cover is ~21 KB rather than ~2.7 MB),
@@ -334,8 +339,8 @@ which part broke:
 - **Privacy.** Requests go directly from your device to Steam's public store
   APIs for the game you're viewing, and update checks go to GitHub. Only if you
   turn on non-Steam lookups does a game's name go to hasheous.org (and to IGDB,
-  if you add your own credentials). No account is needed, and matches are stored
-  locally.
+  if you add your own credentials, and to perfectly-nintendo.com for a Switch
+  game's update history). No account is needed, and matches are stored locally.
 
 ## Troubleshooting — the panel doesn't appear
 

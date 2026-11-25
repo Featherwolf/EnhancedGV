@@ -1,9 +1,10 @@
-"""Switch update history comes only from perfectly-nintendo.com and nintendo.com,
-shows no more than the latest releases' changes, stays inert, and never holds
-the game page up.
+"""Switch update history comes only from perfectly-nintendo.com, shows no more
+than the latest releases' changes, stays inert, and never holds the game page
+up. A game the site has no article for shows no update history, and no other
+site is asked.
 
-The lookup scrapes two third-party sites, so everything it fetches is pinned to
-them (links taken from their pages, and redirects too), and it identifies itself
+The lookup scrapes a third-party site, so everything it fetches is pinned to
+it (links taken from its pages, and redirects too), and it identifies itself
 with the plugin's own User-Agent. From a perfectly-nintendo.com article it keeps
 only the changes of the newest PN_MAX_RELEASES releases: no intro, no release
 dates, sources or links, and a "Ver. 7.01" sub-version stays inside its hotfix
@@ -38,12 +39,11 @@ def check(name, cond, extra=""):
     else:
         fail += 1; print(f"  FAIL {name} {extra}")
 
-PN, NIN = main._PN_HOSTS, main._NINTENDO_HOSTS
+PN = main._PN_HOSTS
 
-print("== only the two sites' own https URLs are fetched ==")
+print("== only perfectly-nintendo.com's own https URLs are fetched ==")
 for url, hosts in (("https://www.perfectly-nintendo.com/mario-kart-8-deluxe-software-updates/", PN),
-                   ("https://perfectly-nintendo.com/x/", PN),
-                   ("https://www.nintendo.com/us/whatsnew/x/", NIN)):
+                   ("https://perfectly-nintendo.com/x/", PN)):
     check(f"pinned: {url}", main._pinned_url(url, hosts) == url)
 for url, hosts in (("https://evil.example/x", PN),
                    ("https://www.perfectly-nintendo.com.evil.example/x", PN),
@@ -51,9 +51,9 @@ for url, hosts in (("https://evil.example/x", PN),
                    ("https://user@www.perfectly-nintendo.com/x", PN),
                    ("https://www.perfectly-nintendo.com:8443/x", PN),
                    ("https://evil.example\\@www.perfectly-nintendo.com/x", PN),
-                   ("https://www.perfectly-nintendo.com/x", NIN),
-                   ("/relative/path", NIN),
-                   ("javascript:alert(1)", NIN)):
+                   ("https://www.nintendo.com/us/whatsnew/x/", PN),
+                   ("/relative/path", PN),
+                   ("javascript:alert(1)", PN)):
     check(f"refused: {url!r}", main._pinned_url(url, hosts) == "")
 try:
     main._http_get_text("https://evil.example/x", PN)
@@ -118,18 +118,6 @@ accented = results((base + "pokemon-legends-z-a-switch-software-updates/",
 check("matches an accented title", main._parse_pn_search(accented, "Pokémon Legends: Z-A") != "")
 check("no match for another game", main._parse_pn_search(page, "Splatoon 3") == "")
 
-print("== Nintendo's rich text is escaped ==")
-doc = {"nodeType": "document", "content": [
-    {"nodeType": "paragraph", "content": [
-        {"nodeType": "text", "value": "<script>alert(1)</script> & co", "marks": [{"type": "bold"}]},
-        {"nodeType": "hyperlink", "data": {"uri": "javascript:alert(2)"},
-         "content": [{"nodeType": "text", "value": "x\" onclick=\"y", "marks": []}]}]}]}
-rich = main._nintendo_richtext_to_html(doc)
-check("text is escaped", "<script>" not in rich and "&lt;script&gt;" in rich and "&amp; co" in rich, rich)
-check("a javascript: link is neutralised", "javascript:" not in rich, rich)
-attrs = " ".join(re.findall(r"<a\b([^>]*)>", rich))
-check("text can't break out into an attribute", "onclick" not in attrs, attrs)
-
 print("== a perfectly-nintendo.com article: only the latest releases' changes ==")
 def release(name, changes, hotfix_subs=()):
     subs = "".join(f"<h4>Ver. {v}</h4><ul><li>fix {v}</li></ul>" for v in hotfix_subs)
@@ -169,6 +157,23 @@ hostile = main._parse_pn_article(
 h = hostile["html"] if hostile else ""
 check("hostile article HTML comes out inert",
       h and not re.search(r"<script|<iframe|<img|\son\w+=|javascript:", h, re.I), h)
+
+print("== no article: no update history, and no other site is asked ==")
+asked = []
+def fake_pn_get(url):
+    asked.append(url)
+    return results((base + "some-other-game-switch-software-updates/", "Some Other Game: all the updates"))
+real_pn_get = main._pn_http_get_text
+main._pn_http_get_text = fake_pn_get
+none_res = asyncio.run(main.Plugin().get_switch_news("Splatoon 3"))
+main._pn_http_get_text = real_pn_get
+check("answers with an empty list, shown as no recent updates",
+      none_res.get("ok") is True and none_res.get("items") == [], none_res)
+check("only perfectly-nintendo.com was asked",
+      asked and all(main._pinned_url(u, PN) for u in asked), asked)
+check("the Nintendo eShop fallback is gone",
+      not hasattr(main.Plugin, "_get_nintendo_eshop_news")
+      and not hasattr(main, "_NINTENDO_HOSTS"))
 
 print("== the game page doesn't wait on a slow lookup ==")
 async def slow_lookup():

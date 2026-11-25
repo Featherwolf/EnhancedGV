@@ -78,7 +78,7 @@ export const en = {
   "settings.nonSteamGames": "Non-Steam games",
   "settings.lookupEmulatedGames": "Look up emulated games",
   "settings.lookupEmulatedGamesDesc":
-    "Details, cover art and screenshots from Hasheous for games Steam doesn't sell, such as ROMs added with Steam ROM Manager. Sends the game's name to hasheous.org.",
+    "Details, cover art and screenshots from Hasheous for games Steam doesn't sell, such as ROMs added with Steam ROM Manager. Sends the game's name to hasheous.org, and a Switch game's name to perfectly-nintendo.com for its update history.",
 
   // Settings: updates section
   "settings.updates": "Updates",
