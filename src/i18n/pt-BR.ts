@@ -74,7 +74,7 @@ export const ptBR: Record<TranslationKey, string> = {
   "settings.nonSteamGames": "Jogos não-Steam",
   "settings.lookupEmulatedGames": "Buscar jogos emulados",
   "settings.lookupEmulatedGamesDesc":
-    "Detalhes, capa e capturas de tela do Hasheous para jogos que a Steam não vende, como ROMs adicionadas com o Steam ROM Manager. Envia o nome do jogo para hasheous.org.",
+    "Detalhes, capa e capturas de tela do Hasheous para jogos que a Steam não vende, como ROMs adicionadas com o Steam ROM Manager. Envia o nome do jogo para hasheous.org e, no caso de jogos de Switch, também para perfectly-nintendo.com, de onde vem o histórico de atualizações.",
 
   "settings.updates": "Atualizações",
   "settings.installed": "Instalada",

@@ -79,10 +79,10 @@ jobs:
       - name: Check news renders as written and remote content stays inert
         run: python3 scripts/check_remote_content.py
 
-      # Switch update history scrapes perfectly-nintendo.com and nintendo.com.
-      # Every fetch and redirect stays on those sites, only the latest
-      # releases' changes are shown, and a slow lookup never holds the page.
-      - name: Check Switch update history stays on its sites and stays inert
+      # Switch update history scrapes perfectly-nintendo.com. Every fetch and
+      # redirect stays on that site, only the latest releases' changes are
+      # shown, no other site is asked, and a slow lookup never holds the page.
+      - name: Check Switch update history stays on its site and stays inert
         run: python3 scripts/check_switch_news.py
 
       # EnhancedGV's Hasheous app key unlocks IGDB artwork for every user. It
