@@ -268,7 +268,7 @@ HASHEOUS_IGDB_MAX_SEARCHES = 3
 # the wrong thing by a previous build does not have to hunt down every game and
 # press Re-detect by hand. MANUAL and CLEARED records are never touched — those
 # are decisions, not guesses.
-MATCH_GENERATION = 2
+MATCH_GENERATION = 3   # 3: an IGDB edition match leads to its game
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -1025,6 +1025,26 @@ def _igdb_is_addon(game) -> bool:
         return int(kind or 0) in (1, 2, 3, 5, 6, 7, 13, 14)
     except (TypeError, ValueError):
         return False
+
+
+def _igdb_parent_id(game) -> int:
+    """The IGDB id of the game an entry stands for: the game it is an edition
+    of (Special, Deluxe, Game of the Year...: version_parent), or, for an
+    add-on, the game it adds to (parent_game). 0 when it is a game of its own;
+    the proxy writes a missing id as 0, IGDB as null."""
+    for field, applies in (("version_parent", True), ("parent_game", _igdb_is_addon(game))):
+        if not applies:
+            continue
+        value = _igdb_pick(game, field)
+        if isinstance(value, dict):
+            value = _igdb_pick(value, "id")
+        try:
+            value = int(value or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            return value
+    return 0
 
 
 def _launch_tokens(s: str) -> list:
@@ -3235,7 +3255,7 @@ class Plugin:
         if not safe:
             return []
         body = (f'search "{safe}"; '
-                'fields name,first_release_date,platforms.name,category; '
+                'fields name,first_release_date,platforms.name,category,game_type,version_parent,parent_game; '
                 f'limit {int(limit)};')
         loop = asyncio.get_running_loop()
         try:
@@ -3614,10 +3634,12 @@ class Plugin:
             if not games:
                 return {"ok": False, "error": "no igdb match on " + " or ".join(wanted)}
         # IGDB's own search already orders by relevance; only pull an exact
-        # title match forward, and prefer a main game over a DLC/bundle entry.
+        # title match forward, and prefer a main game over a DLC/bundle entry,
+        # and over an edition of it.
         def _rank(g):
             return (0 if _norm_title(_igdb_pick(g, "name")) == nt else 1,
-                    0 if int(_igdb_pick(g, "category") or 0) == 0 else 1)
+                    0 if int(_igdb_pick(g, "category") or 0) == 0 else 1,
+                    _igdb_parent_id(g) > 0)
         best = sorted(games, key=_rank)[0]
         ts = _igdb_pick(best, "first_release_date")
         year = ""
@@ -3671,9 +3693,28 @@ class Plugin:
                 if not games:
                     continue
                 # IGDB's search already orders by relevance; pull an exact title
-                # forward, and a game ahead of its DLC or bundle.
+                # forward, and a game ahead of its DLC, bundles and editions.
                 best = sorted(games, key=lambda g: (
-                    _norm_title(_igdb_pick(g, "name")) != nt, _igdb_is_addon(g)))[0]
+                    _norm_title(_igdb_pick(g, "name")) != nt, _igdb_is_addon(g),
+                    _igdb_parent_id(g) > 0))[0]
+                # An edition or an add-on stands for its game, whose listing has
+                # the screenshots and the description: "Super Smash Bros.
+                # Ultimate" on the Switch came back as only its Special Edition
+                # (a box with a controller in it, no screenshots).
+                parent = _igdb_parent_id(best)
+                if parent:
+                    found = next((g for g in games if _igdb_parent_id(g) == 0
+                                  and str(_igdb_pick(g, "id")) == str(parent)), None)
+                    if found is None:
+                        try:
+                            got = await loop.run_in_executor(
+                                None, _hasheous_proxy_get_sync, "Game", {"Id": parent}, key)
+                            if isinstance(got, dict) and got:
+                                found = _from_hasheous_proxy(got)
+                        except Exception as exc:
+                            decky.logger.warning(f"hasheous igdb: game {parent} failed: {exc}")
+                    if isinstance(found, dict) and _igdb_pick(found, "id") and _igdb_pick(found, "name"):
+                        best = found
                 year = ""
                 ts = _igdb_pick(best, "first_release_date")
                 if ts:

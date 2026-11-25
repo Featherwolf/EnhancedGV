@@ -113,6 +113,17 @@ if LIVE:
               f" in {ms} ms; first item's keys: {sorted(first)[:14] if isinstance(first, dict) else '-'}")
     except urllib.error.HTTPError as exc:
         check("the search endpoint answers", False, f"HTTP {exc.code}")
+    try:
+        raw = main._hasheous_proxy_get_sync(
+            "Search/Platform/130/Game", {"SearchString": "Super Smash Bros. Ultimate"}, LIVE_KEY)
+        print("     Hasheous' own top results for 'Super Smash Bros. Ultimate' on the Switch:")
+        for g in (raw if isinstance(raw, list) else [])[:6]:
+            g = main._from_hasheous_proxy(g)
+            print(f"       {main._igdb_pick(g, 'id')}: {main._igdb_pick(g, 'name')!r} "
+                  f"(game_type {main._igdb_pick(g, 'game_type')}, "
+                  f"edition of {main._igdb_pick(g, 'version_parent') or '-'})")
+    except urllib.error.HTTPError as exc:
+        print(f"     (search for Smash: HTTP {exc.code})")
     P = main.Plugin()
     for title, system, want, year in (
             ("Kirby and the Forgotten Land", "Nintendo Switch", "Kirby and the Forgotten Land", "2022"),
@@ -120,7 +131,8 @@ if LIVE:
             ("The Legend of Zelda: Link's Awakening", "Nintendo Switch",
              "The Legend of Zelda: Link's Awakening", "2019"),
             ("Super Mario World", "Super Nintendo Entertainment System", "Super Mario World", "1990"),
-            ("Pokemon Emerald", "Game Boy Advance", "Pokémon Emerald Version", "2004")):
+            ("Pokemon Emerald", "Game Boy Advance", "Pokémon Emerald Version", "2004"),
+            ("Super Smash Bros. Ultimate", "Nintendo Switch", "Super Smash Bros. Ultimate", "2018")):
         t0 = time.monotonic()
         r = run(P._hasheous_igdb_resolve(title, system))
         ms = int((time.monotonic() - t0) * 1000)
@@ -377,6 +389,54 @@ put_key(None)
 r = run(P._hasheous_igdb_resolve("Kirby and the Forgotten Land", "Nintendo Switch"))
 check("no app key: no search, no request", r.get("ok") is False and not sent, (r, searched()))
 put_key(KEY)
+print("== an edition or an add-on leads to its game ==")
+SMASH = {"id": 90101, "name": "Super Smash Bros. Ultimate", "game_type": 0, "version_parent": 0,
+         "first_release_date": "2018-12-07T00:00:00+00:00"}
+SMASH_SE = {"id": 136326, "name": "Super Smash Bros. Ultimate: Special Edition", "game_type": 0,
+            "version_parent": 90101, "first_release_date": "2018-12-07T00:00:00+00:00"}
+GAMES_BY_ID = {90101: SMASH}
+def edition_open(req, timeout=None):
+    parts = urllib.parse.urlsplit(req.full_url)
+    if parts.path == "/api/v1/MetadataProxy/IGDB/Game":
+        sent.append(req)
+        game = GAMES_BY_ID.get(int(dict(urllib.parse.parse_qsl(parts.query)).get("Id", 0)))
+        if game is None:
+            raise urllib.error.HTTPError(req.full_url, 404, "Not Found", None, None)
+        return Reply(json.dumps(game).encode())
+    return search_open(req, timeout)
+main._IGDB_OPENER.open = edition_open
+SEARCH[(130, "Super Smash Bros. Ultimate")] = [SMASH_SE]
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Super Smash Bros. Ultimate", "Nintendo Switch"))
+check("only the Special Edition came back: the game it is an edition of is used",
+      (r.get("id"), r.get("name"), r.get("year"), r.get("exact"))
+      == (90101, "Super Smash Bros. Ultimate", "2018", True), r)
+check("...fetched by its id in one extra request, with the key, from hasheous.org",
+      len(sent) == 2 and urllib.parse.urlsplit(sent[1].full_url).path == "/api/v1/MetadataProxy/IGDB/Game"
+      and dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(sent[1].full_url).query)) == {"Id": "90101"}
+      and sent[1].get_header("X-client-api-key") == KEY, [x.full_url for x in sent])
+SEARCH[(130, "Smash Bros Ultimate")] = [SMASH_SE, SMASH]
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Smash Bros Ultimate", "Nintendo Switch"))
+check("both came back, neither title exact: the game, not its edition, and no extra request",
+      r.get("id") == 90101 and len(sent) == 1, (r, [x.full_url for x in sent]))
+GAMES_BY_ID.clear()
+sent.clear()
+r = run(P._hasheous_igdb_resolve("Super Smash Bros. Ultimate", "Nintendo Switch"))
+check("the game can't be fetched: the edition stands rather than nothing", r.get("id") == 136326, r)
+GAMES_BY_ID[145] = {"id": 145, "name": "Kirby and the Forgotten Land", "version_parent": 0,
+                    "parent_game": 0, "first_release_date": "2022-03-25T00:00:00+00:00"}
+SEARCH[(130, "Kirby Expansion Pass")] = [
+    {"id": 200001, "name": "Kirby and the Forgotten Land: Expansion Pass", "game_type": 1, "parent_game": 145}]
+r = run(P._hasheous_igdb_resolve("Kirby Expansion Pass", "Nintendo Switch"))
+check("only an add-on came back: the game it adds to", r.get("id") == 145, r)
+GAMES_BY_ID[26758] = {"id": 26758, "name": "Xenoblade Chronicles 2", "version_parent": 0, "parent_game": 0}
+SEARCH[(130, "Torna The Golden Country")] = [
+    {"id": 300001, "name": "Xenoblade Chronicles 2: Torna - The Golden Country", "game_type": 4,
+     "parent_game": 26758}]
+r = run(P._hasheous_igdb_resolve("Torna The Golden Country", "Nintendo Switch"))
+check("a standalone expansion is a game of its own", r.get("id") == 300001, r)
+
 def broken_open(req, timeout=None):
     sent.append(req)
     raise urllib.error.HTTPError(req.full_url, 503, "Unavailable", None, None)
