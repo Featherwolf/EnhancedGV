@@ -335,10 +335,12 @@ export function StorePanel({ appid, slot = "primary", fallback }: Props) {
   // Steam store page, and which database supplied it changes what to expect
   // (no reviews, no Deck rating, and artwork only when IGDB enrichment ran).
   const provider = fetchRef?.provider ?? "steam";
+  // "+ IGDB" is for artwork IGDB added to another source's listing; a game
+  // matched straight to IGDB is just "via IGDB".
   const sourceNote =
     provider === "steam"
       ? ""
-      : d.igdb_enriched
+      : d.igdb_enriched && provider !== "igdb"
       ? t("store.viaProviderIgdb", { provider: providerLabel(provider) })
       : t("store.viaProvider", { provider: providerLabel(provider) });
   const expanded = { ...DEFAULT_EXPANDED, ...settings.expanded };

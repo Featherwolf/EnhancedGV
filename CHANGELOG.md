@@ -33,7 +33,8 @@
   EnhancedGV's Hasheous app searches IGDB itself, so games Hasheous' ROM index
   lacks (Kirby and the Forgotten Land, Metroid Dread) are found with no setup.
   A saved IGDB account is now only the fallback, for finding games and for
-  their artwork.
+  their artwork. An edition or add-on found instead of the game itself (Super
+  Smash Bros. Ultimate's Special Edition box) leads to the game.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is
