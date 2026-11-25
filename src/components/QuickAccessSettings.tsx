@@ -256,6 +256,14 @@ function GameSection({ appid, lang, cc }: { appid: number; lang: string; cc: str
       <PanelSectionRow>
         <Rows>
           {identity.isShortcut && <DiagRow label={t("settings.shortcutLabel")} value={identity.title || String(appid)} />}
+          {identity.isShortcut && (
+            <DiagRow
+              label={t("settings.systemLabel")}
+              value={
+                !loaded ? "…" : info?.system?.length ? info.system.join(" / ") : t("settings.systemUnknown")
+              }
+            />
+          )}
           <DiagRow label={t("settings.storePageLabel")} value={matched} />
         </Rows>
       </PanelSectionRow>

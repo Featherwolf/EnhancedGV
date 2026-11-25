@@ -9,6 +9,8 @@ export const en = {
   "settings.thisGame": "This game",
   "settings.openStoreView": "Open store view",
   "settings.shortcutLabel": "Shortcut",
+  "settings.systemLabel": "System",
+  "settings.systemUnknown": "Not detected",
   "settings.storePageLabel": "Store page",
   "settings.setByYou": " · set by you",
   "settings.viaProvider": " · via {provider}",

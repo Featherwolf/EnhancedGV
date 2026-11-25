@@ -23,6 +23,13 @@
 - **Update history for Switch games.** Non-Steam Switch games now show the
   changes from their three newest releases, from perfectly-nintendo.com, with a
   link to the full article. Contributed by @btd1337.
+- **Emulated games matched on the right system.** EnhancedGV now reads which
+  system a non-Steam game is for from its shortcut (the ROM's file type, its
+  ROM folder or the emulator) and only accepts IGDB and Hasheous listings on
+  that system. A Game Boy ROM gets the Game Boy game, not its Color remake, and
+  a Switch game is no longer matched to a Game Boy dump, a rom hack or a
+  soundtrack. Automatic matches made before are checked again once; ones you
+  set yourself are left alone. Quick Access → This game shows the system.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is

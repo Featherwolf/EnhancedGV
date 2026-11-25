@@ -256,6 +256,9 @@ MAX_SANITIZE_BYTES = 512 * 1024
 HASHEOUS_MAX_GAMES = 8
 HASHEOUS_MAX_ROMS = 8
 HASHEOUS_MAX_LOOKUPS = 24
+# Platform-filtered Hasheous searches tried before the unfiltered one, when the
+# shortcut's system is known.
+HASHEOUS_MAX_FILTERS = 2
 
 # Bumped whenever automatic matching improves. An AUTO match stamped with an
 # older generation is re-detected on next open, so a tester who was matched to
@@ -796,6 +799,248 @@ def _best_match(title: str, items: list):
             if _norm_title(it.get("name")) == nt:
                 return it
     return items[0]
+
+
+# --- The system a non-Steam shortcut's game is for ------------------------- #
+# A shortcut that launches an emulator says which system its game is for: by
+# the ROM's file extension, by the ROM folder (EmuDeck, RetroDECK and ES-DE
+# name them after the system), or by the emulator itself. Hasheous and IGDB
+# list one title on many systems ("Link's Awakening" is a Game Boy, Game Boy
+# Color, 3DS and Switch game), and Hasheous has next to no Switch games at all,
+# so without the system a Switch game can be matched to a Game Boy dump or an
+# N64 rom hack. Only the system's name leaves the device (as the platform
+# filter of a Hasheous search); the shortcut's paths never do.
+#
+# Names are IGDB's. Each entry: the Hasheous search filters (substrings of its
+# platform names, which come in several naming families, e.g. "SNES/Super
+# Famicom" and "Nintendo - Super Nintendo Entertainment System"), a pattern
+# that recognises the platform in either service's names, and the near-misses
+# it must not take ("Game Boy Color" is not the Game Boy, "Megadrive 32X" is
+# not the Mega Drive).
+_PLATFORMS = {
+    "Nintendo Switch": (("Switch",), r"\bswitch\b(?!\s*2\b)", None),
+    "Wii U": (("Wii U",), r"\bwii\s*u\b", None),
+    "Wii": (("Wii",), r"\bwii\b", r"\bwii\s*u\b"),
+    "Nintendo GameCube": (("GameCube",), r"game\s*cube", None),
+    "Nintendo 64": (("Nintendo 64",), r"nintendo\s*64|\bn64\b", r"64\s*dd"),
+    "Super Nintendo Entertainment System": (
+        ("SNES", "Super Nintendo"), r"super\s*nintendo|\bsnes\b|super\s*famicom", None),
+    "Nintendo Entertainment System": (
+        ("NES", "Famicom"),
+        r"\bnes\b|famicom|nintendo\s*entertainment\s*system|family\s*computer",
+        r"super|\bsnes\b|disk\s*system"),
+    "Family Computer Disk System": (("Disk System", "FDS"), r"disk\s*system|\bfds\b", None),
+    "Game Boy": (("Game Boy",), r"game\s*boy", r"colou?r|advance|\bgbc\b|\bgba\b"),
+    "Game Boy Color": (("Game Boy Color",), r"game\s*boy\s*colou?r|\bgbc\b", None),
+    "Game Boy Advance": (("Game Boy Advance",), r"game\s*boy\s*advance|\bgba\b", None),
+    "Nintendo DS": (("Nintendo DS",), r"nintendo\s*dsi?\b|\bnds\b", r"3ds"),
+    "Nintendo 3DS": (("3DS",), r"3ds", None),
+    "Virtual Boy": (("Virtual Boy",), r"virtual\s*boy", None),
+    "PlayStation": (
+        ("PlayStation",),
+        r"playstation(?!\s*(?:[2-5]|portable|vita|network|move|vr))|\bpsx\b|\bps1\b|\bps\s*one\b",
+        None),
+    "PlayStation 2": (("PlayStation 2",), r"playstation\s*2|\bps2\b", None),
+    "PlayStation 3": (("PlayStation 3",), r"playstation\s*3|\bps3\b", None),
+    "PlayStation Portable": (("PlayStation Portable", "PSP"), r"playstation\s*portable|\bpsp\b", None),
+    "PlayStation Vita": (("Vita",), r"\bvita\b", None),
+    "Xbox": (("Xbox",), r"\bxbox\b(?!\s*(?:360|one|series))", None),
+    "Xbox 360": (("Xbox 360",), r"xbox\s*360", None),
+    "Sega Mega Drive/Genesis": (
+        ("Mega Drive", "Genesis"), r"mega\s*-?\s*drive|genesis", r"32x|mega\s*-?\s*cd|\bcd\b"),
+    "Sega Master System/Mark III": (("Master System",), r"master\s*system|mark\s*iii", None),
+    "Sega Game Gear": (("Game Gear",), r"game\s*gear", None),
+    "Sega CD": (("Sega CD", "Mega-CD"), r"mega\s*-?\s*cd|sega\s*cd", None),
+    "Sega 32X": (("32X",), r"\b32x\b", None),
+    "Sega Saturn": (("Saturn",), r"\bsaturn\b", None),
+    "Dreamcast": (("Dreamcast",), r"dreamcast", None),
+    "TurboGrafx-16/PC Engine": (("PC Engine", "TurboGrafx"), r"pc\s*engine|turbo\s*grafx", None),
+    "Atari 2600": (("2600",), r"\b2600\b", None),
+}
+_PLATFORM_RE = {name: (re.compile(inc), re.compile(exc) if exc else None)
+                for name, (_f, inc, exc) in _PLATFORMS.items()}
+
+_P_SWITCH, _P_WIIU, _P_WII, _P_GC = ("Nintendo Switch",), ("Wii U",), ("Wii",), ("Nintendo GameCube",)
+_P_N64, _P_SNES = ("Nintendo 64",), ("Super Nintendo Entertainment System",)
+_P_NES, _P_FDS = ("Nintendo Entertainment System",), ("Family Computer Disk System",)
+_P_GB, _P_GBC, _P_GBA = ("Game Boy",), ("Game Boy Color",), ("Game Boy Advance",)
+_P_DS, _P_3DS, _P_VB = ("Nintendo DS",), ("Nintendo 3DS",), ("Virtual Boy",)
+_P_PS1, _P_PS2, _P_PS3 = ("PlayStation",), ("PlayStation 2",), ("PlayStation 3",)
+_P_PSP, _P_VITA = ("PlayStation Portable",), ("PlayStation Vita",)
+_P_XBOX, _P_X360 = ("Xbox",), ("Xbox 360",)
+_P_MD, _P_SMS, _P_GG = ("Sega Mega Drive/Genesis",), ("Sega Master System/Mark III",), ("Sega Game Gear",)
+_P_SCD, _P_32X, _P_SAT, _P_DC = ("Sega CD",), ("Sega 32X",), ("Sega Saturn",), ("Dreamcast",)
+_P_PCE, _P_2600 = ("TurboGrafx-16/PC Engine",), ("Atari 2600",)
+
+# ROM file extension -> systems. Only extensions that name a system: disc
+# images (.iso .chd .cue .bin .m3u) fit many and are left to the folder or the
+# emulator, and .wad is both a Wii channel and a Doom WAD.
+_PLATFORM_EXT = {
+    "nsp": _P_SWITCH, "nsz": _P_SWITCH, "xci": _P_SWITCH, "xcz": _P_SWITCH,
+    "nca": _P_SWITCH, "nro": _P_SWITCH,
+    "wua": _P_WIIU, "wux": _P_WIIU, "wud": _P_WIIU, "rpx": _P_WIIU,
+    "wbfs": _P_WII, "gcm": _P_GC,
+    "rvz": _P_GC + _P_WII, "gcz": _P_GC + _P_WII, "ciso": _P_GC + _P_WII,
+    "z64": _P_N64, "n64": _P_N64, "v64": _P_N64,
+    "sfc": _P_SNES, "smc": _P_SNES, "fig": _P_SNES, "swc": _P_SNES,
+    "nes": _P_NES, "unf": _P_NES, "unif": _P_NES, "fds": _P_FDS,
+    "gb": _P_GB, "gbc": _P_GBC, "gba": _P_GBA,
+    "nds": _P_DS, "3ds": _P_3DS, "cia": _P_3DS, "cci": _P_3DS, "cxi": _P_3DS, "3dsx": _P_3DS,
+    "vb": _P_VB, "vboy": _P_VB,
+    "cso": _P_PSP, "pbp": _P_PSP + _P_PS1,
+    "xbe": _P_XBOX, "xex": _P_X360,
+    "md": _P_MD, "gen": _P_MD, "smd": _P_MD, "sms": _P_SMS, "gg": _P_GG, "32x": _P_32X,
+    "cdi": _P_DC, "gdi": _P_DC, "pce": _P_PCE, "sgx": _P_PCE, "a26": _P_2600,
+}
+# Files that are a game but don't name its system: they still mark which
+# argument is the ROM (its folder is the next clue, and its name is no clue to
+# the emulator: "Dolphin Island.gba" is not a Dolphin game).
+_ROMISH_EXT = frozenset(_PLATFORM_EXT) | {
+    "iso", "chd", "cue", "bin", "img", "m3u", "ecm", "mdf", "zip", "7z", "elf", "dol"}
+
+# ROM folder -> systems, compared with case and punctuation dropped. EmuDeck,
+# RetroDECK, ES-DE and Batocera names, plus common spelled-out ones. Two-letter
+# names that are also everyday folder names (dc, ds, gg) are left out.
+_PLATFORM_DIR = {
+    "switch": _P_SWITCH, "nintendoswitch": _P_SWITCH,
+    "wiiu": _P_WIIU, "wii": _P_WII, "gc": _P_GC, "ngc": _P_GC, "gamecube": _P_GC,
+    "nintendogamecube": _P_GC, "n64": _P_N64, "nintendo64": _P_N64,
+    "snes": _P_SNES, "sfc": _P_SNES, "snesna": _P_SNES, "supernintendo": _P_SNES,
+    "superfamicom": _P_SNES, "nes": _P_NES, "famicom": _P_NES, "fds": _P_FDS,
+    "gb": _P_GB, "gameboy": _P_GB, "gbc": _P_GBC, "gameboycolor": _P_GBC,
+    "gba": _P_GBA, "gameboyadvance": _P_GBA, "nds": _P_DS, "nintendods": _P_DS,
+    "n3ds": _P_3DS, "3ds": _P_3DS, "nintendo3ds": _P_3DS, "virtualboy": _P_VB,
+    "psx": _P_PS1, "ps1": _P_PS1, "playstation": _P_PS1, "ps2": _P_PS2,
+    "playstation2": _P_PS2, "ps3": _P_PS3, "playstation3": _P_PS3, "psp": _P_PSP,
+    "psvita": _P_VITA, "vita": _P_VITA, "xbox": _P_XBOX, "xbox360": _P_X360,
+    "genesis": _P_MD, "megadrive": _P_MD, "mastersystem": _P_SMS, "gamegear": _P_GG,
+    "segacd": _P_SCD, "megacd": _P_SCD, "sega32x": _P_32X, "32x": _P_32X,
+    "saturn": _P_SAT, "dreamcast": _P_DC, "pcengine": _P_PCE, "tg16": _P_PCE,
+    "turbografx16": _P_PCE, "atari2600": _P_2600,
+}
+
+# Emulator -> systems, matched in file names only (an emulator's binary,
+# launcher script, Flatpak ID or RetroArch core), never in folder names, where
+# a user name could pass for one. First match wins, so Slippi (a Dolphin build
+# that only plays GameCube games) comes before Dolphin.
+_PLATFORM_EMU = tuple((re.compile(pat), systems) for pat, systems in (
+    (r"ryujinx|ryubing|yuzu|suyu|sudachi|citron|torzu|kenji-?nx|(?<![a-z0-9])eden(?![a-z])",
+     _P_SWITCH),
+    (r"cemu", _P_WIIU),
+    (r"slippi", _P_GC),
+    (r"dolphin|primehack", _P_GC + _P_WII),
+    (r"citra|lime3ds|azahar|panda3ds|mandarine", _P_3DS),
+    (r"melonds|desmume|drastic|noods", _P_DS),
+    (r"gpsp", _P_GBA),
+    (r"mgba|vbam|vba-m|vba_next|visualboyadvance|skyemu", _P_GBA + _P_GBC + _P_GB),
+    (r"gambatte|sameboy|gearboy|tgbdual", _P_GB + _P_GBC),
+    (r"snes9x|bsnes|mesen-s|supafaust", _P_SNES),
+    (r"nestopia|fceumm|fceux|punes|quicknes", _P_NES + _P_FDS),
+    (r"mupen64|simple64|parallel_n64|project64|rosalie|gopher64|(?<![a-z0-9])rmg(?![a-z])",
+     _P_N64),
+    (r"duckstation|swanstation|pcsx_rearmed|pcsx-rearmed|pcsx-redux|pcsxr|beetle_psx"
+     r"|mednafen_psx|epsxe", _P_PS1),
+    (r"pcsx2|aethersx2|nethersx2|(?<![a-z0-9])play_libretro", _P_PS2),
+    (r"rpcs3", _P_PS3),
+    (r"ppsspp", _P_PSP),
+    (r"vita3k", _P_VITA),
+    (r"xemu", _P_XBOX),
+    (r"xenia", _P_X360),
+    (r"flycast|redream|reicast", _P_DC),
+    (r"yabause|kronos|yaba_?sanshiro|mednafen_saturn|beetle_saturn", _P_SAT),
+    (r"blastem", _P_MD),
+    (r"genesis_plus_gx|genesis-plus-gx|picodrive|kega|(?<![a-z0-9])gens(?![a-z])",
+     _P_MD + _P_SMS + _P_GG + _P_SCD + _P_32X),
+    (r"mednafen_pce|beetle_pce|pce_fast", _P_PCE),
+    (r"mednafen_vb|beetle_vb", _P_VB),
+    (r"stella", _P_2600),
+))
+
+
+def _platform_name_is(name: str, systems) -> bool:
+    """Whether a Hasheous or IGDB platform name is one of `systems`."""
+    low = str(name or "").lower()
+    for s in systems:
+        inc, exc = _PLATFORM_RE.get(s, (None, None))
+        if inc is not None and inc.search(low) and not (exc is not None and exc.search(low)):
+            return True
+    return False
+
+
+def _platforms_from_hint(hint) -> tuple:
+    """A platform hint ("Nintendo GameCube|Wii", or free text such as "Sega
+    Mega Drive") -> the systems it names, in table order."""
+    named = set()
+    for part in str(hint or "").split("|"):
+        part = part.strip()
+        if not part:
+            continue
+        if part in _PLATFORMS:
+            named.add(part)
+        else:
+            named.update(p for p in _PLATFORMS if _platform_name_is(part, (p,)))
+    return tuple(p for p in _PLATFORMS if p in named)
+
+
+def _launch_tokens(s: str) -> list:
+    """A command line's arguments, quoted or not, with Windows separators made
+    forward slashes."""
+    s = str(s or "").replace("\\", "/")
+    return [a or b or c for a, b, c in re.findall(r'"([^"]*)"|\'([^\']*)\'|(\S+)', s)]
+
+
+def _detect_platform(launch) -> tuple:
+    """The systems a non-Steam shortcut's game can be for, from its launch
+    command ({"exe", "args", "dir"}, as Steam stores them): () when it doesn't
+    say. The ROM's extension is the strongest clue, then its folder, then the
+    emulator; a later clue only narrows an earlier one, and one that
+    contradicts it is ignored."""
+    if not isinstance(launch, dict):
+        return ()
+    exe = str(launch.get("exe") or "")[:4096]
+    args = str(launch.get("args") or "")[:8192]
+    start = str(launch.get("dir") or "")[:4096]
+    by_ext, by_dir, names = set(), set(), []
+    for tok in _launch_tokens(exe) + _launch_tokens(args):
+        path = tok.strip().rstrip("/")
+        base = path.rsplit("/", 1)[-1].lower()
+        ext = base.rsplit(".", 1)[-1] if "." in base else ""
+        if ext not in _ROMISH_EXT:
+            names.append(base)
+            continue
+        by_ext.update(_PLATFORM_EXT.get(ext, ()))
+        dirs = [re.sub(r"[^a-z0-9]", "", d.lower()) for d in path.split("/")[:-1]]
+        after_roms = [dirs[i + 1] for i in range(len(dirs) - 1) if dirs[i] in ("roms", "rom")]
+        for d in (after_roms or dirs[-2:]):
+            by_dir.update(_PLATFORM_DIR.get(d, ()))
+    names.append(start.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].lower())
+    haystack = " ".join(names)
+    by_emu = next((set(systems) for pat, systems in _PLATFORM_EMU if pat.search(haystack)), set())
+    found = set()
+    for clue in (by_ext, by_dir, by_emu):
+        if not clue:
+            continue
+        if not found:
+            found = set(clue)
+        elif found & clue:
+            found &= clue
+    return tuple(p for p in _PLATFORMS if p in found)
+
+
+def _match_needs_redo(rec, hint: str) -> bool:
+    """Whether a saved match should be worked out again: an AUTO match from an
+    older resolver, or an AUTO non-Steam match made before the shortcut's
+    system was known (or under another one). Manual and cleared records are
+    decisions, never redone, and an unknown system redoes nothing."""
+    if _match_is_stale(rec):
+        return True
+    # With non-Steam sources off, a provider match is kept untouched (shown as
+    # unmatched) so turning them back on restores it.
+    return (bool(hint) and isinstance(rec, dict)
+            and str(rec.get("source", "auto")) == "auto"
+            and rec.get("provider") in ("hasheous", "igdb")
+            and str(rec.get("hint") or "") != hint
+            and _feature_non_steam())
 
 
 def _parse_appid(s):
@@ -2744,14 +2989,42 @@ class Plugin:
     async def _hasheous_resolve(self, title: str, platform: str = ""):
         """Keyless title -> stable Hasheous game (DataObject) id. Search by name,
         pick the best normalized-title match that carries a reference ROM hash,
-        then bridge that hash to the metadata-side game id via Lookup/ByHash."""
-        try:
-            games = await self._hasheous_search(title, platform)
-        except Exception as exc:
-            decky.logger.warning(f"hasheous search failed: {exc}")
-            return {"ok": False, "error": f"hasheous search: {exc}"}
+        then bridge that hash to the metadata-side game id via Lookup/ByHash.
+
+        With the game's system known (`platform`, a hint such as "Nintendo
+        GameCube|Wii"), only entries on that system count. Hasheous is searched
+        with the system as its filter first, then without, and an entry on any
+        other system is never taken: a Switch game Hasheous doesn't have stays
+        unmatched instead of becoming a Game Boy dump or an N64 rom hack."""
+        wanted = _platforms_from_hint(platform)
+        queries = [""]
+        if wanted:
+            filters = []
+            for p in wanted:
+                for f in _PLATFORMS[p][0]:
+                    if f not in filters:
+                        filters.append(f)
+            queries = filters[:HASHEOUS_MAX_FILTERS] + [""]
+        games, error = [], None
+        for query in queries:
+            try:
+                got = await self._hasheous_search(title, query)
+            except Exception as exc:
+                decky.logger.warning(f"hasheous search failed: {exc}")
+                error = error or f"hasheous search: {exc}"
+                continue
+            if wanted:
+                got = [g for g in got if _platform_name_is(
+                    str((g.get("platform") or {}).get("name") or ""), wanted)]
+            if any(g.get("roms") for g in got):
+                games = got
+                break
+            games = games or got
         if not games:
-            return {"ok": False, "error": "no hasheous match"}
+            if error:
+                return {"ok": False, "error": error}
+            return {"ok": False, "error": "no hasheous match"
+                    + (" on " + " or ".join(wanted) if wanted else "")}
         nt = _norm_title(title)
 
         # Hasheous is a ROM-signature database, so a title search returns dumps,
@@ -2768,13 +3041,11 @@ class Plugin:
             if name != nt:
                 score += 4                      # not the title we asked for
             if any(w in plat for w in ("rom hack", "hack", "bootleg", "audio cd",
-                                       "amiibo", "demo", "prototype")):
+                                       "amiibo", "demo", "prototype",
+                                       "memory card", "wallpaper")):
                 score += 8                      # not a release of the game
-            if want_plat and want_plat in plat:
-                score -= 4                      # the platform we were told
             return score
 
-        want_plat = str(platform or "").strip().lower()
         # A candidate with no reference ROM can NEVER bridge to a game id, so it
         # is not a candidate at all — spending lookups on it is what exhausted
         # the budget before reaching a real match.
@@ -3255,8 +3526,12 @@ class Plugin:
         return {"ok": True, "steps": steps, "igdb_id": igdb_id,
                 "name": label, "sample_image": sample}
 
-    async def _igdb_resolve(self, title: str):
-        """Title -> IGDB game id, same result shape as _hasheous_resolve."""
+    async def _igdb_resolve(self, title: str, platform: str = ""):
+        """Title -> IGDB game id, same result shape as _hasheous_resolve. With
+        the game's system known (`platform`, as for _hasheous_resolve), only
+        games released on it count, which also picks the right one of two
+        same-named games (the 1993 Game Boy "Link's Awakening" or the 2019
+        Switch one)."""
         nt = _norm_title(title)
         try:
             games = await self._igdb_search(title)
@@ -3264,6 +3539,17 @@ class Plugin:
             return {"ok": False, "error": f"igdb search: {exc}"}
         if not games:
             return {"ok": False, "error": "no igdb match"}
+        wanted = _platforms_from_hint(platform)
+
+        def _plats(g):
+            return [str(_igdb_pick(p, "name") or "")
+                    for p in (_igdb_pick(g, "platforms") or []) if isinstance(p, dict)]
+
+        if wanted:
+            games = [g for g in games
+                     if any(_platform_name_is(n, wanted) for n in _plats(g))]
+            if not games:
+                return {"ok": False, "error": "no igdb match on " + " or ".join(wanted)}
         # IGDB's own search already orders by relevance; only pull an exact
         # title match forward, and prefer a main game over a DLC/bundle entry.
         def _rank(g):
@@ -3277,28 +3563,47 @@ class Plugin:
                 year = time.strftime("%Y", time.gmtime(int(ts)))
             except Exception:
                 year = ""
-        plats = [str(_igdb_pick(p, "name") or "")
-                 for p in (_igdb_pick(best, "platforms") or []) if isinstance(p, dict)]
+        plats = _plats(best)
+        shown = next((n for n in plats if wanted and _platform_name_is(n, wanted)),
+                     plats[0] if plats else "")
         return {"ok": True, "provider": "igdb", "id": int(_igdb_pick(best, "id") or 0),
                 "name": str(_igdb_pick(best, "name") or title), "year": year,
-                "platform": plats[0] if plats else ""}
+                "platform": shown}
 
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
                            title: str = "", lang: str = "english", cc: str = "us",
-                           platform: str = ""):
+                           platform: str = "", launch=None):
         """Resolve a library game (Steam or non-Steam shortcut) to the SOURCE to
         fetch content for. A saved match wins. Otherwise a Steam game maps to
         itself, and a non-Steam shortcut is searched on Steam first (best result
         auto-accepted); if Steam has nothing AND non-Steam sources are enabled,
-        it falls back to Hasheous by title (+platform). The match is PERSISTED so
-        it's never re-identified — only the user changes it. `platform`, when the
-        frontend can infer it, disambiguates the Hasheous lookup."""
+        it falls back to IGDB and Hasheous by title. The match is PERSISTED so
+        it's never re-identified — only the user changes it.
+
+        For a shortcut, `launch` is its launch command as Steam stores it
+        ({"exe", "args", "dir"}); the system it reveals (see _detect_platform)
+        narrows the IGDB and Hasheous lookups, and is returned as `system` for
+        the Quick Access panel. `platform` names the system outright instead.
+        The command itself stays here: only the system's name is ever sent."""
+        hint = ""
+        if platform:
+            hint = "|".join(_platforms_from_hint(platform))
+        elif is_shortcut:
+            hint = "|".join(_detect_platform(launch))
+        res = await self._resolve_game(game_appid, is_shortcut, title, lang, cc, hint)
+        if isinstance(res, dict) and is_shortcut:
+            res["system"] = hint.split("|") if hint else []
+        return res
+
+    async def _resolve_game(self, game_appid, is_shortcut: bool, title: str,
+                            lang: str, cc: str, hint: str):
+        """resolve_game's work, with the shortcut's system as a `hint`."""
         try:
             game_appid = int(game_appid)
         except Exception:
             return {"ok": False, "error": "invalid appid"}
         rec = _read_matches().get(str(game_appid))
-        if rec is not None and not _match_is_stale(rec):
+        if rec is not None and not _match_needs_redo(rec, hint):
             return _rec_to_result(rec)
 
         if is_shortcut:
@@ -3332,17 +3637,17 @@ class Plugin:
                     # is the only option and this is the previous behaviour
                     # unchanged.
                     if _igdb_configured():
-                        h = await self._igdb_resolve(title or "")
+                        h = await self._igdb_resolve(title or "", hint)
                         if not h.get("ok"):
-                            h = await self._hasheous_resolve(title or "", platform)
+                            h = await self._hasheous_resolve(title or "", hint)
                     else:
-                        h = await self._hasheous_resolve(title or "", platform)
+                        h = await self._hasheous_resolve(title or "", hint)
                     if h.get("ok"):
                         prov_rec = {
                             "provider": h.get("provider", "hasheous"),
                             "provider_id": int(h["id"]),
                             "platform": h.get("platform", ""), "name": h.get("name", ""),
-                            "year": h.get("year", ""), "source": "auto",
+                            "year": h.get("year", ""), "hint": hint, "source": "auto",
                             "gen": MATCH_GENERATION, "ts": int(time.time())}
                         if not steam_ok:
                             # Steam's search failed (throttled, offline), so it
@@ -3352,13 +3657,23 @@ class Plugin:
                         async with self._matches_lock():
                             cur = _read_matches()
                             existing = cur.get(str(game_appid))
-                            if existing is not None and not _match_is_stale(existing):
+                            if existing is not None and not _match_needs_redo(existing, hint):
                                 return _rec_to_result(existing)
                             cur[str(game_appid)] = prov_rec
                             _write_matches(cur)
                         return _rec_to_result(prov_rec)
                 best = _best_match(title or "", items or [])
                 if not best:
+                    if steam_ok and rec is not None and _match_needs_redo(rec, hint):
+                        # A guess saved before the system was known, and nothing
+                        # on that system matches now: drop it, so the wrong game
+                        # (a Game Boy dump for a Switch game) stops showing.
+                        async with self._matches_lock():
+                            cur = _read_matches()
+                            existing = cur.get(str(game_appid))
+                            if existing is not None and _match_needs_redo(existing, hint):
+                                del cur[str(game_appid)]
+                                _write_matches(cur)
                     return {"ok": True, "store_appid": None, "matched": False,
                             "name": "", "year": "", "reason": "no store match for title"}
                 store_appid = int(best["appid"])
@@ -3384,7 +3699,7 @@ class Plugin:
         async with self._matches_lock():
             cur = _read_matches()
             existing = cur.get(str(game_appid))
-            if existing is not None and not _match_is_stale(existing):
+            if existing is not None and not _match_needs_redo(existing, hint):
                 return _rec_to_result(existing)
             cur[str(game_appid)] = {
                 "store_appid": store_appid, "name": ny["name"], "year": ny["year"],
