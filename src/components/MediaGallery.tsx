@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { Focusable, DialogButton, GamepadButton } from "@decky/ui";
 import type { GamepadEvent } from "@decky/ui";
@@ -35,24 +35,30 @@ const HERO_MEDIA_STYLE: CSSProperties = {
   background: "#000",
 };
 
-// On Windows, Big Picture is itself a fullscreen window, and leaving the
-// browser's fullscreen (Element.requestFullscreen / document.exitFullscreen)
-// takes that window out of fullscreen too: Big Picture drops to a normal
-// window until it's restarted (#16). There, "fullscreen" is an in-page layer
-// filling the window instead, which leaves Big Picture's window alone. The
-// Deck runs under gamescope, where the native API has no such side effect,
-// and keeps it.
-const IN_PAGE_FULLSCREEN =
-  typeof navigator !== "undefined" && /Windows/i.test(navigator.userAgent ?? "");
-
-const IN_PAGE_FULLSCREEN_STYLE: CSSProperties = {
+// "Fullscreen" is an in-page layer filling Big Picture's screen, never the
+// browser's own fullscreen (Element.requestFullscreen). Leaving that took Big
+// Picture's window out of fullscreen too, on Windows and on Linux desktops
+// alike, and it stayed a normal window until Steam restarted (#16). Where the
+// browser has the Popover API, the layer is drawn in the top layer, as the
+// native fullscreen element was, so nothing on Steam's page can clip it or
+// draw over it; otherwise it is a fixed layer above the page. The explicit
+// size, margin, border and colours replace a popover's default small, centred
+// box.
+const FULLSCREEN_LAYER_STYLE: CSSProperties = {
   position: "fixed",
   inset: 0,
+  width: "100%",
+  height: "100%",
+  margin: 0,
+  padding: 0,
+  border: "none",
+  overflow: "hidden",
   zIndex: 10000,
   display: "flex",
   alignItems: "center",
   justifyContent: "center",
   background: "#000",
+  color: "#fff",
 };
 
 // Big store-style hero: shows the current item large, autoplays trailers muted,
@@ -236,13 +242,16 @@ export function MediaHero({ movies, screenshots }: Props) {
   }, [curStreaming, curDash, visible, cur?.id]);
 
   // Visibility poll: page hidden (offsetParent null) or hero scrolled well out
-  // of the viewport. Fullscreen overrides (element leaves normal flow).
+  // of the viewport. Fullscreen overrides (element leaves normal flow), unless
+  // the page itself was left: then fullscreen ends, so it doesn't come back
+  // with the page or keep taking Esc from Steam meanwhile.
   useEffect(() => {
     const check = () => {
       const el = rootDivRef.current;
       if (!el) return;
       if (fullscreen) {
-        setVisible(true);
+        if (el.offsetParent == null) setFullscreen(false);
+        else setVisible(true);
         return;
       }
       if (el.offsetParent == null) {
@@ -338,26 +347,45 @@ export function MediaHero({ movies, screenshots }: Props) {
     };
   }, [cur?.id, srcIdx, curIsPlayableVideo, visible, markCurFailed]);
 
-  // Track fullscreen state from the UI document (works for B/Esc exits too).
+  // The layer has no browser-provided Esc exit, so give it one. It listens
+  // first (capture, on the window) and keeps that Esc from Steam, so the key
+  // can't also be taken as Back and leave the game page.
   useEffect(() => {
-    if (IN_PAGE_FULLSCREEN) return; // state-only there; see IN_PAGE_FULLSCREEN
-    const doc = heroBoxRef.current?.ownerDocument;
-    if (!doc) return;
-    const onFs = () => setFullscreen(doc.fullscreenElement != null);
-    doc.addEventListener("fullscreenchange", onFs);
-    return () => doc.removeEventListener("fullscreenchange", onFs);
-  }, []);
-
-  // The in-page layer has no browser-provided Esc exit, so give it one.
-  useEffect(() => {
-    if (!IN_PAGE_FULLSCREEN || !fullscreen) return;
-    const doc = heroBoxRef.current?.ownerDocument;
-    if (!doc) return;
+    if (!fullscreen) return;
+    const win = heroBoxRef.current?.ownerDocument?.defaultView;
+    if (!win) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setFullscreen(false);
+      if (e.key !== "Escape") return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      setFullscreen(false);
     };
-    doc.addEventListener("keydown", onKey);
-    return () => doc.removeEventListener("keydown", onKey);
+    win.addEventListener("keydown", onKey, true);
+    return () => win.removeEventListener("keydown", onKey, true);
+  }, [fullscreen]);
+
+  // Top layer for the fullscreen layer, where the Popover API exists. The
+  // attribute is present only while fullscreen, because a popover that isn't
+  // showing is display: none. A layout effect, so the switch lands in the same
+  // frame as the fullscreen styles.
+  useLayoutEffect(() => {
+    const box = heroBoxRef.current;
+    if (!fullscreen || !box || typeof box.showPopover !== "function") return;
+    box.setAttribute("popover", "manual");
+    try {
+      box.showPopover();
+    } catch {
+      box.removeAttribute("popover"); // stays the fixed layer
+      return;
+    }
+    return () => {
+      try {
+        box.hidePopover();
+      } catch {
+        // Already hidden, e.g. taken off the page.
+      }
+      box.removeAttribute("popover");
+    };
   }, [fullscreen]);
 
   // Keep the selected thumbnail centered — scrolling ONLY the strip
@@ -381,20 +409,9 @@ export function MediaHero({ movies, screenshots }: Props) {
     return <div style={{ opacity: 0.6, fontSize: 13 }}>{t("media.none")}</div>;
   }
 
-  const toggleFullscreen = () => {
-    if (IN_PAGE_FULLSCREEN) {
-      setFullscreen((f) => !f);
-      return;
-    }
-    const box = heroBoxRef.current;
-    const doc = box?.ownerDocument;
-    if (!box || !doc) return;
-    if (doc.fullscreenElement) {
-      doc.exitFullscreen?.().catch?.(() => {});
-    } else {
-      box.requestFullscreen?.().catch?.(() => {});
-    }
-  };
+  const toggleFullscreen = () => setFullscreen((f) => !f);
+  // B only ever leaves, so it can't undo an Esc that Steam also reads as B.
+  const leaveFullscreen = () => setFullscreen(false);
 
   // Store-page interaction model: A = play/pause on a video, fullscreen on an
   // image; X = mute; Y = fullscreen; D-pad left/right browses media in place.
@@ -451,7 +468,7 @@ export function MediaHero({ movies, screenshots }: Props) {
         }
         onOptionsButton={toggleFullscreen}
         onOptionsActionDescription={fullscreen ? t("media.exitFullscreen") : t("media.fullscreen")}
-        onCancelButton={fullscreen ? toggleFullscreen : undefined}
+        onCancelButton={fullscreen ? leaveFullscreen : undefined}
         onCancelActionDescription={fullscreen ? t("media.exitFullscreen") : undefined}
         onGamepadDirection={onHeroDirection}
         onGamepadFocus={() => setHeroFocused(true)}
@@ -469,12 +486,7 @@ export function MediaHero({ movies, screenshots }: Props) {
           outlineOffset: -2,
         }}
       >
-        <div
-          ref={heroBoxRef}
-          style={
-            IN_PAGE_FULLSCREEN && fullscreen ? IN_PAGE_FULLSCREEN_STYLE : { background: "#000" }
-          }
-        >
+        <div ref={heroBoxRef} style={fullscreen ? FULLSCREEN_LAYER_STYLE : { background: "#000" }}>
           {visible && curIsPlayableVideo && cur.kind === "movie" && (curSrc || curStreaming) ? (
             <video
               key={`${cur.id}:${curStreaming ? "stream" : srcIdx}`}
