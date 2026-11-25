@@ -1,4 +1,6 @@
 import { callable } from "@decky/api";
+import { getShortcutLaunch } from "./identity";
+import type { ShortcutLaunch } from "./identity";
 import type {
   AppData,
   AppDetails,
@@ -64,7 +66,9 @@ export interface ResolveResult {
   // the provider + its id here. Older backends omit these (treated as Steam).
   provider?: DataProvider;
   provider_id?: number | string | null;
-  platform?: string; // inferred emulator platform, when known (non-Steam)
+  platform?: string; // the matched listing's platform (non-Steam)
+  /** Shortcuts only: the systems its launch command points to; empty when it doesn't say. */
+  system?: string[];
   name: string;
   year: string;
   source?: string; // "auto" | "manual"
@@ -72,12 +76,31 @@ export interface ResolveResult {
   from_cache?: boolean;
   reason?: string;
 }
-// Resolve a library game (Steam or non-Steam shortcut) to the store appid to
-// fetch. Persists the match so it's never re-identified.
-export const resolveGame = callable<
-  [game_appid: number, is_shortcut: boolean, title: string, lang: string, cc: string],
+const resolveGameCall = callable<
+  [
+    game_appid: number,
+    is_shortcut: boolean,
+    title: string,
+    lang: string,
+    cc: string,
+    platform: string,
+    launch: ShortcutLaunch | null,
+  ],
   ResolveResult
 >("resolve_game");
+// Resolve a library game (Steam or non-Steam shortcut) to the store appid to
+// fetch. Persists the match so it's never re-identified. A shortcut's launch
+// command goes along, so the backend can tell which system the game is for.
+export async function resolveGame(
+  appid: number,
+  isShortcut: boolean,
+  title: string,
+  lang: string,
+  cc: string
+): Promise<ResolveResult> {
+  const launch = isShortcut ? await getShortcutLaunch(appid) : null;
+  return resolveGameCall(appid, isShortcut, title, lang, cc, "", launch);
+}
 
 export interface LookupResult {
   ok: boolean;

@@ -186,6 +186,8 @@ viewing the game:
 
 - **Store page** shows which store page the content comes from, as
   `Title (Year)`, so you can confirm it's the right game.
+- **System** (non-Steam games) shows which system EnhancedGV read from the
+  shortcut, or *Not detected*. See below.
 - **Wrong match?** Press **Change match**, type the correct **App ID** (or paste
   the game's `store.steampowered.com/app/…` URL, or `igdb:ID` / `hasheous:ID` for
   a game Steam doesn't sell), and press **Save match**. Your choice is sticky and
@@ -204,9 +206,19 @@ Games that have no Steam store page at all (SNES/PS1/etc. ROMs added as individu
 shortcuts) fall back to **Hasheous**, a free community game database. Turn on
 **Quick Access → EnhancedGV → Non-Steam games → Look up emulated games**. That is
 the only setup: no account and no key. It's off by default because it sends the
-name of each non-Steam game you open to hasheous.org, and a Switch game's name to
-perfectly-nintendo.com for its update history. Each game needs its own Steam
-shortcut with a recognisable name, which is what Steam ROM Manager makes.
+name of each non-Steam game you open (and, for an emulated game, its system) to
+hasheous.org, and a Switch game's name to perfectly-nintendo.com for its update
+history. Each game needs its own Steam shortcut with a recognisable name, which
+is what Steam ROM Manager makes.
+
+One title is often on many systems, so EnhancedGV also works out which system
+each emulated game is for, from its shortcut: the ROM's file type (`.nsp`,
+`.sfc`, `.gba`…), the ROM folder EmuDeck, RetroDECK and ES-DE name after the
+system (`roms/snes`), or the emulator (Ryujinx, Dolphin, a RetroArch core…).
+Only listings on that system are accepted, so a Game Boy ROM gets the Game Boy
+game rather than its Color remake, and a Switch game is never shown as a Game
+Boy dump, a rom hack or a soundtrack. The shortcut's file paths never leave
+the device; only the system's name is sent.
 
 Hasheous matches the shortcut's title to a game, and that half needs no key.
 Release builds also carry **EnhancedGV's own Hasheous application key**, which

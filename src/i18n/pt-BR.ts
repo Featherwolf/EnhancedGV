@@ -9,6 +9,8 @@ export const ptBR: Record<TranslationKey, string> = {
   "settings.thisGame": "Este jogo",
   "settings.openStoreView": "Abrir visão da loja",
   "settings.shortcutLabel": "Atalho",
+  "settings.systemLabel": "Sistema",
+  "settings.systemUnknown": "Não detectado",
   "settings.storePageLabel": "Página da loja",
   "settings.setByYou": " · definido por você",
   "settings.viaProvider": " · via {provider}",

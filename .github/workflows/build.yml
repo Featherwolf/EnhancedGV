@@ -85,6 +85,12 @@ jobs:
       - name: Check Switch update history stays on its site and stays inert
         run: python3 scripts/check_switch_news.py
 
+      # Non-Steam games are matched by title, and one title is on many systems.
+      # The system read from a shortcut's launch command keeps IGDB and Hasheous
+      # matches on it, and no part of the command leaves the device.
+      - name: Check emulated games are matched on their own system
+        run: python3 scripts/check_platform_detect.py
+
       # EnhancedGV's Hasheous app key unlocks IGDB artwork for every user. It
       # may go only to hasheous.org, in its header, never redirected, logged,
       # cached or handed to the panel.
