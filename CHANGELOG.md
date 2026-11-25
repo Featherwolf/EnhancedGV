@@ -19,10 +19,10 @@
 - **Portuguese (Brazil) interface.** EnhancedGV's own menus and labels now come
   in Brazilian Portuguese too. They follow your Steam language, or you can pick
   one under **Language** in Quick Access. Store content still follows Steam.
-  Contributed by btd1337.
+  Contributed by @btd1337.
 - **Update history for Switch games.** Non-Steam Switch games now show the
   changes from their three newest releases, from perfectly-nintendo.com, with a
-  link to the full article. Contributed by btd1337.
+  link to the full article. Contributed by @btd1337.
 - **Steam's newest beta.** Steam rebuilt its interface in its latest beta, and
   EnhancedGV can't yet find where to place its panel there. Instead of quietly
   showing nothing, Quick Access now says so. Steam's Stable channel is
