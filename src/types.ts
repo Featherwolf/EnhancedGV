@@ -169,11 +169,16 @@ export interface NewsItem {
   external: boolean;
   feedlabel: string;
   author: string;
+  /* `html` holds only part of the article at `url` (perfectly-nintendo.com: its latest release). */
+  excerpt?: boolean;
 }
 
 export interface News {
   ok: boolean;
   error?: string;
+  /* A Switch update-history lookup still running in the background: asking
+     again shortly gets the result. */
+  transient?: boolean;
   items: NewsItem[];
 }
 

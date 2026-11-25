@@ -257,7 +257,9 @@ export const ptBR: Record<TranslationKey, string> = {
   "lang.indonesian": "Indonésio",
 
   "news.none": "Nenhuma atualização recente.",
-  "news.viewOnSteam": "Ver na Steam",
+  "news.viewOnline": "Ver online",
+  "news.stillLoading": "Ainda buscando o histórico de atualizações. Abra este jogo de novo em um minuto.",
+  "news.readFullArticle": "Ler o artigo completo em {site}",
 
   "media.none": "Nenhuma mídia disponível.",
   "media.pause": "Pausar",

@@ -22,6 +22,7 @@ import functools
 import hashlib
 import io
 import zipfile
+import unicodedata
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -65,10 +66,23 @@ CACHE_VERSION = "0.15.0-lang"
 TTL = {"appdetails": 86400, "deck": 86400, "reviews": 3600, "reviews_sum": 3600,
        "reviews_recent": 3600, "news_posts": 3600,
        # Non-Steam / emulated metadata is essentially static — cache it a week.
-       "hasheous": 604800, "igdb": 604800}
+       "hasheous": 604800, "igdb": 604800,
+       # Nintendo's own eShop "related news" for a Switch game — an update
+       # announcement is a rare event, so this is cached like deck/appdetails
+       # rather than refetched often.
+       "switch_news": 86400}
 # Negative results (fetch failed / success=false) are cached only briefly so a
 # transient network/SSL failure doesn't linger after it's resolved.
 NEGATIVE_TTL = 120
+# Per-kind override of the above. switch_news's negative case is reached a lot
+# more often than a plain network blip: perfectly-nintendo.com genuinely has no
+# article for plenty of titles, and that's a stable fact, not a glitch — the
+# 120s default was only ever a stopgap for testing the matching logic itself.
+# An hour avoids re-hitting both sources (and perfectly-nintendo.com's own
+# intermittent TLS flakiness — see PN_RETRY_ATTEMPTS) on every revisit within
+# a session, while still recovering well within the same day if a fetch
+# failure, rather than a genuine miss, was the actual cause.
+NEGATIVE_TTL_OVERRIDE = {"switch_news": 3600}
 # How long past its TTL a cached entry may still be SERVED while a refresh runs
 # in the background (stale-while-revalidate). Revisiting a game after the TTL
 # expired used to mean sitting on the loading placeholder through a full set of
@@ -312,6 +326,23 @@ def _http_get_json(url: str, headers: dict = None) -> dict:
                          f"the endpoint may have moved") from None
 
 
+def _http_get_text(url: str, hosts) -> str:
+    """An HTML page (Nintendo's product/news pages, perfectly-nintendo.com)
+    rather than a JSON API. Only ever fetched from, and redirected within,
+    https on `hosts` (see _pinned_url)."""
+    if not _pinned_url(url, hosts):
+        raise ValueError(f"refusing to fetch {urllib.parse.urlsplit(url).netloc or url!r}: "
+                         f"not a pinned host")
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with _pinned_opener(hosts).open(req, timeout=REQUEST_TIMEOUT) as resp:
+        if not _pinned_url(resp.geturl(), hosts):
+            raise ValueError("the page ended somewhere other than its pinned site")
+        raw = resp.read(MAX_RESPONSE_BYTES + 1)
+    if len(raw) > MAX_RESPONSE_BYTES:
+        raise ValueError("response exceeds the size limit")
+    return raw.decode("utf-8", "replace")
+
+
 def _http_post_json(url: str, payload: dict) -> dict:
     body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
@@ -385,7 +416,7 @@ def _read_cache_entry(kind: str, key: str):
         return None, False  # corrupt/foreign file -> a cache miss, never raise
     age = time.time() - blob.get("fetched_at", 0)
     negative = bool(blob.get("negative"))
-    ttl = NEGATIVE_TTL if negative else TTL.get(kind, 3600)
+    ttl = NEGATIVE_TTL_OVERRIDE.get(kind, NEGATIVE_TTL) if negative else TTL.get(kind, 3600)
     if age < ttl:
         return blob.get("data"), True
     # A stale FAILURE is worthless — never serve it; retry instead.
@@ -851,6 +882,48 @@ def _github_url(u) -> str:
     if parts.scheme != "https" or parts.hostname is None:
         return ""
     return s if parts.hostname.lower() in _GITHUB_HOSTS else ""
+
+
+def _pinned_url(u, hosts) -> str:
+    """A URL, or "" unless it is https on one of `hosts`.
+
+    Shared by every fetch that follows a link SCRAPED from a third-party
+    page's own HTML/JSON rather than built from a constant we wrote (e.g. an
+    article href from a perfectly-nintendo.com search result, or a body URL
+    from nintendo.com's own __NEXT_DATA__): that source could, by compromise,
+    mistake or a future redesign, hand back a link to any host. Redirects are
+    pinned the same way, by _PinnedRedirect.
+    """
+    s = _plain_url(u)
+    try:
+        parts = urllib.parse.urlsplit(s)
+        port = parts.port
+    except Exception:
+        return ""
+    if (parts.scheme != "https" or port not in (None, 443)
+            or parts.username or parts.password or parts.hostname is None):
+        return ""
+    return s if parts.hostname.lower() in hosts else ""
+
+
+class _PinnedRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow a redirect only to https on the same pinned hosts (the default
+    opener follows one anywhere)."""
+
+    def __init__(self, hosts):
+        super().__init__()
+        self._hosts = hosts
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not _pinned_url(newurl, self._hosts):
+            raise ValueError(f"{urllib.parse.urlsplit(req.full_url).netloc} redirected "
+                             f"outside its pinned site")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _pinned_opener(hosts):
+    return urllib.request.build_opener(
+        _PinnedRedirect(hosts), urllib.request.HTTPSHandler(context=_SSL_CTX))
 
 
 # --------------------------------------------------------------------------- #
@@ -1960,6 +2033,331 @@ def _normalize_hasheous(obj: dict) -> dict:
     return out
 
 
+def _is_switch_platform(appdetails: dict) -> bool:
+    """Whether a normalized non-Steam AppDetails describes a Nintendo Switch
+    game — gates the Nintendo eShop news lookup below, which only makes sense
+    for Switch (not a SNES/Genesis/PS1/etc. ROM also served through the same
+    Hasheous/IGDB path). Reuses `categories`, already populated with the
+    platform name by _normalize_hasheous/_igdb_facts, rather than re-deriving
+    it from either provider's raw shape."""
+    for c in (appdetails.get("categories") or []):
+        if "switch" in str(c.get("description", "")).lower():
+            return True
+    return False
+
+
+# --- Nintendo eShop "related news" (Switch update announcements) ----------- #
+# Nintendo publishes no API for this and no per-game patch notes at all in the
+# way Steam does — confirmed by testing live: the eShop product page's own
+# embedded JSON (a Next.js "__NEXT_DATA__" blob, not a documented endpoint) is
+# the only structured, un-authenticated source that carries a game's real
+# announcement history (including genuine update posts) with full body text.
+# Fragile in the sense that any undocumented page internal is (a site
+# redesign can change this shape), but it is Nintendo's own first-party
+# content, served plainly over https with no bot-challenge encountered —
+# unlike e.g. nintendolife.com, which Cloudflare blocks outright.
+# Every article URL fetched for a Switch game must resolve to one of these —
+# see _pinned_url. www.nintendo.com's own __NEXT_DATA__ names the article
+# host itself (_fetch_switch_article), so this is pinned even though the
+# product page URL above is already a constant we built ourselves.
+_NINTENDO_HOSTS = frozenset(("www.nintendo.com", "nintendo.com"))
+NINTENDO_PRODUCT_BASE = "https://www.nintendo.com/us/store/products"
+# Capped: a prolific title (Mario Kart 8 Deluxe) still only has a handful of
+# genuine news entries, and this trades one extra HTTP request per item.
+NINTENDO_NEWS_MAX = 8
+# Seconds get_all_provider waits for a Switch update-history lookup before
+# answering without it (see _switch_news_for).
+SWITCH_NEWS_WAIT = 5
+_NEXT_DATA_RE = re.compile(
+    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', re.S)
+
+
+def _nintendo_slug(title: str) -> str:
+    """Best-guess nintendo.com product-page slug from a game title. Verified
+    live against two real titles (both matched on the first try), but this is
+    a guess, not a lookup — no reachable search API was found (the site's own
+    search is client-rendered, not server-embedded), so a miss here just means
+    no Switch news for that game, same as not finding one at all.
+
+    Also used (see _parse_pn_search) to normalize titles for the
+    perfectly-nintendo.com fallback match — NFKD-decomposing first matters
+    there specifically: without it, "Pokémon" loses its "é" to the ASCII-only
+    strip below and becomes "pok-mon", which never matches "pokemon" (bug
+    found live: every accented title silently got zero fallback results)."""
+    s = unicodedata.normalize("NFKD", str(title or ""))
+    s = "".join(c for c in s if not unicodedata.combining(c))
+    s = re.sub(r"[™®©]", "", s)
+    s = re.sub(r"[^A-Za-z0-9]+", "-", s).strip("-").lower()
+    return s
+
+
+def _extract_next_data(raw_html: str):
+    m = _NEXT_DATA_RE.search(raw_html or "")
+    if not m:
+        return None
+    try:
+        return json.loads(m.group(1))
+    except Exception:
+        return None
+
+
+def _news_articles_from_next_data(data: dict) -> list:
+    """The product page's "Related news and events" list, newest first. Each
+    entry here only carries title/url/date/media — the full body lives on the
+    article's own page (see _fetch_switch_article)."""
+    try:
+        apollo = data["props"]["pageProps"]["initialApolloState"]
+    except Exception:
+        return []
+    arts = []
+    for k, v in apollo.items():
+        if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                and v.get("locale") == "en_US" and v.get("title") and v.get("url")):
+            arts.append(v)
+    arts.sort(key=lambda a: a.get("publishDate") or "", reverse=True)
+    return arts
+
+
+# --- perfectly-nintendo.com (tried FIRST — see get_switch_news) ----------- #
+# perfectly-nintendo.com maintains one hand-written "all the updates" article
+# per game — a single page, continuously edited in place, with the full real
+# version/patch-note history. Nintendo's own eShop page (below) is tried
+# second: its "related news" is PR-style announcements, which several titles
+# have PLENTY of while carrying zero actual patch notes (confirmed live —
+# see get_switch_news), so checking it first would mask this site's content
+# rather than merely filling a gap. It has no API and no server-rendered
+# search result we can query as JSON either, just an ordinary WordPress
+# search page, so this is scraped the same way as the Nintendo page: request
+# a page, regex out what's needed.
+# The article href comes from this site's OWN search-result HTML
+# (_parse_pn_search), not a constant we built — see _pinned_url.
+_PN_HOSTS = frozenset(("www.perfectly-nintendo.com", "perfectly-nintendo.com"))
+PN_BASE = "https://www.perfectly-nintendo.com"
+# This host's TLS handshake intermittently times out — confirmed live, ~30%
+# of requests, independent of UA, spaced seconds apart, immediately followed
+# by a clean success (looks like a WAF/edge node that occasionally just
+# drops the connection rather than a slow server or a hard block). A single
+# retry still missed it occasionally in practice (confirmed live), so
+# _fetch_pn_update_page gets 3 attempts per request rather than 2.
+PN_RETRY_ATTEMPTS = 3
+PN_RETRY_DELAY = 2.0
+# The rest of the history stays behind the "read the full article" link.
+PN_MAX_RELEASES = 3
+_PN_RESULT_RE = re.compile(r'<h2 class="cm-entry-title">\s*<a href="([^"]+)" title="([^"]*)">')
+# Every "all the updates" article's URL carries this segment (sometimes with
+# a "switch" infix, sometimes not) — verified against a dozen real titles.
+# Not anchored to the end: some of these slugs tack on a trailing version
+# number at creation time (e.g. "...-switch-software-updates-latest-ver-1-0-2/"
+# for Donkey Kong Country: Tropical Freeze — confirmed live), so the end-
+# anchored form missed real update pages.
+_PN_UPDATES_URL_RE = re.compile(r'-(?:switch-)?(?:software-updates|all-the-updates)(?:-|/|$)')
+
+
+def _pn_http_get_text(url: str) -> str:
+    """_http_get_text against perfectly-nintendo.com, retrying PN_RETRY_
+    ATTEMPTS times on failure (see PN_RETRY_ATTEMPTS comment above). Runs
+    inside the executor thread, so the blocking sleep between attempts
+    doesn't stall the event loop."""
+    last_exc = None
+    for attempt in range(PN_RETRY_ATTEMPTS):
+        try:
+            return _http_get_text(url, _PN_HOSTS)
+        except ValueError:
+            raise  # a refused host or an oversized page won't change on retry
+        except Exception as exc:
+            last_exc = exc
+            if attempt + 1 < PN_RETRY_ATTEMPTS:
+                time.sleep(PN_RETRY_DELAY)
+    raise last_exc
+_PN_DIV_RE = re.compile(r'<(/?)div\b[^>]*>')
+_PN_CONTENT_START_RE = re.compile(r'<div class="cm-entry-summary">')
+_PN_TITLE_RE = re.compile(r'<h1 class="cm-entry-title">\s*(.*?)\s*</h1>', re.S)
+_PN_DATE_RE = re.compile(r'<time\b[^>]*\bdatetime="([^"]+)"')
+# A release starts at a heading naming its version ("Mario Kart 8 Deluxe – Ver.
+# 4.0.1", "Guardian Tales – Ver. ??? (November 24th Update)"); the sub-headings
+# inside one release ("Forsaken Traders", "General") never carry "Ver.".
+_PN_RELEASE_HEADING_RE = re.compile(
+    r'<h([1-6])\b[^>]*>((?:(?!</h\1>).)*?\bVer\.(?:(?!</h\1>).)*)</h\1>', re.S | re.I)
+# Each release wraps its changes in two metadata lists: one ending in "Patch
+# notes:" (release date, maintenance, platforms, file size) and one starting
+# with "Additional notes" (official website, source).
+_PN_PATCH_NOTES_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?Patch notes\s*(?:</(?:strong|b)>\s*)?:?', re.I)
+_PN_TRAILER_LABEL_RE = re.compile(
+    r'<li\b[^>]*>\s*(?:<(?:strong|b)>\s*)?(?:Additional notes|Official website|Source)\b', re.I)
+_PN_HR_RE = re.compile(r'<hr\b[^>]*>', re.I)
+
+
+def _pn_title_matches(want_words: list, got: str) -> bool:
+    """Whether every word of our (slugified) game title appears in the
+    candidate article's slug, IN ORDER, allowing gaps. A plain prefix check
+    (got.startswith(want)) missed real pages where perfectly-nintendo.com
+    bundles several games into one article — e.g. "Super Mario Galaxy +
+    Super Mario Galaxy 2" for a "Super Mario Galaxy 2" lookup, or "Pokémon
+    Brilliant Diamond / Shining Pearl" for "Pokémon Shining Pearl" — both
+    confirmed live misses before this. The URL-suffix filter already run by
+    the caller keeps this from being too loose."""
+    got_words = got.split("-")
+    i = 0
+    for w in want_words:
+        try:
+            i = got_words.index(w, i) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def _parse_pn_search(raw_html: str, game_title: str) -> str:
+    """Best-matching 'software updates' article URL from a perfectly-nintendo.
+    com search-results page, or "" if nothing looks like a safe match. Unlike
+    the blind nintendo.com slug guess, this site's search hands back real
+    article titles, so a result is only trusted when its title actually
+    contains our game's words in order (see _pn_title_matches) — avoids
+    attaching another game's update history just because it mentioned ours
+    in passing."""
+    want = _nintendo_slug(game_title)
+    if not want:
+        return ""
+    want_words = want.split("-")
+    for href, title_attr in _PN_RESULT_RE.findall(raw_html or ""):
+        if not _PN_UPDATES_URL_RE.search(href):
+            continue
+        got = _nintendo_slug(html.unescape(title_attr))
+        if _pn_title_matches(want_words, got):
+            return href
+    return ""
+
+
+def _pn_extract_div_content(raw_html: str, open_tag_end: int) -> str:
+    """Inner HTML of a <div>...</div>, matched by nesting depth rather than a
+    fixed sibling marker — the article body is long (full version history)
+    and nothing reliably follows it across every page layout variant."""
+    depth = 1
+    for m in _PN_DIV_RE.finditer(raw_html, open_tag_end):
+        depth += 1 if m.group(1) == "" else -1
+        if depth == 0:
+            return raw_html[open_tag_end:m.start()]
+    return raw_html[open_tag_end:]
+
+
+def _pn_release_changes(block: str) -> str:
+    """The changes in one release block: what lies between its two metadata
+    lists. Some releases give a one-line "Patch notes: …" value instead of a
+    list, so that value is kept too."""
+    start = 0
+    inline = ""
+    label = _PN_PATCH_NOTES_LABEL_RE.search(block)
+    if label:
+        li_end = block.find("</li>", label.end())
+        if li_end != -1:
+            inline = re.sub(r"<[^>]+>", "", block[label.end():li_end]).strip(" :\t\r\n")
+        ul_end = block.find("</ul>", label.end())
+        start = ul_end + len("</ul>") if ul_end != -1 else label.end()
+    end = len(block)
+    trailer = _PN_TRAILER_LABEL_RE.search(block, start)
+    if trailer:
+        ul_start = block.rfind("<ul", start, trailer.start())
+        end = ul_start if ul_start != -1 else trailer.start()
+    changes = _PN_HR_RE.sub("", block[start:end])
+    if inline:
+        changes = f"<p>{html.escape(html.unescape(inline), quote=False)}</p>{changes}"
+    return changes
+
+
+def _parse_pn_article(raw_html: str):
+    """The changes of the newest PN_MAX_RELEASES releases, each under its
+    version heading — and nothing else: the intro, older releases, release
+    dates, file sizes, sources and links are dropped, leaving the full article
+    to the "read the full article" link. A release heading names the game
+    before "Ver." ("No Man's Sky – Ver. 7.0 (Cosmos) Hotfixes"); one starting
+    with "Ver." ("Ver. 7.01") is a sub-version inside a hotfix release, not a
+    release of its own. An
+    article with no recognizable release heading yields nothing, so
+    get_switch_news falls back to the eShop instead of showing it whole."""
+    m = _PN_CONTENT_START_RE.search(raw_html or "")
+    if not m:
+        return None
+    body_raw = _pn_extract_div_content(raw_html, m.end())
+    releases = [
+        rel for rel in _PN_RELEASE_HEADING_RE.finditer(body_raw)
+        if not html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip().lower().startswith("ver.")
+    ]
+    parts = []
+    for i, rel in enumerate(releases):
+        end = releases[i + 1].start() if i + 1 < len(releases) else len(body_raw)
+        changes = _pn_release_changes(body_raw[rel.end():end])
+        if not re.sub(r"<[^>]+>|&nbsp;|\s", "", changes):
+            continue
+        heading = html.unescape(re.sub(r"<[^>]+>", "", rel.group(2))).strip()
+        parts.append(f"<h3>{html.escape(heading, quote=False)}</h3>{changes}")
+        if len(parts) == PN_MAX_RELEASES:
+            break
+    if not parts:
+        return None
+    title_m = _PN_TITLE_RE.search(raw_html)
+    title = html.unescape(re.sub(r"<[^>]+>", "", title_m.group(1))).strip() if title_m else ""
+    date_m = _PN_DATE_RE.search(raw_html)
+    ts = 0
+    if date_m:
+        try:
+            ts = int(datetime.datetime.fromisoformat(date_m.group(1)).timestamp())
+        except Exception:
+            ts = 0
+    return {"title": title, "html": _sanitize_html("".join(parts)), "date": ts}
+
+
+def _nintendo_richtext_to_html(node) -> str:
+    """Contentful rich-text JSON (the article body's native format) -> a
+    small HTML subset, built from the SAME allowed tags _sanitize_html already
+    permits. Unrecognized node types (embedded assets/entries, tables, …)
+    degrade to their flattened text rather than being dropped outright."""
+    if not isinstance(node, dict):
+        return ""
+    node_type = node.get("nodeType", "")
+    if node_type == "text":
+        text = html.escape(str(node.get("value", "")), quote=False)
+        marks = {m.get("type") for m in (node.get("marks") or []) if isinstance(m, dict)}
+        if "code" in marks:
+            text = f"<code>{text}</code>"
+        if "italic" in marks:
+            text = f"<em>{text}</em>"
+        if "bold" in marks:
+            text = f"<strong>{text}</strong>"
+        if "underline" in marks:
+            text = f"<u>{text}</u>"
+        return text
+    children = "".join(
+        _nintendo_richtext_to_html(c) for c in (node.get("content") or [])
+    )
+    if node_type == "document":
+        return children
+    if node_type == "paragraph":
+        return f"<p>{children}</p>" if children.strip() else ""
+    if node_type in (
+        "heading-1", "heading-2", "heading-3",
+        "heading-4", "heading-5", "heading-6",
+    ):
+        level = node_type[-1]
+        return f"<h{level}>{children}</h{level}>"
+    if node_type == "unordered-list":
+        return f"<ul>{children}</ul>"
+    if node_type == "ordered-list":
+        return f"<ol>{children}</ol>"
+    if node_type == "list-item":
+        return f"<li>{children}</li>"
+    if node_type == "blockquote":
+        return f"<blockquote>{children}</blockquote>"
+    if node_type == "hr":
+        return "<hr>"
+    if node_type == "hyperlink":
+        uri = str((node.get("data") or {}).get("uri", ""))
+        safe = html.escape(_safe_url(uri), quote=True)
+        return f'<a href="{safe}" target="_blank" rel="noreferrer">{children}</a>'
+    # embedded-asset-block / embedded-entry-block / table / anything future:
+    # no safe generic rendering, so just keep whatever text it carries.
+    return children
+
+
 # --------------------------------------------------------------------------- #
 # Plugin
 # --------------------------------------------------------------------------- #
@@ -2253,6 +2651,180 @@ class Plugin:
         # converter), so the fix shows at once instead of after the cached copy
         # expires.
         return await self._fetch("news_posts", str(appid), url, norm)
+
+    async def _fetch_switch_article(self, url: str) -> dict:
+        """One Nintendo news article's full body, by re-parsing ITS OWN
+        __NEXT_DATA__ (the product page only carries title/date/url — see
+        _news_articles_from_next_data). Best-effort: a failure here still
+        leaves the title/date/link usable, just with an empty body, rather
+        than dropping the item from the list."""
+        url = _pinned_url(url, _NINTENDO_HOSTS)
+        if not url:
+            return {"html": ""}
+        try:
+            loop = asyncio.get_running_loop()
+            raw_html = await loop.run_in_executor(None, _http_get_text, url, _NINTENDO_HOSTS)
+        except Exception as exc:
+            decky.logger.warning(f"switch article fetch failed ({url}): {exc}")
+            return {"html": ""}
+        data = _extract_next_data(raw_html)
+        if not isinstance(data, dict):
+            return {"html": ""}
+        try:
+            apollo = data["props"]["pageProps"]["initialApolloState"]
+        except Exception:
+            return {"html": ""}
+        for k, v in apollo.items():
+            # On an article's OWN page, its en_US cache entry's `url` field is
+            # null (only populated when the SAME article is referenced FROM a
+            # product page's related-news list) — `body` is what's actually
+            # exclusive to the one entry we want, so match on that instead.
+            if (isinstance(v, dict) and str(k).startswith("NewsArticle:")
+                    and v.get("locale") == "en_US" and v.get("body")):
+                body_json = (v.get("body") or {}).get("json")
+                if not body_json:
+                    return {"html": ""}
+                try:
+                    return {"html": _sanitize_html(_nintendo_richtext_to_html(body_json))}
+                except Exception as exc:
+                    decky.logger.warning(f"switch article body render failed ({url}): {exc}")
+                    return {"html": ""}
+        return {"html": ""}
+
+    async def _fetch_pn_update_page(self, title: str) -> dict:
+        """perfectly-nintendo.com lookup for get_switch_news, tried FIRST
+        (see the module comment above PN_BASE): search the site for this
+        title, then scrape its one "all the updates" article into the same
+        news-item shape the Nintendo path produces, so the frontend can't
+        tell which source it came from."""
+        loop = asyncio.get_running_loop()
+        search_url = f"{PN_BASE}/?s={urllib.parse.quote_plus(title)}"
+        try:
+            search_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, search_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo search failed ({title}): {exc}")
+            return {"ok": False, "error": "perfectly-nintendo.com search failed"}
+
+        article_url = _pinned_url(_parse_pn_search(search_html, title), _PN_HOSTS)
+        if not article_url:
+            return {"ok": True, "items": []}
+
+        try:
+            article_html = await loop.run_in_executor(
+                None, functools.partial(_pn_http_get_text, article_url))
+        except Exception as exc:
+            decky.logger.warning(f"perfectly-nintendo article fetch failed ({article_url}): {exc}")
+            return {"ok": True, "items": []}
+
+        art = _parse_pn_article(article_html)
+        if not art or not art.get("html"):
+            return {"ok": True, "items": []}
+
+        item = {
+            "gid": _nintendo_slug(title) or "pn-updates",
+            "title": art.get("title") or f"{title}: software updates",
+            "html": art["html"],
+            "date": art.get("date", 0),
+            "url": _safe_ext_url(article_url),
+            "external": True,
+            "feedlabel": "Perfectly Nintendo",
+            "author": "",
+            "excerpt": True,
+        }
+        return {"ok": True, "items": [item]}
+
+    async def _get_nintendo_eshop_news(self, title: str, slug_base: str) -> dict:
+        """Nintendo eShop 'Related news and events' for a Switch game — see
+        the module-level comment above _is_switch_platform/NINTENDO_PRODUCT_
+        BASE for why this guesses a URL instead of calling a documented API
+        (none exists). These are PR-style announcement articles, NOT a
+        version/patch history — see get_switch_news for why that makes this
+        the second choice, not the first."""
+        loop = asyncio.get_running_loop()
+        candidates = [f"{slug_base}-switch", f"{slug_base}-switch-2", slug_base]
+        page_html = None
+        for cand in candidates:
+            url = f"{NINTENDO_PRODUCT_BASE}/{cand}/"
+            try:
+                page_html = await loop.run_in_executor(None, _http_get_text, url, _NINTENDO_HOSTS)
+                break
+            except urllib.error.HTTPError as exc:
+                if exc.code != 404:
+                    decky.logger.warning(f"switch product page HTTP {exc.code} for {cand}")
+                continue
+            except Exception as exc:
+                decky.logger.warning(f"switch product page fetch failed ({cand}): {exc}")
+                continue
+
+        if page_html is None:
+            return {"ok": True, "items": []}
+
+        data = _extract_next_data(page_html)
+        arts = _news_articles_from_next_data(data) if isinstance(data, dict) else []
+        if not arts:
+            return {"ok": True, "items": []}
+
+        arts = arts[:NINTENDO_NEWS_MAX]
+        bodies = await asyncio.gather(
+            *[self._fetch_switch_article(str(a.get("url", ""))) for a in arts],
+            return_exceptions=True,
+        )
+
+        items = []
+        for art, body in zip(arts, bodies):
+            body_html = body.get("html", "") if isinstance(body, dict) else ""
+            pub = str(art.get("publishDate") or "")
+            try:
+                ts = int(
+                    datetime.datetime.fromisoformat(pub.replace("Z", "+00:00")).timestamp()
+                )
+            except Exception:
+                ts = 0
+            items.append({
+                "gid": str(art.get("id", "")),
+                "title": str(art.get("title", "")),
+                "html": body_html,
+                "date": ts,
+                "url": _safe_ext_url(str(art.get("url", ""))),
+                "external": True,
+                "feedlabel": "Nintendo",
+                "author": "",
+            })
+
+        return {"ok": True, "items": items}
+
+    async def get_switch_news(self, title: str) -> dict:
+        """Update history for a Switch game. perfectly-nintendo.com is tried
+        FIRST, not as a fallback: its "all the updates" article is an actual
+        version/patch-note history (what this feature is for), while Nintendo's
+        own eShop "related news" is PR-style announcements that often exist
+        even when no real patch history does (Super Mario Bros. Wonder has 6
+        such announcement articles and zero patch notes — confirmed live) and
+        would otherwise mask perfectly-nintendo.com's real content. Nintendo's
+        eShop page is still tried second, so a title with no perfectly-
+        nintendo.com article isn't left with nothing."""
+        slug_base = _nintendo_slug(title)
+        if not slug_base:
+            return {"ok": False, "error": "no title to search"}
+
+        cached, fresh = _read_cache_entry("switch_news", slug_base)
+        if cached is not None and fresh:
+            return cached
+
+        res = await self._fetch_pn_update_page(title)
+        if not (res.get("ok") and res.get("items")):
+            res = await self._get_nintendo_eshop_news(title, slug_base)
+
+        # An empty/failed result is negative-cached (NEGATIVE_TTL_OVERRIDE's
+        # 1h for this kind) rather than for a full day like a real hit — a
+        # transient PN fetch hiccup looks identical to "genuinely no article
+        # exists" from here, so a real miss still gets rechecked same-day.
+        if res.get("ok") and res.get("items"):
+            _write_cache("switch_news", slug_base, res)
+        else:
+            _write_negative("switch_news", slug_base, res)
+        return res
 
     async def get_deck(self, appid: int, lang: str = "english"):
         url = ("https://store.steampowered.com/saleaction/"
@@ -2678,6 +3250,47 @@ class Plugin:
         out["igdb_enriched"] = True
         return out
 
+    async def _switch_news_for(self, appdetails: dict) -> dict:
+        """News section for a non-Steam provider result: Nintendo's own
+        eShop update announcements when this is recognizably a Switch game,
+        the existing "Steam-only" placeholder otherwise (SNES/Genesis/PS1/…
+        ROMs matched through the exact same Hasheous/IGDB path have no
+        equivalent to try).
+
+        get_all_provider awaits this after the cover and description are
+        already in hand, so it waits only SWITCH_NEWS_WAIT for the lookup. A
+        slower one (a perfectly-nintendo.com connection drop and retry alone
+        takes most of 20 s) keeps running in the background under shield and
+        fills the cache; the result says so with `transient`, which makes the
+        frontend ask again a minute later instead of keeping the answer for
+        half an hour. One lookup per title at a time: a revisit while it runs
+        waits on the same task.
+        """
+        if not _is_switch_platform(appdetails):
+            return {"ok": False, "error": "update history is Steam-only"}
+        title = str(appdetails.get("name") or "")
+        key = _nintendo_slug(title)
+        if not hasattr(self, "_switch_news_tasks"):
+            self._switch_news_tasks = {}
+        task = self._switch_news_tasks.get(key)
+        if task is None or task.done():
+            task = asyncio.ensure_future(self.get_switch_news(title))
+            self._switch_news_tasks[key] = task
+
+            def _settled(t, key=key):
+                if self._switch_news_tasks.get(key) is t:
+                    del self._switch_news_tasks[key]
+                if not t.cancelled() and t.exception() is not None:
+                    decky.logger.warning(f"switch update history failed ({title}): {t.exception()}")
+
+            task.add_done_callback(_settled)
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=SWITCH_NEWS_WAIT)
+        except asyncio.TimeoutError:
+            return {"ok": False, "error": "update history is still loading", "transient": True}
+        except Exception as exc:
+            return {"ok": False, "error": f"update history failed: {exc}"}
+
     async def get_all_provider(self, provider, id, lang: str = "english",
                                cc: str = "us"):
         """Non-Steam metadata aggregate — same AppData shape as get_all, with
@@ -2723,7 +3336,7 @@ class Plugin:
             return {
                 "ok": True, "appid": gid, "appdetails": appdetails,
                 "reviews": {"ok": False, "error": "reviews are Steam-only"},
-                "news": {"ok": False, "error": "update history is Steam-only"},
+                "news": await self._switch_news_for(appdetails),
                 "deck": {"ok": False, "error": "not a Steam app"},
             }
         url = f"{HASHEOUS_BASE}/DataObjects/Game/{gid}"
@@ -2753,7 +3366,7 @@ class Plugin:
             "appid": gid,
             "appdetails": appdetails,
             "reviews": {"ok": False, "error": "reviews are Steam-only"},
-            "news": {"ok": False, "error": "update history is Steam-only"},
+            "news": await self._switch_news_for(appdetails),
             "deck": {"ok": False, "error": "not a Steam app"},
         }
 
