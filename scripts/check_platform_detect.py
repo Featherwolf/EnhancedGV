@@ -352,8 +352,62 @@ plugin._name_year = steam_name
 r = run(plugin.resolve_game(730, False, "", "english", "us"))
 check("a Steam game is not given a system", "system" not in r, str(r))
 
+print("== IGDB is searched through EnhancedGV's Hasheous app first; the user's account is the fallback ==")
+calls = []
+real_app_search, real_own_search = plugin._hasheous_igdb_resolve, plugin._igdb_resolve
+def app_answer(result):
+    async def fake(title, platform):
+        calls.append(("app", platform))
+        return dict(result)
+    return fake
+def own_answer(result):
+    async def fake(title, platform=""):
+        calls.append(("own", platform))
+        return dict(result)
+    return fake
+APP_EXACT = {"ok": True, "provider": "igdb", "id": 145, "name": "Kirby and the Forgotten Land",
+             "year": "2022", "platform": SW, "exact": True}
+APP_LOOSE = dict(APP_EXACT, id=146, name="Kirby and the Forgotten Land: Expansion Pass", exact=False)
+OWN_EXACT = dict(APP_EXACT, id=777)
+OWN_LOOSE = dict(APP_LOOSE, id=778)
+NO_MATCH = {"ok": False, "error": "no igdb match"}
+for label, appid, launch, has_creds, app_r, own_r, want_id, want_calls in (
+        ("found through the app: the user's account isn't asked",
+         1001, RYUJINX, True, APP_EXACT, OWN_EXACT, 145, ["app"]),
+        ("the app finds nothing: the user's account answers",
+         1002, RYUJINX, True, NO_MATCH, OWN_EXACT, 777, ["app", "own"]),
+        ("the app finds no exact title but the user's account does: that one",
+         1003, RYUJINX, True, APP_LOOSE, OWN_EXACT, 777, ["app", "own"]),
+        ("neither finds an exact title: the app's answer stands",
+         1004, RYUJINX, True, APP_LOOSE, OWN_LOOSE, 146, ["app", "own"]),
+        ("no system, so the app can't search: the user's account answers",
+         1005, PC_GAME, True, APP_EXACT, OWN_EXACT, 777, ["own"]),
+        ("no account saved: the app's answer, nothing else asked",
+         1006, RYUJINX, False, APP_EXACT, OWN_EXACT, 145, ["app"])):
+    calls.clear()
+    plugin._hasheous_igdb_resolve = app_answer(app_r)
+    plugin._igdb_resolve = own_answer(own_r)
+    main._igdb_configured = (lambda v: (lambda: v))(has_creds)
+    r = run(plugin.resolve_game(appid, True, "Kirby and the Forgotten Land", "english", "us", "", launch))
+    check(label, r.get("provider_id") == want_id and [c for c, _p in calls] == want_calls,
+          (r.get("provider_id"), calls))
+calls.clear()
+SENT.clear()
+plugin._hasheous_igdb_resolve = app_answer(NO_MATCH)
+main._igdb_configured = lambda: False
+r = run(plugin.resolve_game(1007, True, "Kirby and the Forgotten Land", "english", "us", "", RYUJINX))
+check("the app finds nothing and no account: Hasheous' ROM index is asked last",
+      [c for c, _p in calls] == ["app"] and len(searches()) >= 1 and r.get("matched") is False,
+      (calls, searches(), r))
+plugin._hasheous_igdb_resolve, plugin._igdb_resolve = real_app_search, real_own_search
+
 print("== the shortcut's paths never leave the device ==")
 SENT.clear()
+def proxy_open(req, timeout=None):   # Hasheous' IGDB proxy: keyed, no games found
+    SENT.append(("PROXY", req.full_url, ""))
+    raise main.urllib.error.HTTPError(req.full_url, 404, "Not Found", None, None)
+main._IGDB_OPENER.open = proxy_open
+main._hasheous_app_key = lambda: "egv-test-key-0123456789abcdef"
 for appid, launch in ((901, RYUJINX), (902, SNES9X)):
     run(plugin.resolve_game(appid, True, "Super Mario World", "english", "us", "", launch))
 everything = " ".join(url + " " + body for _k, url, body in SENT).lower()
@@ -363,6 +417,13 @@ check("no part of a launch command is in any request", not leaks, str(leaks))
 filters = {a.get("platform") for a in searches()} - {None}
 allowed = {f for fs, _i, _e in main._PLATFORMS.values() for f in fs}
 check("only a system's name goes out, as a Hasheous platform filter", filters <= allowed, str(filters))
+proxied = [main.urllib.parse.urlsplit(url) for kind, url, _b in SENT if kind == "PROXY"]
+check("the app's IGDB searches were made, for both systems",
+      sorted(p.path.rsplit("/", 2)[-2] for p in proxied) == ["130", "19"], [p.path for p in proxied])
+check("...each carrying only the game's title and IGDB's platform id",
+      all(main.re.fullmatch(r"/api/v1/MetadataProxy/IGDB/Search/Platform/\d+/Game", p.path)
+          and dict(main.urllib.parse.parse_qsl(p.query)) == {"SearchString": "Super Mario World"}
+          for p in proxied), [p.geturl() for p in proxied])
 
 print(f"\n{ok} passed, {fail} failed")
 if fail:

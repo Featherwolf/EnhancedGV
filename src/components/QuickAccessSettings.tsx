@@ -408,10 +408,14 @@ function NonSteamArtwork() {
     }
   };
 
-  const source = saved
+  // EnhancedGV's Hasheous app answers first; a saved IGDB account is only the
+  // fallback, so it leads only in builds without the app's key.
+  const source = appKey
+    ? saved
+      ? t("settings.sourceHasheousAppThenYours")
+      : t("settings.sourceHasheousApp")
+    : saved
     ? t("settings.sourceYourIgdb")
-    : appKey
-    ? t("settings.sourceHasheousApp")
     : t("settings.sourceHasheous");
 
   return (

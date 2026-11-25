@@ -259,6 +259,9 @@ HASHEOUS_MAX_LOOKUPS = 24
 # Platform-filtered Hasheous searches tried before the unfiltered one, when the
 # shortcut's system is known.
 HASHEOUS_MAX_FILTERS = 2
+# IGDB searches through Hasheous' proxy per game: one per IGDB platform of the
+# shortcut's system (mGBA's three, NES's two), never more than this.
+HASHEOUS_IGDB_MAX_SEARCHES = 3
 
 # Bumped whenever automatic matching improves. An AUTO match stamped with an
 # older generation is re-detected on next open, so a tester who was matched to
@@ -784,7 +787,10 @@ def _year_from(release_date: str) -> str:
 
 
 def _norm_title(s) -> str:
-    s = re.sub(r"[™®©]", "", str(s or "")).lower()  # ™ ® ©
+    # Accents folded first ("Pokémon" is "Pokemon"), not dropped with the rest
+    # of what isn't a-z0-9 ("pok mon").
+    s = unicodedata.normalize("NFKD", re.sub(r"[™®©]", "", str(s or "")))  # ™ ® ©
+    s = "".join(c for c in s if not unicodedata.combining(c)).lower()
     return re.sub(r"[^a-z0-9]+", " ", s).strip()
 
 
@@ -857,6 +863,21 @@ _PLATFORMS = {
     "TurboGrafx-16/PC Engine": (("PC Engine", "TurboGrafx"), r"pc\s*engine|turbo\s*grafx", None),
     "Atari 2600": (("2600",), r"\b2600\b", None),
 }
+# IGDB's platform ids, for the search Hasheous runs on IGDB per platform. The
+# NES has two: Japan's Famicom is a platform of its own there.
+_IGDB_PLATFORM_IDS = {
+    "Nintendo Switch": (130,), "Wii U": (41,), "Wii": (5,), "Nintendo GameCube": (21,),
+    "Nintendo 64": (4,), "Super Nintendo Entertainment System": (19,),
+    "Nintendo Entertainment System": (18, 99), "Family Computer Disk System": (51,),
+    "Game Boy": (33,), "Game Boy Color": (22,), "Game Boy Advance": (24,),
+    "Nintendo DS": (20,), "Nintendo 3DS": (37,), "Virtual Boy": (87,),
+    "PlayStation": (7,), "PlayStation 2": (8,), "PlayStation 3": (9,),
+    "PlayStation Portable": (38,), "PlayStation Vita": (46,), "Xbox": (11,), "Xbox 360": (12,),
+    "Sega Mega Drive/Genesis": (29,), "Sega Master System/Mark III": (64,),
+    "Sega Game Gear": (35,), "Sega CD": (78,), "Sega 32X": (30,), "Sega Saturn": (32,),
+    "Dreamcast": (23,), "TurboGrafx-16/PC Engine": (86,), "Atari 2600": (59,),
+}
+
 _PLATFORM_RE = {name: (re.compile(inc), re.compile(exc) if exc else None)
                 for name, (_f, inc, exc) in _PLATFORMS.items()}
 
@@ -980,6 +1001,30 @@ def _platforms_from_hint(hint) -> tuple:
         else:
             named.update(p for p in _PLATFORMS if _platform_name_is(part, (p,)))
     return tuple(p for p in _PLATFORMS if p in named)
+
+
+def _search_title(title) -> str:
+    """A shortcut's title as a search for Hasheous' IGDB proxy, which writes it
+    into an IGDB query verbatim: region and version tags in brackets dropped
+    ("Super Mario Odyssey [0100000000010000]"), and the characters that would
+    end or extend that query (quotes, backslashes, semicolons) blanked."""
+    s = re.sub(r"\s*[\(\[][^\)\]]*[\)\]]", " ", str(title or ""))
+    s = re.sub(r'["\\;]', " ", s)
+    return re.sub(r"\s+", " ", s).strip()[:120]
+
+
+def _igdb_is_addon(game) -> bool:
+    """Whether an IGDB game is an add-on (DLC, expansion, bundle, mod, episode,
+    season, pack or update) rather than a game: standalone expansions, remakes,
+    remasters and ports count as games. Reads game_type, or the older category,
+    as an id or an object."""
+    kind = _igdb_pick(game, "game_type", "category")
+    if isinstance(kind, dict):
+        kind = _igdb_pick(kind, "id")
+    try:
+        return int(kind or 0) in (1, 2, 3, 5, 6, 7, 13, 14)
+    except (TypeError, ValueError):
+        return False
 
 
 def _launch_tokens(s: str) -> list:
@@ -3118,26 +3163,40 @@ class Plugin:
                if isinstance(ic, dict)
                and (_igdb_pick(ic, "developer") or _igdb_pick(ic, "publisher"))]
         ics.sort(key=lambda ic: not _igdb_pick(ic, "developer"))
-        named = []
-        for ic in ics[:HASHEOUS_MAX_COMPANIES]:
-            comp = _igdb_pick(ic, "company")
+        picked = ics[:HASHEOUS_MAX_COMPANIES]
+
+        # All at once, not one after another: this is the price the proxy pays
+        # over IGDB's own API (which names companies in the game's request), so
+        # it costs one extra round trip rather than four.
+        async def _company_name(comp):
             if not isinstance(comp, dict):
                 try:
                     comp = await loop.run_in_executor(
-                        None, _hasheous_proxy_get_sync, "Company",
-                        {"Id": int(comp)}, key)
+                        None, _hasheous_proxy_get_sync, "Company", {"Id": int(comp)}, key)
                 except Exception:
-                    continue
-            name = _igdb_pick(comp, "name") if isinstance(comp, dict) else None
-            if name:
-                named.append({**ic, "company": {"name": str(name)}})
-        game["involved_companies"] = named
+                    return None
+            return _igdb_pick(comp, "name") if isinstance(comp, dict) else None
+
+        names = await asyncio.gather(*(_company_name(_igdb_pick(ic, "company")) for ic in picked))
+        game["involved_companies"] = [{**ic, "company": {"name": str(n)}}
+                                      for ic, n in zip(picked, names) if n]
         return game
 
     async def _igdb_game_by_id(self, igdb_id: int):
-        """IGDB's record for one game: from IGDB itself with the user's own
-        credentials when they saved some, else through Hasheous with
-        EnhancedGV's app key. None when neither is available or both fail."""
+        """IGDB's record for one game: through Hasheous with EnhancedGV's app
+        key, else (no key, or the proxy failing or knowing no such game) from
+        IGDB itself with the user's own credentials, which are only the
+        fallback. None when neither is available or both fail."""
+        key = _hasheous_app_key()
+        if key:
+            try:
+                game = await self._hasheous_igdb_game(int(igdb_id), key)
+                if isinstance(game, dict) and game:
+                    return game
+            except urllib.error.HTTPError as exc:
+                decky.logger.error(f"hasheous igdb proxy: HTTP {exc.code} for game {igdb_id}")
+            except Exception as exc:
+                decky.logger.error(f"hasheous igdb proxy: game {igdb_id} failed: {exc}")
         cid, token = await self._igdb_ready()
         if cid:
             try:
@@ -3150,14 +3209,6 @@ class Plugin:
                 decky.logger.error(f"igdb: HTTP {exc.code} for game {igdb_id}")
             except Exception as exc:
                 decky.logger.error(f"igdb: game {igdb_id} failed: {exc}")
-        key = _hasheous_app_key()
-        if key:
-            try:
-                return await self._hasheous_igdb_game(int(igdb_id), key)
-            except urllib.error.HTTPError as exc:
-                decky.logger.error(f"hasheous igdb proxy: HTTP {exc.code} for game {igdb_id}")
-            except Exception as exc:
-                decky.logger.error(f"hasheous igdb proxy: game {igdb_id} failed: {exc}")
         return None
 
     async def _igdb_ready(self):
@@ -3442,13 +3493,15 @@ class Plugin:
         step("Non-Steam sources enabled", _feature_non_steam(),
              "on" if _feature_non_steam() else "turn it on above")
         creds = bool(client_id and client_secret)
-        app_key = "" if creds else _hasheous_app_key()
-        if creds:
+        app_key = _hasheous_app_key()
+        # EnhancedGV's Hasheous app answers first; the user's own account, when
+        # saved, is the fallback. The test follows the same order.
+        own = creds and not app_key
+        if app_key:
+            step("IGDB access", True, "through EnhancedGV's Hasheous app"
+                 + (", your IGDB account as fallback" if creds else ", no setup needed"))
+        elif creds:
             step("Credentials present", True, "client id + secret saved")
-        elif app_key:
-            # Users' own credentials win when saved; without them, IGDB data
-            # comes through Hasheous with EnhancedGV's app key.
-            step("IGDB access", True, "through EnhancedGV's Hasheous app, no setup needed")
         else:
             step("Credentials present", False,
                  "missing " + (" and ".join(
@@ -3458,27 +3511,37 @@ class Plugin:
 
         token = ""
         if creds:
+            name = "Access token from Twitch" if own else "Your IGDB account (fallback)"
             try:
                 token = await self._igdb_token(client_id, client_secret)
-                step("Access token from Twitch", bool(token), "token obtained")
+                step(name, bool(token), "token obtained")
             except urllib.error.HTTPError as exc:
                 detail = f"HTTP {exc.code}"
                 if exc.code in (400, 401, 403):
                     detail += " — Twitch rejected the client id/secret pair"
-                step("Access token from Twitch", False, detail)
-                return {"ok": False, "steps": steps, "error": detail}
+                step(name, False, detail)
+                if own:
+                    return {"ok": False, "steps": steps, "error": detail}
             except Exception as exc:
-                step("Access token from Twitch", False, str(exc))
-                return {"ok": False, "steps": steps, "error": str(exc)}
+                step(name, False, str(exc))
+                if own:
+                    return {"ok": False, "steps": steps, "error": str(exc)}
 
-        # Which game? The one on screen if it resolves to Hasheous, else a known
-        # public mapping (Super Metroid) so the key itself can still be tested.
+        # Which game? The one on screen if it is matched to IGDB, directly or
+        # through Hasheous, else a known public mapping (Super Metroid) so the
+        # access itself can still be tested.
         igdb_id, label = 0, ""
         try:
             rec = _read_matches().get(str(int(game_appid or 0)))
         except Exception:
             rec = None
-        if isinstance(rec, dict) and rec.get("provider") == "hasheous":
+        if isinstance(rec, dict) and rec.get("provider") == "igdb":
+            try:
+                igdb_id = int(rec.get("provider_id") or 0)
+            except (TypeError, ValueError):
+                igdb_id = 0
+            label = str(rec.get("name") or "")
+        elif isinstance(rec, dict) and rec.get("provider") == "hasheous":
             try:
                 raw = await self._fetch(
                     "hasheous", str(rec["provider_id"]),
@@ -3497,7 +3560,7 @@ class Plugin:
                  "no IGDB mapping for this game; testing against a known title")
 
         try:
-            game = (await self._igdb_game(igdb_id, client_id, token) if creds
+            game = (await self._igdb_game(igdb_id, client_id, token) if own
                     else await self._hasheous_igdb_game(igdb_id, app_key))
             step("IGDB game fetched", isinstance(game, dict),
                  _igdb_pick(game, "name") if isinstance(game, dict)
@@ -3505,10 +3568,10 @@ class Plugin:
         except urllib.error.HTTPError as exc:
             detail = f"HTTP {exc.code}"
             if exc.code in (401, 403):
-                detail += (" — IGDB rejected the token or client id" if creds
+                detail += (" — IGDB rejected the token or client id" if own
                            else " — Hasheous rejected EnhancedGV's app key")
             elif exc.code == 429:
-                detail += (" — over the 4 requests/second limit" if creds
+                detail += (" — over the 4 requests/second limit" if own
                            else " — Hasheous is rate limiting; try again shortly")
             step("IGDB game fetched", False, detail)
             return {"ok": False, "steps": steps, "error": detail}
@@ -3568,7 +3631,65 @@ class Plugin:
                      plats[0] if plats else "")
         return {"ok": True, "provider": "igdb", "id": int(_igdb_pick(best, "id") or 0),
                 "name": str(_igdb_pick(best, "name") or title), "year": year,
-                "platform": shown}
+                "platform": shown, "exact": _norm_title(_igdb_pick(best, "name")) == nt}
+
+    async def _hasheous_igdb_resolve(self, title: str, platform: str):
+        """Title -> IGDB game id through Hasheous' proxy with EnhancedGV's app
+        key: IGDB's own search, and the first way a game is looked up on IGDB
+        (the user's own account is the fallback). It finds the modern console
+        games Hasheous' ROM index lacks (Kirby and the Forgotten Land has no
+        Switch dump there, but is on IGDB). The proxy searches one IGDB
+        platform at a time, so this needs the shortcut's system (`platform`, as
+        for _hasheous_resolve). Same result shape as _igdb_resolve."""
+        key = _hasheous_app_key()
+        wanted = _platforms_from_hint(platform)
+        query = _search_title(title)
+        if not key or not wanted or not query:
+            return {"ok": False, "error": "no IGDB search without the system or the app key"}
+        nt = _norm_title(query)
+        loop = asyncio.get_running_loop()
+        searched = 0
+        for system in wanted:
+            for pid in _IGDB_PLATFORM_IDS.get(system, ()):
+                if searched >= HASHEOUS_IGDB_MAX_SEARCHES:
+                    break
+                searched += 1
+                try:
+                    got = await loop.run_in_executor(
+                        None, _hasheous_proxy_get_sync, f"Search/Platform/{int(pid)}/Game",
+                        {"SearchString": query}, key)
+                except urllib.error.HTTPError as exc:
+                    if exc.code != 404:     # 404 is how it says "no games found"
+                        decky.logger.warning(f"hasheous igdb search failed: HTTP {exc.code}")
+                    continue
+                except Exception as exc:
+                    decky.logger.warning(f"hasheous igdb search failed: {exc}")
+                    continue
+                games = [_from_hasheous_proxy(g) for g in (got if isinstance(got, list) else [])
+                         if isinstance(g, dict)]
+                games = [g for g in games if _igdb_pick(g, "id") and _igdb_pick(g, "name")]
+                if not games:
+                    continue
+                # IGDB's search already orders by relevance; pull an exact title
+                # forward, and a game ahead of its DLC or bundle.
+                best = sorted(games, key=lambda g: (
+                    _norm_title(_igdb_pick(g, "name")) != nt, _igdb_is_addon(g)))[0]
+                year = ""
+                ts = _igdb_pick(best, "first_release_date")
+                if ts:
+                    try:
+                        year = time.strftime("%Y", time.gmtime(int(ts)))
+                    except Exception:
+                        year = ""
+                try:
+                    gid = int(_igdb_pick(best, "id"))
+                except (TypeError, ValueError):
+                    continue
+                return {"ok": True, "provider": "igdb", "id": gid,
+                        "name": str(_igdb_pick(best, "name")), "year": year,
+                        "platform": system,
+                        "exact": _norm_title(_igdb_pick(best, "name")) == nt}
+        return {"ok": False, "error": "no igdb match on " + " or ".join(wanted)}
 
     async def resolve_game(self, game_appid, is_shortcut: bool = False,
                            title: str = "", lang: str = "english", cc: str = "us",
@@ -3624,23 +3745,29 @@ class Plugin:
                 # feature OFF this is byte-identical to the old behavior (Steam's
                 # best guess, else unmatched).
                 if _feature_non_steam():
-                    # Order depends on whether IGDB is configured.
+                    # IGDB goes first whenever it can be searched. It indexes
+                    # GAMES, so it answers with the actual release. Hasheous
+                    # indexes ROM DUMPS, and its title search surfaces rom hacks,
+                    # bootlegs, soundtracks and wrong-platform entries that look
+                    # plausible and are not — so asking it first means sometimes
+                    # accepting a worse answer when a better one was available.
                     #
-                    # WITH credentials, IGDB goes first. It indexes GAMES, so it
-                    # answers with the actual release. Hasheous indexes ROM
-                    # DUMPS, and its title search surfaces rom hacks, bootlegs,
-                    # soundtracks and wrong-platform entries that look plausible
-                    # and are not — so asking it first means sometimes accepting
-                    # a worse answer when a better one was available.
-                    #
-                    # WITHOUT credentials, IGDB cannot answer at all, so Hasheous
-                    # is the only option and this is the previous behaviour
-                    # unchanged.
-                    if _igdb_configured():
-                        h = await self._igdb_resolve(title or "", hint)
-                        if not h.get("ok"):
-                            h = await self._hasheous_resolve(title or "", hint)
-                    else:
+                    # IGDB is searched through Hasheous' proxy on EnhancedGV's
+                    # app key, which searches per platform, so once the
+                    # shortcut's system is known. The user's own IGDB account is
+                    # only the fallback: asked when the proxy can't search (no
+                    # system), fails, finds nothing, or finds no exact title
+                    # (Hasheous may answer from its own copy of IGDB, a plainer
+                    # name search than IGDB's), and then preferred only for an
+                    # exact title. Hasheous' ROM index comes last, as before.
+                    h = {"ok": False}
+                    if hint:
+                        h = await self._hasheous_igdb_resolve(title or "", hint)
+                    if _igdb_configured() and not (h.get("ok") and h.get("exact")):
+                        own = await self._igdb_resolve(title or "", hint)
+                        if own.get("ok") and (not h.get("ok") or own.get("exact")):
+                            h = own
+                    if not h.get("ok"):
                         h = await self._hasheous_resolve(title or "", hint)
                     if h.get("ok"):
                         prov_rec = {

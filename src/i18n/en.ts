@@ -40,6 +40,7 @@ export const en = {
   "settings.couldNotClear": "Could not clear: {error}",
   "settings.sourceYourIgdb": "Your IGDB account",
   "settings.sourceHasheousApp": "EnhancedGV's Hasheous app",
+  "settings.sourceHasheousAppThenYours": "EnhancedGV's Hasheous app, then your IGDB account",
   "settings.sourceHasheous": "Hasheous (description and logo)",
   "settings.artworkFrom": "Artwork from",
   "settings.testing": "Testing…",
@@ -50,7 +51,7 @@ export const en = {
   "settings.igdbHintSaved":
     "Saved credentials stay through updates and reinstalls. Uninstalling the plugin doesn't remove them, so press Remove credentials first if you want them off this device.",
   "settings.igdbHintAppKey":
-    "Optional. Your own credentials add IGDB's title search, which finds console games Hasheous doesn't list. They're free from dev.twitch.tv; the README has the steps.",
+    "Optional, and only a fallback: EnhancedGV's Hasheous app already finds games on IGDB when it can tell their system. Your own account is used when it can't, or when Hasheous doesn't answer. They're free from dev.twitch.tv; the README has the steps.",
   "settings.igdbHintNone":
     "Optional. Without them you get Hasheous' description and logo. They're free from dev.twitch.tv; the README has the steps.",
   "settings.igdbClientId": "IGDB Client ID",
