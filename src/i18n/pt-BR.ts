@@ -158,6 +158,8 @@ export const ptBR: Record<TranslationKey, string> = {
   "versionPicker.beta": "Beta",
   "versionPicker.stable": "Estável",
   "versionPicker.updatesByHand": " · atualiza manualmente a partir daí",
+  "versionPicker.showMore": "Mostrar mais versões ({count})",
+  "versionPicker.showFewer": "Mostrar menos versões",
 
   "update.installNotStarted": "A instalação não começou.",
 

@@ -1,6 +1,7 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { DialogButton, Focusable, ModalRoot } from "@decky/ui";
 import { listReleases } from "../api";
+import { releaseShortList } from "../releaseShortList";
 import type { ReleaseInfo } from "../types";
 import { installRelease } from "../updater";
 import { useTranslation } from "../i18n";
@@ -20,6 +21,12 @@ export function VersionPickerModal({ closeModal }: { closeModal?: () => void }) 
   const [current, setCurrent] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  // The installed release, the one before it and the newest stable and beta
+  // show first; the rest wait behind "Show more versions".
+  const [showAll, setShowAll] = useState(false);
+  const shortList = useMemo(() => releaseShortList(releases ?? []), [releases]);
+  const shown = releases?.filter((r) => showAll || shortList.has(r.tag));
+  const moreCount = (releases?.length ?? 0) - shortList.size;
 
   useEffect(() => {
     let alive = true;
@@ -65,7 +72,7 @@ export function VersionPickerModal({ closeModal }: { closeModal?: () => void }) 
         <div style={{ fontSize: 13, opacity: 0.6 }}>{t("versionPicker.noReleases")}</div>
       )}
       <Focusable style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {releases?.map((r) => (
+        {shown?.map((r) => (
           <Focusable
             key={r.tag}
             // @ts-ignore Decky flow hint for gamepad navigation.
@@ -94,6 +101,18 @@ export function VersionPickerModal({ closeModal }: { closeModal?: () => void }) 
             </DialogButton>
           </Focusable>
         ))}
+        {moreCount > 0 && (
+          // Stays put while the list grows or shrinks above it, so gamepad
+          // focus stays on it either way.
+          <DialogButton
+            onClick={() => setShowAll((v) => !v)}
+            style={{ height: 36, padding: "0 12px", fontSize: 13, marginTop: 4 }}
+          >
+            {showAll
+              ? t("versionPicker.showFewer")
+              : t("versionPicker.showMore", { count: String(moreCount) })}
+          </DialogButton>
+        )}
       </Focusable>
     </ModalRoot>
   );

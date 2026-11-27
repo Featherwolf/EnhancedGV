@@ -11,6 +11,9 @@
   put and a playing trailer keeps playing. The flicker in the rest of the page
   comes from that plugin, and its developer has fixed it in Quick User Switcher
   1.1.0.
+- **A shorter version list.** Install another version now shows the installed
+  version, the one before it, and the newest stable and beta. The rest are
+  behind Show more versions.
 
 ## v0.21.0
 
