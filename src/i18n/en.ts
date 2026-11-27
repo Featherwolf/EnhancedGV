@@ -167,6 +167,8 @@ export const en = {
   "versionPicker.beta": "Beta",
   "versionPicker.stable": "Stable",
   "versionPicker.updatesByHand": " · updates by hand from there",
+  "versionPicker.showMore": "Show more versions ({count})",
+  "versionPicker.showFewer": "Show fewer versions",
 
   "update.installNotStarted": "The install didn't start.",
 
