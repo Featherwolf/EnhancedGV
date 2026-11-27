@@ -2,9 +2,15 @@
 
 ## v0.21.1
 
-- **Works alongside Quick User Switcher.** Its "Switch User & Play" bar, and
-  any other plugin's bar under the Play button, now stays next to the Play
-  button instead of ending up underneath EnhancedGV's whole store panel.
+- **The store panel holds steady when another plugin rebuilds the game page.**
+  Some plugins make Steam rebuild the whole game page every time it refreshes,
+  which it does constantly while a game installs or launches. Quick User
+  Switcher 1.0.0, the version in the Decky store, is one of them. The panel
+  used to vanish with every rebuild and come back up to 2 seconds later, rebuilt
+  from scratch. Now it goes straight back into the rebuilt page, so it stays
+  put and a playing trailer keeps playing. The flicker in the rest of the page
+  comes from that plugin, and its developer has fixed it in Quick User Switcher
+  1.1.0.
 
 ## v0.21.0
 
