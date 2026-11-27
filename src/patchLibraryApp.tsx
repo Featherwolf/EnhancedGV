@@ -15,7 +15,7 @@ import {
   consumeSlotCrossing,
 } from "./earlyNav";
 import { focusFirstStop } from "./focus";
-import { keepHostAdjacent, watchHostOrder } from "./hostOrder";
+import { reattachHost, watchHostDetach } from "./hostReattach";
 import {
   setDiag,
   markInjectApply,
@@ -157,6 +157,10 @@ function notify(): boolean {
 // the moment a listener reports it is settled. Every attempt still runs off the
 // render stack, so the coexistence guarantee above is unchanged.
 const RETRY_MS = [0, 16, 40, 80, 140, 220, 340, 500, 750, 1100, 1600];
+// How long a host dropped by a page rebuild waits, panel still mounted, for the
+// rebuilt page to be laid out before it is torn down (see hostReattach.ts).
+// Covers the whole retry burst.
+const REBUILD_GRACE_MS = 2000;
 let burstTimers: ReturnType<typeof setTimeout>[] = [];
 let burstStartedAt = 0;
 
@@ -223,9 +227,11 @@ function RestorePortalHost() {
   const host = useRef<HTMLElement | null>(null);
   const appid = useRef<number | null>(null);
   const cap = useRef<NavCapture | null>(null);
-  // The container the host is being kept directly above (see hostOrder.ts).
-  const watched = useRef<HTMLElement | null>(null);
+  // The host whose ancestors are being watched so a page rebuild is caught at
+  // once (see hostReattach.ts), and when a rebuild last dropped it.
+  const watchedHost = useRef<HTMLElement | null>(null);
   const unwatch = useRef<(() => void) | null>(null);
+  const droppedAt = useRef(0);
 
   useEffect(() => {
     stashPanelDoc(probeRef.current?.ownerDocument);
@@ -234,7 +240,8 @@ function RestorePortalHost() {
     const detach = () => {
       unwatch.current?.();
       unwatch.current = null;
-      watched.current = null;
+      watchedHost.current = null;
+      droppedAt.current = 0;
       if (host.current) {
         try {
           host.current.remove();
@@ -245,6 +252,16 @@ function RestorePortalHost() {
       host.current = null;
       appid.current = null;
       cap.current = null;
+    };
+
+    // A page rebuild just took our host out of the page (see hostReattach.ts).
+    // Put it straight back while we are still before the next paint; if the
+    // rebuilt page isn't laid out yet, the retry burst keeps trying.
+    const onDropped = () => {
+      unwatch.current = null;
+      watchedHost.current = null;
+      droppedAt.current = Date.now();
+      if (!sync()) scheduleNotify();
     };
 
     // Returns TRUE when there is nothing left to wait for (panel attached to the
@@ -258,6 +275,19 @@ function RestorePortalHost() {
         markInjectMiss(LAYOUT_MISSING);
       }
       if (!target) {
+        // A rebuild just dropped our host and the rebuilt page isn't laid out
+        // yet: keep the panel mounted in its detached host for a moment instead
+        // of tearing it down and building it again.
+        if (
+          host.current &&
+          !host.current.isConnected &&
+          droppedAt.current > 0 &&
+          Date.now() - droppedAt.current < REBUILD_GRACE_MS &&
+          appid.current != null &&
+          appidFromLocation() === appid.current
+        ) {
+          return false;
+        }
         // Not on an app-details page -> tear our panel down and clear state.
         if (host.current) {
           detach();
@@ -286,7 +316,18 @@ function RestorePortalHost() {
       let changed = false;
       const connected =
         !!host.current?.isConnected && host.current.parentElement === target.parentElement;
-      if (!connected || appid.current !== id) {
+      if (
+        !connected &&
+        host.current &&
+        appid.current === id &&
+        reattachHost(host.current, target, PANEL_MARKER)
+      ) {
+        // Same game, rebuilt page: the host goes back in with the panel still
+        // mounted inside it, so nothing in the panel reloads or blinks. The
+        // page's focus node is new; the capture below picks it up.
+        droppedAt.current = 0;
+        log("portal host re-attached to the rebuilt page for appid", id);
+      } else if (!connected || appid.current !== id) {
         detach();
         const made = makeHostBeforeTarget(target);
         if (!made) {
@@ -307,15 +348,11 @@ function RestorePortalHost() {
         });
         log("portal host attached for appid", id);
       }
-      // Other plugins' bars (Quick User Switcher's "Switch User & Play") go in
-      // right before the same container; one that renders late would land
-      // under the whole panel. Keep our host directly above the container.
-      if (host.current && watched.current !== target) {
+      // Catch the next page rebuild the moment it happens (see hostReattach.ts).
+      if (host.current && watchedHost.current !== host.current) {
         unwatch.current?.();
-        unwatch.current = watchHostOrder(host.current, target);
-        watched.current = target;
-      } else {
-        keepHostAdjacent(host.current, target);
+        unwatch.current = watchHostDetach(host.current, onDropped);
+        watchedHost.current = host.current;
       }
       // Capture / recapture the page's gamepad-focus node from the host's parent
       // (the AppDetailsRoot element). Read-only fiber walk; we re-provide the
@@ -369,7 +406,9 @@ function RestorePortalHost() {
 
   const createPortal = (ReactDOM as AnyEl)?.createPortal;
   let content: AnyEl = null;
-  if (host.current?.isConnected && appid.current != null && typeof createPortal === "function") {
+  // Rendered even while a rebuild has the host briefly out of the page, so the
+  // panel stays mounted until the host goes back in (or is torn down).
+  if (host.current && appid.current != null && typeof createPortal === "function") {
     const panel = stablePanel(appid.current);
     if (cap.current) {
       const Provider = cap.current.ctx.Provider ?? cap.current.ctx;

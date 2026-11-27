@@ -333,9 +333,9 @@ which part broke:
 - **Plays nicely with other plugins.** EnhancedGV never patches Steam's render
   function or mutates its render output, so it doesn't corrupt the state of other
   library plugins (TabMaster, PlayTime, etc.). It only reads the page and injects
-  from its own Decky-owned tree. Bars other plugins add under the Play button
-  (Quick User Switcher's "Switch User & Play", HowLongToBeat's times) stay above
-  the store panel, even when they appear after it.
+  from its own Decky-owned tree. If another plugin makes Steam rebuild the game
+  page (Quick User Switcher 1.0.0 does on every refresh), the store panel goes
+  straight back into the rebuilt page instead of blinking out.
 - **Steam client fragility (test on-device).** The injection depends on Steam's
   closed-source UI tree, which changes between client updates. The panel anchors
   on the visible `AppDetailsContainer` and reads the game's `AppOverview` from its
