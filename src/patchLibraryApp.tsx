@@ -15,6 +15,7 @@ import {
   consumeSlotCrossing,
 } from "./earlyNav";
 import { focusFirstStop } from "./focus";
+import { keepHostAdjacent, watchHostOrder } from "./hostOrder";
 import {
   setDiag,
   markInjectApply,
@@ -222,12 +223,18 @@ function RestorePortalHost() {
   const host = useRef<HTMLElement | null>(null);
   const appid = useRef<number | null>(null);
   const cap = useRef<NavCapture | null>(null);
+  // The container the host is being kept directly above (see hostOrder.ts).
+  const watched = useRef<HTMLElement | null>(null);
+  const unwatch = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     stashPanelDoc(probeRef.current?.ownerDocument);
     let disposed = false;
 
     const detach = () => {
+      unwatch.current?.();
+      unwatch.current = null;
+      watched.current = null;
       if (host.current) {
         try {
           host.current.remove();
@@ -299,6 +306,16 @@ function RestorePortalHost() {
           note: "panel portaled into the visible app page (isolated global tier)",
         });
         log("portal host attached for appid", id);
+      }
+      // Other plugins' bars (Quick User Switcher's "Switch User & Play") go in
+      // right before the same container; one that renders late would land
+      // under the whole panel. Keep our host directly above the container.
+      if (host.current && watched.current !== target) {
+        unwatch.current?.();
+        unwatch.current = watchHostOrder(host.current, target);
+        watched.current = target;
+      } else {
+        keepHostAdjacent(host.current, target);
       }
       // Capture / recapture the page's gamepad-focus node from the host's parent
       // (the AppDetailsRoot element). Read-only fiber walk; we re-provide the

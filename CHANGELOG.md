@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.21.1
+
+- **Works alongside Quick User Switcher.** Its "Switch User & Play" bar, and
+  any other plugin's bar under the Play button, now stays next to the Play
+  button instead of ending up underneath EnhancedGV's whole store panel.
+
 ## v0.21.0
 
 - **Artwork for non-Steam games, with no setup.** Games matched through
